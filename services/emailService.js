@@ -1,0 +1,294 @@
+const nodemailer = require('nodemailer');
+
+const createTransporter = () => {
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = Number(process.env.SMTP_PORT || 587);
+  const smtpSecure = String(process.env.SMTP_SECURE || "").toLowerCase() === "true";
+
+  // Prefer explicit SMTP configuration when provided.
+  if (smtpHost) {
+    return nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+  }
+
+  // Backward compatibility with existing Gmail setup.
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+};
+
+const assertEmailConfigured = () => {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    const err = new Error("Email service is not configured. Set EMAIL_USER and EMAIL_PASS in server/.env.");
+    err.statusCode = 400;
+    throw err;
+  }
+};
+
+const sendPasswordResetEmail = async (email, resetToken, userType) => {
+  try {
+    const transporter = createTransporter();
+
+    const resetURL = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}&type=${userType}`;
+
+    const mailOptions = {
+      from: `"Job Portal" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: 'Password Reset Request - Job Portal',
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <style>
+              .container {
+                max-width: 600px;
+                margin: 0 auto;
+                font-family: Arial, sans-serif;
+                background-color: #f9f9f9;
+                padding: 20px;
+              }
+              .email-content {
+                background-color: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              }
+              .header {
+                text-align: center;
+                color: #1B3890;
+                margin-bottom: 30px;
+              }
+              .reset-button {
+                display: inline-block;
+                background: #1B3890;
+                color:  #ffffff;
+                padding: 15px 30px;
+                text-decoration: none;
+                border-radius: 8px;
+                font-weight: bold;
+                margin: 20px 0;
+              }
+              .footer {
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+                color: #666;
+                font-size: 14px;
+              }
+              .warning {
+                background-color: #fff3cd;
+                border: 1px solid #ffeaa7;
+                color: #856404;
+                padding: 15px;
+                border-radius: 5px;
+                margin: 20px 0;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="email-content">
+                <div class="header">
+                  <h1>Password Reset Request</h1>
+                </div>
+                
+                <p>Hello,</p>
+                
+                <p>We received a request to reset your password for your Job Portal ${userType === 'agent' ? 'Agent' : 'Candidate'} account. If you made this request, please click the button below to reset your password:</p>
+                
+                <div style="text-align: center;">
+                  <a href="${resetURL}" style="
+       display: inline-block;
+       background-color: #1B3890; 
+       color: #ffffff !important; 
+       padding: 15px 30px;
+       text-decoration: none !important;
+       border-radius: 8px;
+       font-weight: bold;
+       font-family: Arial, sans-serif;
+     ">Reset Your Password</a>
+                </div>
+                
+                <div class="warning">
+                  <strong>Important:</strong> This link will expire in 1 hour for security reasons.
+                </div>
+                
+                <p>If you didn't request a password reset, please ignore this email. Your password will remain unchanged.</p>
+                
+                <p>If the button above doesn't work, you can copy and paste this link into your browser:</p>
+                <p style="word-break: break-all; color: #1B3890;">${resetURL}</p>
+                
+                <div class="footer">
+                  <p>Best regards,<br>Job Portal Team</p>
+                  <p><strong>Security Notice:</strong> Never share your password or reset links with anyone.</p>
+                </div>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log('Password reset email sent:', info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('Email sending failed:', error);
+    throw new Error('Failed to send reset email');
+  }
+};
+
+// Meeting reminder function
+const sendMeetingReminderEmail = async (user, meeting) => {
+  try {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      throw new Error('Email credentials not configured');
+    }
+
+    const transporter = createTransporter();
+    await transporter.verify();
+
+    // email content based on user type
+    let greeting = `Hello ${user.name},`;
+    let meetingContext = "your upcoming meeting";
+    
+    if (user.type === 'agent' && user.managedCandidateName) {
+      meetingContext = `${user.managedCandidateName}'s upcoming meeting`;
+    }
+
+    const mailOptions = {
+      from: `"Job Portal" <${process.env.EMAIL_USER}>`,
+      to: user.email,
+      subject: `Reminder: Meeting "${meeting.title}"`,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+          <h2>${greeting}</h2>
+          <p>This is a reminder for ${meetingContext}:</p>
+          <ul>
+            <li><strong>Title:</strong> ${meeting.title}</li>
+            <li><strong>Date:</strong> ${meeting.date.toLocaleDateString('en-GB')}</li>
+            <li><strong>Time:</strong> ${meeting.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</li>
+            <li><strong>Type:</strong> ${meeting.locationType}</li>
+            ${meeting.link ? `<li><strong>Join Link:</strong> <a href="${meeting.link}">${meeting.link}</a></li>` : ""}
+          </ul>
+          ${user.type === 'agent' ? `<p><em>This meeting is for your managed candidate: ${user.managedCandidateName}</em></p>` : ""}
+          <p>Thanks,<br/>Job Portal Team</p>
+        </div>
+      `,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`Meeting reminder sent to ${user.email}: ${info.messageId}`);
+    return info;
+  } catch (error) {
+    console.error(`Failed to send reminder to ${user.email}:`, error);
+    throw error; 
+  }
+};
+
+const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = null) => {
+  try {
+    const transporter = createTransporter();
+    
+    // Use provided recipient email or fallback to inquiry email
+    const toEmail = recipientEmail || inquiry.email;
+
+    const mailOptions = {
+      from: `"Blue Whale Migration" <${process.env.EMAIL_USER}>`,
+      to: toEmail,
+      subject: `Response to your inquiry: ${inquiry.subject}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }
+              .container { max-width: 600px; background: white; margin: auto; padding: 20px; border-radius: 10px; }
+              .header { color: #1B3890; margin-bottom: 15px; }
+              .reply-box { background: #f0f7ff; border-left: 4px solid #1B3890; padding: 15px; border-radius: 5px; }
+              .footer { font-size: 13px; color: #888; margin-top: 20px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h2 class="header">Response to Your Inquiry</h2>
+              <p>Dear ${inquiry.candidateType === 'B2B' ? 'Agent' : 'Candidate'},</p>
+              <p>We have reviewed your inquiry titled <strong>"${inquiry.subject}"</strong> and here's our response:</p>
+
+              <div class="reply-box">
+                ${replyMessage}
+              </div>
+
+              <div class="footer">
+                <p>Thank you for reaching out to us.<br/>— Blue Whale Migration Team</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`Inquiry response email sent to ${toEmail}: ${info.messageId}`);
+    return info;
+  } catch (error) {
+    console.error("Failed to send inquiry response email:", error);
+  }
+};
+
+const sendInvoiceEmail = async ({ to, invoiceNumber, customerName, pdfBuffer }) => {
+  try {
+    assertEmailConfigured();
+    const transporter = createTransporter();
+    await transporter.verify();
+    const mailOptions = {
+      from: `"Blue Whale Migration Billing" <${process.env.EMAIL_USER}>`,
+      to,
+      subject: `Invoice ${invoiceNumber} from Blue Whale Migration`,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+          <h2>Invoice ${invoiceNumber}</h2>
+          <p>Hello ${customerName || "Customer"},</p>
+          <p>Please find your invoice attached as a PDF.</p>
+          <p>Thank you,<br/>Blue Whale Migration Billing Team</p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: `${invoiceNumber}.pdf`,
+          content: pdfBuffer,
+          contentType: "application/pdf",
+        },
+      ],
+    };
+    const info = await transporter.sendMail(mailOptions);
+    return info;
+  } catch (error) {
+    console.error("Failed to send invoice email:", error);
+    const message =
+      error?.responseCode === 535
+        ? "SMTP authentication failed. Check EMAIL_USER and EMAIL_PASS (for Gmail use an App Password)."
+        : error?.message || "Failed to send invoice email";
+    const err = new Error(message);
+    err.statusCode = error?.statusCode || 500;
+    throw err;
+  }
+};
+
+module.exports = {
+  sendPasswordResetEmail,
+  sendMeetingReminderEmail,
+  sendInquiryResponseEmail,
+  sendInvoiceEmail
+};
