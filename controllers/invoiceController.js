@@ -99,6 +99,19 @@ const getUploadedProofFile = (req) => {
   return null;
 };
 
+const getLatestProof = (invoice) => {
+  const payments = Array.isArray(invoice?.payments) ? invoice.payments : [];
+  const latest = payments.length ? payments[payments.length - 1] : null;
+  if (!latest) return null;
+  return {
+    paidAt: latest.paidAt || null,
+    reference: latest.reference || "",
+    notes: latest.notes || "",
+    proofUrl: latest.proofUrl || "",
+    proofFileName: latest.proofFileName || "",
+  };
+};
+
 const createInvoice = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
 
@@ -166,11 +179,12 @@ const listUserInvoices = asyncHandler(async (req, res) => {
 
   const rows = await Invoice.find(filter)
     .sort({ createdAt: -1 })
-    .select("_id invoiceNumber status grandTotal currency dueDate")
+    .select("_id invoiceNumber status grandTotal currency dueDate payments")
     .lean();
 
   const invoices = rows.map((row) => {
     const normalized = ensureStatus(row);
+    const latestProof = getLatestProof(normalized);
     return {
       _id: normalized._id,
       invoiceNumber: normalized.invoiceNumber,
@@ -179,10 +193,37 @@ const listUserInvoices = asyncHandler(async (req, res) => {
       currency: normalized.currency,
       dueDate: normalized.dueDate,
       pdfUrl: `/api/users/invoices/${normalized._id}/pdf`,
+      hasPaymentProof: !!latestProof,
+      latestProof,
     };
   });
 
   return res.json({ success: true, invoices, data: invoices });
+});
+
+const getUserInvoiceById = asyncHandler(async (req, res) => {
+  const filter = buildUserInvoiceFilter(req);
+  if (filter.$or.length === 0) return res.status(400).json({ message: "User identity is required" });
+
+  const invoice = await Invoice.findOne({
+    _id: req.params.id,
+    ...filter,
+  }).lean();
+
+  if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+  const normalized = ensureStatus(invoice);
+  const latestProof = getLatestProof(normalized);
+  return res.json({
+    success: true,
+    data: {
+      ...normalized,
+      total: normalized.grandTotal,
+      hasPaymentProof: !!latestProof,
+      latestProof,
+      pdfUrl: `/api/users/invoices/${normalized._id}/pdf`,
+    },
+  });
 });
 
 const downloadUserInvoicePdf = asyncHandler(async (req, res) => {
@@ -387,6 +428,7 @@ module.exports = {
   createInvoice,
   listInvoices,
   listUserInvoices,
+  getUserInvoiceById,
   downloadUserInvoicePdf,
   submitUserPaymentProof,
   getInvoiceById,

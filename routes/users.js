@@ -42,7 +42,7 @@ const {
   deleteDocument,
   getDocumentsByType,
 } = require('../controllers/documentController');
-const { listUserInvoices, downloadUserInvoicePdf, submitUserPaymentProof } = require('../controllers/invoiceController');
+const { listUserInvoices, getUserInvoiceById, downloadUserInvoicePdf, submitUserPaymentProof } = require('../controllers/invoiceController');
 
 // --------------------
 // Auth & Profile Routes
@@ -180,6 +180,7 @@ router.post('/update-verification',  protectAdmin, authorizeAdmin("MainAdmin","S
 // Specific routes should come before parameterized ones
 router.get('/applications', protect, getUserApplications);
 router.get('/invoices', protect, listUserInvoices);
+router.get('/invoices/:id', protect, getUserInvoiceById);
 router.get('/invoices/:id/pdf', protect, downloadUserInvoicePdf);
 router.post('/invoices/:id/payment-proof', protect, upload.fields([
   { name: 'paymentSlip', maxCount: 1 },

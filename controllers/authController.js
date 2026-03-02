@@ -4,6 +4,28 @@ const User = require('../models/User');
 const AdminUser = require('../models/AdminUser');
 const { sendPasswordResetEmail } = require('../services/emailService');
 
+const deriveClientUrlFromRequest = (req) => {
+  const origin = String(req.get('origin') || '').trim();
+  if (origin) return origin;
+
+  const referer = String(req.get('referer') || '').trim();
+  if (referer) {
+    try {
+      const u = new URL(referer);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  const forwardedProto = String(req.get('x-forwarded-proto') || '').split(',')[0].trim();
+  const forwardedHost = String(req.get('x-forwarded-host') || '').split(',')[0].trim();
+  if (forwardedProto && forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+  return '';
+};
+
 // Generate JWT Token with role
 const generateToken = (id, role = 'user') => {
   return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -119,7 +141,8 @@ const forgotPassword = async (req, res) => {
     await user.save();
 
     try {
-      await sendPasswordResetEmail(email, resetToken, user.userType);
+      const derivedClientUrl = deriveClientUrlFromRequest(req);
+      await sendPasswordResetEmail(email, resetToken, user.userType, { clientUrl: derivedClientUrl });
 
       res.status(200).json({
         success: true,
@@ -135,7 +158,7 @@ const forgotPassword = async (req, res) => {
 
       return res.status(500).json({
         success: false,
-        message: 'Email could not be sent. Please try again later.'
+        message: emailError?.message || 'Email could not be sent. Please try again later.'
       });
     }
 
