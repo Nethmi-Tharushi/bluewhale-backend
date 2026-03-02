@@ -26,6 +26,17 @@ const deriveClientUrlFromRequest = (req) => {
   return '';
 };
 
+const isLocalClientUrl = (url) => {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const host = (parsed.hostname || '').toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
+};
+
 // Generate JWT Token with role
 const generateToken = (id, role = 'user') => {
   return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -142,7 +153,11 @@ const forgotPassword = async (req, res) => {
 
     try {
       const derivedClientUrl = deriveClientUrlFromRequest(req);
-      await sendPasswordResetEmail(email, resetToken, user.userType, { clientUrl: derivedClientUrl });
+      const shouldUseDerivedUrl =
+        process.env.NODE_ENV !== 'production' || !isLocalClientUrl(derivedClientUrl);
+      await sendPasswordResetEmail(email, resetToken, user.userType, {
+        clientUrl: shouldUseDerivedUrl ? derivedClientUrl : undefined,
+      });
 
       res.status(200).json({
         success: true,
