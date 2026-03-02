@@ -1,4 +1,14 @@
 const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+
+const getResendClient = () => {
+  if (!process.env.RESEND_API_KEY) return null;
+  return new Resend(process.env.RESEND_API_KEY);
+};
+
+const getFromAddress = () => {
+  return process.env.EMAIL_FROM || process.env.EMAIL_USER;
+};
 
 const createTransporter = () => {
   const smtpHost = process.env.SMTP_HOST;
@@ -50,110 +60,133 @@ const resolveClientUrl = (candidate) => {
 
 const sendPasswordResetEmail = async (email, resetToken, userType, options = {}) => {
   try {
-    const transporter = createTransporter();
-
     const clientUrl = resolveClientUrl(options.clientUrl) || resolveClientUrl(process.env.CLIENT_URL);
     if (!clientUrl) {
       throw new Error("CLIENT_URL is not configured for password reset links.");
     }
     const resetURL = `${clientUrl}/reset-password?token=${resetToken}&type=${encodeURIComponent(userType || "candidate")}`;
+    const fromAddress = getFromAddress();
+    if (!fromAddress) {
+      throw new Error("Email sender is not configured. Set EMAIL_FROM or EMAIL_USER.");
+    }
 
-    const mailOptions = {
-      from: `"Job Portal" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: 'Password Reset Request - Job Portal',
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <style>
-              .container {
-                max-width: 600px;
-                margin: 0 auto;
-                font-family: Arial, sans-serif;
-                background-color: #f9f9f9;
-                padding: 20px;
-              }
-              .email-content {
-                background-color: white;
-                padding: 30px;
-                border-radius: 10px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-              }
-              .header {
-                text-align: center;
-                color: #1B3890;
-                margin-bottom: 30px;
-              }
-              .reset-button {
-                display: inline-block;
-                background: #1B3890;
-                color:  #ffffff;
-                padding: 15px 30px;
-                text-decoration: none;
-                border-radius: 8px;
-                font-weight: bold;
-                margin: 20px 0;
-              }
-              .footer {
-                margin-top: 30px;
-                padding-top: 20px;
-                border-top: 1px solid #eee;
-                color: #666;
-                font-size: 14px;
-              }
-              .warning {
-                background-color: #fff3cd;
-                border: 1px solid #ffeaa7;
-                color: #856404;
-                padding: 15px;
-                border-radius: 5px;
-                margin: 20px 0;
-              }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <div class="email-content">
-                <div class="header">
-                  <h1>Password Reset Request</h1>
-                </div>
-                
-                <p>Hello,</p>
-                
-                <p>We received a request to reset your password for your Job Portal ${userType === 'agent' ? 'Agent' : 'Candidate'} account. If you made this request, please click the button below to reset your password:</p>
-                
-                <div style="text-align: center;">
-                  <a href="${resetURL}" style="
-       display: inline-block;
-       background-color: #1B3890; 
-       color: #ffffff !important; 
-       padding: 15px 30px;
-       text-decoration: none !important;
-       border-radius: 8px;
-       font-weight: bold;
-       font-family: Arial, sans-serif;
-     ">Reset Your Password</a>
-                </div>
-                
-                <div class="warning">
-                  <strong>Important:</strong> This link will expire in 1 hour for security reasons.
-                </div>
-                
-                <p>If you didn't request a password reset, please ignore this email. Your password will remain unchanged.</p>
-                
-                <p>If the button above doesn't work, you can copy and paste this link into your browser:</p>
-                <p style="word-break: break-all; color: #1B3890;">${resetURL}</p>
-                
-                <div class="footer">
-                  <p>Best regards,<br>Job Portal Team</p>
-                  <p><strong>Security Notice:</strong> Never share your password or reset links with anyone.</p>
-                </div>
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            .container {
+              max-width: 600px;
+              margin: 0 auto;
+              font-family: Arial, sans-serif;
+              background-color: #f9f9f9;
+              padding: 20px;
+            }
+            .email-content {
+              background-color: white;
+              padding: 30px;
+              border-radius: 10px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            .header {
+              text-align: center;
+              color: #1B3890;
+              margin-bottom: 30px;
+            }
+            .reset-button {
+              display: inline-block;
+              background: #1B3890;
+              color:  #ffffff;
+              padding: 15px 30px;
+              text-decoration: none;
+              border-radius: 8px;
+              font-weight: bold;
+              margin: 20px 0;
+            }
+            .footer {
+              margin-top: 30px;
+              padding-top: 20px;
+              border-top: 1px solid #eee;
+              color: #666;
+              font-size: 14px;
+            }
+            .warning {
+              background-color: #fff3cd;
+              border: 1px solid #ffeaa7;
+              color: #856404;
+              padding: 15px;
+              border-radius: 5px;
+              margin: 20px 0;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="email-content">
+              <div class="header">
+                <h1>Password Reset Request</h1>
+              </div>
+              
+              <p>Hello,</p>
+              
+              <p>We received a request to reset your password for your Job Portal ${userType === 'agent' ? 'Agent' : 'Candidate'} account. If you made this request, please click the button below to reset your password:</p>
+              
+              <div style="text-align: center;">
+                <a href="${resetURL}" style="
+     display: inline-block;
+     background-color: #1B3890; 
+     color: #ffffff !important; 
+     padding: 15px 30px;
+     text-decoration: none !important;
+     border-radius: 8px;
+     font-weight: bold;
+     font-family: Arial, sans-serif;
+   ">Reset Your Password</a>
+              </div>
+              
+              <div class="warning">
+                <strong>Important:</strong> This link will expire in 1 hour for security reasons.
+              </div>
+              
+              <p>If you didn't request a password reset, please ignore this email. Your password will remain unchanged.</p>
+              
+              <p>If the button above doesn't work, you can copy and paste this link into your browser:</p>
+              <p style="word-break: break-all; color: #1B3890;">${resetURL}</p>
+              
+              <div class="footer">
+                <p>Best regards,<br>Job Portal Team</p>
+                <p><strong>Security Notice:</strong> Never share your password or reset links with anyone.</p>
               </div>
             </div>
-          </body>
-        </html>
-      `,
+          </div>
+        </body>
+      </html>
+    `;
+
+    const resend = getResendClient();
+    if (resend) {
+      const { data, error } = await resend.emails.send({
+        from: fromAddress,
+        to: email,
+        subject: 'Password Reset Request - Job Portal',
+        html,
+      });
+
+      if (error) {
+        throw new Error(error.message || 'Resend failed to send reset email');
+      }
+
+      console.log('Password reset email sent via Resend:', data?.id);
+      return { success: true, messageId: data?.id };
+    }
+
+    const transporter = createTransporter();
+
+    const mailOptions = {
+      from: `"Job Portal" <${fromAddress}>`,
+      to: email,
+      subject: 'Password Reset Request - Job Portal',
+      html,
     };
 
     const info = await transporter.sendMail(mailOptions);
@@ -168,6 +201,8 @@ const sendPasswordResetEmail = async (email, resetToken, userType, options = {})
           ? 'Email authentication failed. Verify SMTP credentials.'
           : error?.code === 'ENOTFOUND'
             ? 'SMTP host not found. Verify SMTP_HOST.'
+            : error?.code === 'ETIMEDOUT'
+              ? 'Email service connection timed out. Configure RESEND_API_KEY and EMAIL_FROM on production.'
             : error?.message || 'Failed to send reset email';
     const err = new Error(message);
     err.statusCode = error?.statusCode || 500;
