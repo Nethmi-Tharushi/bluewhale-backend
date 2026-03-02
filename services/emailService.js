@@ -36,11 +36,27 @@ const assertEmailConfigured = () => {
   }
 };
 
-const sendPasswordResetEmail = async (email, resetToken, userType) => {
+const resolveClientUrl = (candidate) => {
+  const raw = String(
+    candidate ||
+      process.env.CLIENT_URL ||
+      process.env.FRONTEND_URL ||
+      process.env.PUBLIC_APP_URL ||
+      "https://app.bluewhalemigration.com"
+  ).trim();
+  if (!raw) return "";
+  return raw.replace(/\/+$/, "");
+};
+
+const sendPasswordResetEmail = async (email, resetToken, userType, options = {}) => {
   try {
     const transporter = createTransporter();
 
-    const resetURL = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}&type=${userType}`;
+    const clientUrl = resolveClientUrl(options.clientUrl) || resolveClientUrl(process.env.CLIENT_URL);
+    if (!clientUrl) {
+      throw new Error("CLIENT_URL is not configured for password reset links.");
+    }
+    const resetURL = `${clientUrl}/reset-password?token=${resetToken}&type=${encodeURIComponent(userType || "candidate")}`;
 
     const mailOptions = {
       from: `"Job Portal" <${process.env.EMAIL_USER}>`,
@@ -145,7 +161,17 @@ const sendPasswordResetEmail = async (email, resetToken, userType) => {
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error('Email sending failed:', error);
-    throw new Error('Failed to send reset email');
+    const message =
+      error?.responseCode === 535
+        ? "SMTP authentication failed. Check EMAIL_USER and EMAIL_PASS (Gmail requires App Password)."
+        : error?.code === 'EAUTH'
+          ? 'Email authentication failed. Verify SMTP credentials.'
+          : error?.code === 'ENOTFOUND'
+            ? 'SMTP host not found. Verify SMTP_HOST.'
+            : error?.message || 'Failed to send reset email';
+    const err = new Error(message);
+    err.statusCode = error?.statusCode || 500;
+    throw err;
   }
 };
 
