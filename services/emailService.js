@@ -39,6 +39,15 @@ const createTransporter = () => {
 };
 
 const assertEmailConfigured = () => {
+  if (process.env.RESEND_API_KEY) {
+    if (!getFromAddress()) {
+      const err = new Error("Email sender is not configured. Set EMAIL_FROM (or EMAIL_USER).");
+      err.statusCode = 400;
+      throw err;
+    }
+    return;
+  }
+
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     const err = new Error("Email service is not configured. Set EMAIL_USER and EMAIL_PASS in server/.env.");
     err.statusCode = 400;
@@ -311,20 +320,50 @@ const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = 
 const sendInvoiceEmail = async ({ to, invoiceNumber, customerName, pdfBuffer }) => {
   try {
     assertEmailConfigured();
+    const fromAddress = getFromAddress();
+    const subject = `Invoice ${invoiceNumber} from Blue Whale Migration`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; padding: 20px;">
+        <h2>Invoice ${invoiceNumber}</h2>
+        <p>Hello ${customerName || "Customer"},</p>
+        <p>Please find your invoice attached as a PDF.</p>
+        <p>Thank you,<br/>Blue Whale Migration Billing Team</p>
+      </div>
+    `;
+
+    const resend = getResendClient();
+    if (resend) {
+      const { data, error } = await resend.emails.send({
+        from: fromAddress,
+        to,
+        subject,
+        html,
+        attachments: [
+          {
+            filename: `${invoiceNumber}.pdf`,
+            content: Buffer.isBuffer(pdfBuffer)
+              ? pdfBuffer.toString("base64")
+              : Buffer.from(pdfBuffer).toString("base64"),
+          },
+        ],
+      });
+
+      if (error) {
+        const err = new Error(error.message || "Resend failed to send invoice email");
+        err.statusCode = Number(error.statusCode || error.status || 500);
+        throw err;
+      }
+
+      return { messageId: data?.id, provider: "resend" };
+    }
+
     const transporter = createTransporter();
     await transporter.verify();
-    const mailOptions = {
-      from: `"Blue Whale Migration Billing" <${process.env.EMAIL_USER}>`,
+    const info = await transporter.sendMail({
+      from: `"Blue Whale Migration Billing" <${fromAddress}>`,
       to,
-      subject: `Invoice ${invoiceNumber} from Blue Whale Migration`,
-      html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px;">
-          <h2>Invoice ${invoiceNumber}</h2>
-          <p>Hello ${customerName || "Customer"},</p>
-          <p>Please find your invoice attached as a PDF.</p>
-          <p>Thank you,<br/>Blue Whale Migration Billing Team</p>
-        </div>
-      `,
+      subject,
+      html,
       attachments: [
         {
           filename: `${invoiceNumber}.pdf`,
@@ -332,8 +371,7 @@ const sendInvoiceEmail = async ({ to, invoiceNumber, customerName, pdfBuffer }) 
           contentType: "application/pdf",
         },
       ],
-    };
-    const info = await transporter.sendMail(mailOptions);
+    });
     return info;
   } catch (error) {
     console.error("Failed to send invoice email:", error);
