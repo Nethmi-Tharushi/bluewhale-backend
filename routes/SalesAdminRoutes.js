@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorizeAdmin, protectAdmin } = require('../middlewares/AdminAuth');
+const upload = require('../middlewares/upload');
 const { getAllCandidates, getCandidateDetails, getApplications, updateApplicationStatus, createMeeting, getMeetings, updateMeeting, getReports, getReportStats, changePassword, getAssignedAgentById, getAssignedAgents, getSalesAdminTasks, createSalesAdminTask, updateSalesAdminTask, deleteSalesAdminTask } = require('../controllers/salesAdminController');
 const {
   createInvoice,
@@ -12,6 +13,22 @@ const {
   downloadInvoicePdf,
   sendInvoiceByEmail,
 } = require('../controllers/invoiceController');
+
+const handleMulterError = (error, req, res, next) => {
+  if (error instanceof require('multer').MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ success: false, message: 'File too large. Maximum size is 10MB.' });
+    }
+    if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({ success: false, message: `Unexpected upload field: ${error.field || 'file'}` });
+    }
+    return res.status(400).json({ success: false, message: error.message || 'Upload failed' });
+  }
+  if (String(error?.message || '').toLowerCase().includes('invalid file type')) {
+    return res.status(400).json({ success: false, message: 'Invalid file type. Only images, PDFs, and Word docs are allowed.' });
+  }
+  return next(error);
+};
 
 router.get('/candidates', protectAdmin, authorizeAdmin('SalesAdmin'), getAllCandidates);
 router.get('/candidates/:id', protectAdmin, authorizeAdmin('SalesAdmin'), getCandidateDetails);
@@ -43,10 +60,36 @@ router.put('/tasks/:id',protectAdmin, authorizeAdmin("SalesAdmin"), updateSalesA
 router.delete('/tasks/:id', protectAdmin, authorizeAdmin("SalesAdmin"), deleteSalesAdminTask);
 
 // billing / invoices
-router.post('/invoices', protectAdmin, authorizeAdmin('SalesAdmin'), createInvoice);
+router.post(
+  '/invoices',
+  protectAdmin,
+  authorizeAdmin('SalesAdmin'),
+  upload.fields([
+    { name: 'attachment', maxCount: 1 },
+    { name: 'file', maxCount: 1 },
+    { name: 'document', maxCount: 1 },
+    { name: 'invoiceFile', maxCount: 1 },
+    { name: 'pdf', maxCount: 1 },
+  ]),
+  handleMulterError,
+  createInvoice
+);
 router.get('/invoices', protectAdmin, authorizeAdmin('SalesAdmin'), listInvoices);
 router.get('/invoices/:id', protectAdmin, authorizeAdmin('SalesAdmin'), getInvoiceById);
-router.put('/invoices/:id', protectAdmin, authorizeAdmin('SalesAdmin'), updateInvoice);
+router.put(
+  '/invoices/:id',
+  protectAdmin,
+  authorizeAdmin('SalesAdmin'),
+  upload.fields([
+    { name: 'attachment', maxCount: 1 },
+    { name: 'file', maxCount: 1 },
+    { name: 'document', maxCount: 1 },
+    { name: 'invoiceFile', maxCount: 1 },
+    { name: 'pdf', maxCount: 1 },
+  ]),
+  handleMulterError,
+  updateInvoice
+);
 router.patch('/invoices/:id/status', protectAdmin, authorizeAdmin('SalesAdmin'), updateInvoiceStatus);
 router.post('/invoices/:id/mark-paid', protectAdmin, authorizeAdmin('SalesAdmin'), markInvoicePaid);
 router.get('/invoices/:id/pdf', protectAdmin, authorizeAdmin('SalesAdmin'), downloadInvoicePdf);
