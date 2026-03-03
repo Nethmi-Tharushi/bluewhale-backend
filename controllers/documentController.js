@@ -6,7 +6,8 @@ const cloudinary = require('../config/cloudinary');
 const normalizeDocType = (fieldname = '') => {
   const f = String(fieldname).trim();
   if (f === 'CV' || f === 'cv' || f === 'file' || f === 'document') return 'cv';
-  if (f === 'picture' || f === 'photo') return 'photo';
+  if (f === 'picture' || f === 'photo' || f === 'image') return 'photo';
+  if (f === 'attachment' || f === 'proof' || f === 'slip' || f === 'paymentSlip') return 'cv';
   if (f === 'passport') return 'passport';
   if (f === 'drivingLicense') return 'drivingLicense';
   return f;

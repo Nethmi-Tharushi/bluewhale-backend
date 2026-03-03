@@ -7,17 +7,32 @@ const { sendInquiryResponseEmail } = require("../services/emailService");
 exports.createInquiry = async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { email, subject, message, managedCandidateId } = req.body;
+    const { email, subject, message, managedCandidateId, category, attachmentUrl } = req.body;
 
     const job = await Job.findById(jobId);
     if (!job) return res.status(404).json({ message: "Job not found" });
 
+    const resolvedEmail = String(email || req.user?.email || "").trim().toLowerCase();
+    const resolvedCategory = String(category || "General").trim() || "General";
+    const resolvedSubject = String(subject || req.body?.category || "General Inquiry").trim();
+    const resolvedMessage = String(message || "").trim();
+    const resolvedAttachmentUrl = String(attachmentUrl || "").trim();
+
+    if (!resolvedEmail) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+    if (!resolvedMessage) {
+      return res.status(400).json({ message: "Message is required" });
+    }
+
     let inquiryData = {
       job: jobId,
       user: req.user._id,
-      email,
-      subject,
-      message,
+      email: resolvedEmail,
+      category: resolvedCategory,
+      subject: resolvedSubject,
+      message: resolvedMessage,
+      attachmentUrl: resolvedAttachmentUrl,
       candidateType: 'B2C' // Default to B2C
     };
 
@@ -25,6 +40,9 @@ exports.createInquiry = async (req, res) => {
     if (managedCandidateId) {
       // Verify the agent owns this managed candidate
       const agent = await User.findById(req.user._id);
+      if (!agent || agent.userType !== "agent") {
+        return res.status(403).json({ message: "Only agents can create managed-candidate inquiries" });
+      }
       const managedCandidate = agent.managedCandidates.id(managedCandidateId);
       
       if (!managedCandidate) {
@@ -39,7 +57,7 @@ exports.createInquiry = async (req, res) => {
       
       // store inquiry in managed candidate's record
       managedCandidate.inquiries.push({
-        content: message,
+        content: resolvedMessage,
         jobId: jobId,
         status: 'Pending',
         createdAt: new Date()
@@ -56,6 +74,13 @@ exports.createInquiry = async (req, res) => {
     });
   } catch (error) {
     console.error("Create inquiry error:", error);
+    if (error?.name === "ValidationError") {
+      const details = Object.values(error.errors || {})
+        .map((e) => e?.message)
+        .filter(Boolean)
+        .join(", ");
+      return res.status(400).json({ message: details || "Invalid inquiry payload" });
+    }
     res.status(500).json({ message: "Server error" });
   }
 };

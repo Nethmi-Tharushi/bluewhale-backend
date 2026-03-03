@@ -53,9 +53,18 @@ router.post('/upload',
   protect,
   upload.fields([
     { name: 'photo', maxCount: 2 },
+    { name: 'picture', maxCount: 2 },
     { name: 'passport', maxCount: 2 },
     { name: 'drivingLicense', maxCount: 2 },
-    { name: 'cv', maxCount: 5 }
+    { name: 'cv', maxCount: 5 },
+    { name: 'CV', maxCount: 5 },
+    { name: 'file', maxCount: 5 },
+    { name: 'document', maxCount: 5 },
+    { name: 'attachment', maxCount: 5 },
+    { name: 'image', maxCount: 5 },
+    { name: 'proof', maxCount: 5 },
+    { name: 'slip', maxCount: 5 },
+    { name: 'paymentSlip', maxCount: 5 }
   ]),
   handleMulterError,
   uploadUserDocuments

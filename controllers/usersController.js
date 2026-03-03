@@ -485,9 +485,24 @@ const updateUserProfile = async (req, res) => {
 
     const profilePicture = req.files?.picture?.[0] || req.files?.photo?.[0];
     const profileCv = req.files?.CV?.[0] || req.files?.cv?.[0];
+    const avatarFromBody = String(
+      req.body.avatarUrl ||
+        req.body.avatar ||
+        req.body.profileImage ||
+        req.body.profilePic ||
+        req.body.profilePicture ||
+        req.body.photoUrl ||
+        req.body.photo ||
+        req.body.image ||
+        ""
+    ).trim();
 
     if (profilePicture) {
       user.picture = profilePicture.path;
+    } else if (avatarFromBody) {
+      user.picture = avatarFromBody;
+    } else if (req.body.removePhoto === "true" || req.body.removePhoto === true) {
+      user.picture = "";
     }
     if (profileCv) {
       user.CV = profileCv.path;

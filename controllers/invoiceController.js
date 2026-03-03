@@ -99,6 +99,43 @@ const getUploadedProofFile = (req) => {
   return null;
 };
 
+const toObjectMaybe = (value, fallback = {}) => {
+  if (!value) return fallback;
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return fallback;
+};
+
+const toArrayMaybe = (value, fallback = []) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return fallback;
+};
+
+const getUploadedInvoiceFile = (req) => {
+  if (req.file) return req.file;
+  if (Array.isArray(req.files) && req.files.length > 0) return req.files[0];
+  if (req.files && typeof req.files === "object") {
+    const keys = ["attachment", "file", "document", "invoiceFile", "pdf"];
+    for (const key of keys) {
+      if (Array.isArray(req.files[key]) && req.files[key].length > 0) return req.files[key][0];
+    }
+    const firstKey = Object.keys(req.files)[0];
+    if (firstKey && Array.isArray(req.files[firstKey]) && req.files[firstKey].length > 0) return req.files[firstKey][0];
+  }
+  return null;
+};
+
 const getLatestProof = (invoice) => {
   const payments = Array.isArray(invoice?.payments) ? invoice.payments : [];
   const latest = payments.length ? payments[payments.length - 1] : null;
@@ -115,12 +152,26 @@ const getLatestProof = (invoice) => {
 const createInvoice = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
 
-  const { customer = {}, issueDate, dueDate, currency = "USD", notes = "", status = "Draft" } = req.body;
+  const body = req.body || {};
+  const customer = toObjectMaybe(body.customer, {});
+  const items = toArrayMaybe(body.items, []);
+  const issueDate = body.issueDate;
+  const dueDate = body.dueDate;
+  const currency = body.currency || "USD";
+  const notes = body.notes || "";
+  const status = body.status || "Draft";
+  const attachmentUrlFromBody = String(body.attachmentUrl || body.fileUrl || "").trim();
+  const uploadedFile = getUploadedInvoiceFile(req);
+
   if (!customer.name || !customer.email) return res.status(400).json({ message: "Customer name and email are required" });
   if (!issueDate || !dueDate) return res.status(400).json({ message: "Issue date and due date are required" });
   if (!INVOICE_STATUSES.includes(status)) return res.status(400).json({ message: "Invalid invoice status" });
 
-  const financials = computeFinancials(req.body);
+  const financials = computeFinancials({
+    ...body,
+    items,
+    paidAmount: body.paidAmount,
+  });
   const invoiceNumber = await generateInvoiceNumber();
 
   const invoice = await Invoice.create({
@@ -138,6 +189,8 @@ const createInvoice = asyncHandler(async (req, res) => {
     dueDate,
     currency,
     notes,
+    attachmentUrl: uploadedFile?.path || attachmentUrlFromBody || "",
+    attachmentFileName: uploadedFile?.originalname || "",
     status,
     ...financials,
     sentAt: status === "Sent" ? new Date() : null,
@@ -305,7 +358,16 @@ const updateInvoice = asyncHandler(async (req, res) => {
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
   if (invoice.status !== "Draft") return res.status(400).json({ message: "Only Draft invoices can be edited" });
 
-  const { customer = {}, issueDate, dueDate, currency, notes } = req.body;
+  const body = req.body || {};
+  const customer = toObjectMaybe(body.customer, {});
+  const issueDate = body.issueDate;
+  const dueDate = body.dueDate;
+  const currency = body.currency;
+  const notes = body.notes;
+  const items = toArrayMaybe(body.items, []);
+  const attachmentUrlFromBody = String(body.attachmentUrl || body.fileUrl || "").trim();
+  const uploadedFile = getUploadedInvoiceFile(req);
+
   if (customer.name) invoice.customer.name = customer.name;
   if (customer.email) invoice.customer.email = customer.email;
   if (customer.phone !== undefined) invoice.customer.phone = customer.phone;
@@ -317,8 +379,19 @@ const updateInvoice = asyncHandler(async (req, res) => {
   if (dueDate) invoice.dueDate = dueDate;
   if (currency) invoice.currency = currency;
   if (notes !== undefined) invoice.notes = notes;
+  if (uploadedFile) {
+    invoice.attachmentUrl = uploadedFile.path || "";
+    invoice.attachmentFileName = uploadedFile.originalname || "";
+  } else if (attachmentUrlFromBody) {
+    invoice.attachmentUrl = attachmentUrlFromBody;
+    if (body.attachmentFileName !== undefined) invoice.attachmentFileName = String(body.attachmentFileName || "");
+  }
 
-  const financials = computeFinancials(req.body);
+  const financials = computeFinancials({
+    ...body,
+    items,
+    paidAmount: body.paidAmount,
+  });
   invoice.items = financials.items;
   invoice.subtotal = financials.subtotal;
   invoice.discountTotal = financials.discountTotal;

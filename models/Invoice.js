@@ -54,6 +54,8 @@ const invoiceSchema = new mongoose.Schema(
       index: true,
     },
     notes: { type: String, default: "" },
+    attachmentUrl: { type: String, default: "" },
+    attachmentFileName: { type: String, default: "" },
     sentAt: { type: Date, default: null },
     paidAt: { type: Date, default: null },
     cancelledAt: { type: Date, default: null },

@@ -13,8 +13,10 @@ const jobInquirySchema = new mongoose.Schema(
       required: true,
     },
     email: { type: String, required: true },
+    category: { type: String, default: "General", trim: true },
     subject: { type: String, required: true, trim: true },
     message: { type: String, required: true, trim: true },
+    attachmentUrl: { type: String, default: "" },
     candidateType: {
       type: String,
       enum: ['B2C', 'B2B']

@@ -3,6 +3,13 @@ const Application = require('../models/Application');
 const Job = require('../models/Job');
 const User = require('../models/User');
 
+const firstNonEmptyString = (...values) => {
+  for (const v of values) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+};
+
 // @desc    Apply for a job (One-click application)
 // @route   POST /api/applications/:jobId
 // @access  Private
@@ -24,17 +31,35 @@ const applyForJob = asyncHandler(async (req, res) => {
     throw new Error('You have already applied for this job');
   }
 
-  // Create application with user's existing CV and profile data
+  const resolvedCoverLetter = firstNonEmptyString(req.body?.coverLetter, req.body?.note, req.body?.message);
+  const cvFromBody = firstNonEmptyString(
+    req.body?.cvUrl,
+    req.body?.cv,
+    req.body?.resumeUrl,
+    req.body?.resume,
+    req.body?.attachmentUrl,
+    req.body?.fileUrl
+  );
+  const userDoc = await User.findById(req.user._id).select('CV');
+  const resolvedCv = cvFromBody || firstNonEmptyString(req.user?.CV, userDoc?.CV) || null;
+
+  // Create application using explicit payload CV first, then fallback to profile CV.
   const application = new Application({
     user: req.user._id,
     job: req.params.jobId,
     status: 'Pending',
-    coverLetter: req.body.coverLetter || '', // Optional cover letter
-    cv: req.user.CV || null, // Use user's uploaded CV
+    coverLetter: resolvedCoverLetter || '',
+    cv: resolvedCv,
     appliedAt: new Date()
   });
 
   const createdApplication = await application.save();
+
+  // Keep profile CV in sync when candidate applies with a new uploaded CV URL.
+  if (cvFromBody && userDoc && !firstNonEmptyString(userDoc.CV)) {
+    userDoc.CV = cvFromBody;
+    await userDoc.save();
+  }
 
   // Update user's appliedJobs array for quick access
   await User.findByIdAndUpdate(req.user._id, {
