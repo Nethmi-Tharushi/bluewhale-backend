@@ -159,7 +159,7 @@ const getUserDocuments = async (req, res) => {
       return res.json(grouped);
     } else {
       // Your existing B2C logic
-      const docs = await Document.find({ user: req.user._id });
+      const docs = await Document.find({ user: req.user._id }).sort({ uploadedAt: -1 });
       const grouped = groupByType(docs);
       res.json(grouped);
     }

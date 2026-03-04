@@ -16,7 +16,7 @@ exports.createInquiry = async (req, res) => {
     const resolvedCategory = String(category || "General").trim() || "General";
     const resolvedSubject = String(subject || req.body?.category || "General Inquiry").trim();
     const resolvedMessage = String(message || "").trim();
-    const resolvedAttachmentUrl = String(attachmentUrl || "").trim();
+    const resolvedAttachmentUrl = String(req.file?.path || attachmentUrl || "").trim();
 
     if (!resolvedEmail) {
       return res.status(400).json({ message: "Email is required" });

@@ -8,6 +8,7 @@ const storage = new CloudinaryStorage({
   params: (req, file) => {
     let folder;
     let resource_type = 'auto'; // Default to auto-detection
+    let allowedFormats = ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx'];
 
     switch (file.fieldname) {
       case 'photo':
@@ -28,13 +29,45 @@ const storage = new CloudinaryStorage({
           resource_type = 'raw';
         }
         break;
+      case 'attachment':
+      case 'file':
+      case 'document':
+      case 'proof':
+      case 'slip':
+      case 'paymentSlip':
+        folder = 'bluewhale/users/attachments';
+        allowedFormats = [
+          'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp',
+          'pdf', 'doc', 'docx', 'txt', 'rtf',
+          'xls', 'xlsx', 'csv',
+          'ppt', 'pptx',
+          'zip', 'rar', '7z',
+          'json', 'xml'
+        ];
+        // Inquiry/support attachments can also be docs, so keep raw for non-images
+        if (
+          file.mimetype.includes('pdf') ||
+          file.mimetype.includes('document') ||
+          file.mimetype.includes('msword') ||
+          file.mimetype.includes('sheet') ||
+          file.mimetype.includes('excel') ||
+          file.mimetype.includes('presentation') ||
+          file.mimetype.includes('powerpoint') ||
+          file.mimetype.includes('text') ||
+          file.mimetype.includes('zip') ||
+          file.mimetype.includes('rar') ||
+          file.mimetype.includes('octet-stream')
+        ) {
+          resource_type = 'raw';
+        }
+        break;
       default:
         folder = 'bluewhale/user_uploads';
     }
 
     return {
       folder: folder,
-      allowed_formats: ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx'],
+      allowed_formats: allowedFormats,
       resource_type: resource_type, // Use the determined resource type
       public_id: `${file.fieldname}_${req.user ? req.user._id : 'guest'}_${Date.now()}`,
     };
@@ -50,9 +83,18 @@ const upload = multer({
   },
   fileFilter: (req, file, cb) => {
     const allowedMimeTypes = [
-      'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp',
       'application/pdf', 'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain', 'text/csv', 'application/rtf', 'application/json',
+      'application/xml', 'text/xml',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/zip', 'application/x-zip-compressed',
+      'application/x-rar-compressed', 'application/vnd.rar',
+      'application/x-7z-compressed', 'application/octet-stream'
     ];
 
     if (!allowedMimeTypes.includes(file.mimetype)) {
