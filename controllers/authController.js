@@ -37,6 +37,14 @@ const isLocalClientUrl = (url) => {
   }
 };
 
+const sanitizeRedirectTarget = (rawTarget) => {
+  const value = String(rawTarget || '').trim();
+  if (!value) return '';
+  if (/^javascript:/i.test(value)) return '';
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return value;
+  return '';
+};
+
 // Generate JWT Token with role
 const generateToken = (id, role = 'user') => {
   return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -118,7 +126,7 @@ const loginAdmin = async (req, res) => {
 // Forgot Password - Send Reset Email
 const forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, redirectTo, source } = req.body;
 
     if (!email) {
       return res.status(400).json({
@@ -155,8 +163,17 @@ const forgotPassword = async (req, res) => {
       const derivedClientUrl = deriveClientUrlFromRequest(req);
       const shouldUseDerivedUrl =
         process.env.NODE_ENV !== 'production' || !isLocalClientUrl(derivedClientUrl);
+      const safeRedirectTo = sanitizeRedirectTarget(redirectTo);
+      const isMobileSource =
+        String(source || '').toLowerCase() === 'mobile' ||
+        String(req.get('x-client-platform') || '').toLowerCase() === 'mobile';
+      const mobileFallbackRedirect = sanitizeRedirectTarget(
+        process.env.MOBILE_RESET_REDIRECT || 'bluewhale://login'
+      );
       await sendPasswordResetEmail(email, resetToken, user.userType, {
         clientUrl: shouldUseDerivedUrl ? derivedClientUrl : undefined,
+        redirectTo: safeRedirectTo || (isMobileSource ? mobileFallbackRedirect : undefined),
+        source: isMobileSource ? 'mobile' : undefined,
       });
 
       res.status(200).json({

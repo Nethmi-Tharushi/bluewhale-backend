@@ -67,13 +67,26 @@ const resolveClientUrl = (candidate) => {
   return raw.replace(/\/+$/, "");
 };
 
+const sanitizeRedirectTarget = (rawTarget) => {
+  const value = String(rawTarget || '').trim();
+  if (!value) return '';
+  if (/^javascript:/i.test(value)) return '';
+  // Allow standard web URLs and app deep links (e.g., bluewhale://login)
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return value;
+  return '';
+};
+
 const sendPasswordResetEmail = async (email, resetToken, userType, options = {}) => {
   try {
     const clientUrl = resolveClientUrl(options.clientUrl) || resolveClientUrl(process.env.CLIENT_URL);
     if (!clientUrl) {
       throw new Error("CLIENT_URL is not configured for password reset links.");
     }
-    const resetURL = `${clientUrl}/reset-password?token=${resetToken}&type=${encodeURIComponent(userType || "candidate")}`;
+    const redirectTo = sanitizeRedirectTarget(options.redirectTo);
+    const redirectQuery = redirectTo ? `&redirectTo=${encodeURIComponent(redirectTo)}` : '';
+    const sourceQuery =
+      String(options.source || '').toLowerCase() === 'mobile' ? '&source=mobile' : '';
+    const resetURL = `${clientUrl}/reset-password?token=${resetToken}&type=${encodeURIComponent(userType || "candidate")}${redirectQuery}${sourceQuery}`;
     const fromAddress = getFromAddress();
     if (!fromAddress) {
       throw new Error("Email sender is not configured. Set EMAIL_FROM or EMAIL_USER.");
