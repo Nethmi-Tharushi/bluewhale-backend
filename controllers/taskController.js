@@ -1,6 +1,21 @@
 const Document = require("../models/Document");
 const Task = require('../models/Task');
 const User = require('../models/User');
+const mongoose = require("mongoose");
+
+const taskDocToB2CDocType = {
+  cv: "cv",
+  passport: "passport",
+  picture: "photo",
+  drivingLicense: "drivingLicense",
+};
+
+const taskDocToB2BDocType = {
+  cv: "CV",
+  passport: "Passport",
+  picture: "Picture",
+  drivingLicense: "DrivingLicense",
+};
 
 // Get tasks for candidate (both B2C and B2B managed)
 const getTasks = async (req, res) => {
@@ -45,6 +60,87 @@ const getTasks = async (req, res) => {
     }
   } catch (err) {
     console.error("Error fetching tasks:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+const getRelevantTaskDocuments = async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const task = await Task.findById(taskId);
+
+    if (!task) {
+      return res.status(404).json({ message: "Task not found" });
+    }
+
+    const userId = req.user._id.toString();
+
+    if (task.candidateType === "B2C") {
+      if (!task.candidate || task.candidate.toString() !== userId) {
+        return res.status(403).json({ message: "Access denied to this task" });
+      }
+    } else if (task.candidateType === "B2B") {
+      if (!task.agent || task.agent.toString() !== userId) {
+        return res.status(403).json({ message: "Access denied to this task" });
+      }
+    } else {
+      return res.status(400).json({ message: "Invalid task candidate type" });
+    }
+
+    if (task.type !== "Document Upload") {
+      return res.json({ requiredDocument: task.requiredDocument || null, documents: [] });
+    }
+
+    const requiredDocument = task.requiredDocument || null;
+
+    if (task.candidateType === "B2C") {
+      const query = { user: task.candidate };
+      if (requiredDocument && taskDocToB2CDocType[requiredDocument]) {
+        query.type = taskDocToB2CDocType[requiredDocument];
+      } else {
+        query.type = { $in: ["cv", "passport", "photo", "drivingLicense"] };
+      }
+
+      const documents = await Document.find(query).sort({ uploadedAt: -1 });
+      return res.json({
+        requiredDocument,
+        documents: documents.map((doc) => ({
+          _id: doc._id,
+          type: doc.type,
+          fileName: doc.originalName,
+          fileUrl: doc.url,
+          uploadedAt: doc.uploadedAt,
+        })),
+      });
+    }
+
+    const agent = await User.findById(task.agent);
+    const managedCandidate = agent?.managedCandidates?.id(task.managedCandidateId);
+
+    if (!managedCandidate) {
+      return res.status(404).json({ message: "Managed candidate not found" });
+    }
+
+    const allowedTypes = requiredDocument && taskDocToB2BDocType[requiredDocument]
+      ? [taskDocToB2BDocType[requiredDocument]]
+      : ["CV", "Passport", "Picture", "DrivingLicense"];
+
+    const documents = (managedCandidate.documents || [])
+      .filter((doc) => allowedTypes.includes(doc.type))
+      .sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
+
+    return res.json({
+      requiredDocument,
+      documents: documents.map((doc) => ({
+        _id: doc._id,
+        type: doc.type,
+        fileName: doc.fileName,
+        fileUrl: doc.fileUrl,
+        uploadedAt: doc.uploadedAt,
+      })),
+    });
+  } catch (err) {
+    console.error("Error fetching relevant task documents:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -126,6 +222,10 @@ const createTask = async (req, res) => {
 
     if (candidateType === 'B2B' && (!managedCandidateId || !agent)) {
       return res.status(400).json({ message: "Managed candidate ID and agent ID required for B2B tasks" });
+    }
+
+    if (type === "Document Upload" && (!requiredDocument || !String(requiredDocument).trim())) {
+      return res.status(400).json({ message: "Required document type is mandatory for document upload tasks" });
     }
 
     const taskData = {
@@ -234,20 +334,44 @@ const deleteTask = async (req, res) => {
 // Mark task as complete (Candidate/Agent can do this)
 const markTaskComplete = async (req, res) => {
   try {
-    const { completionNotes, completionFiles } = req.body;
+    const { completionNotes, completionFiles, selectedExistingDocuments } = req.body;
     const taskId = req.params.id;
-    const user = req.user; 
 
     const existingTask = await Task.findById(taskId);
     if (!existingTask) {
       return res.status(404).json({ message: "Task not found" });
     }
 
+    const uploadedCompletionFiles = Array.isArray(completionFiles) ? completionFiles : [];
+    const existingDocSelections = Array.isArray(selectedExistingDocuments) ? selectedExistingDocuments : [];
+
+    const normalizedExistingSelections = existingDocSelections
+      .filter((doc) => doc && doc.fileUrl)
+      .map((doc) => ({
+        fileName: doc.fileName || "Existing document",
+        fileUrl: doc.fileUrl,
+        uploadedAt: new Date(),
+        source: "existing",
+        documentId: doc._id || doc.documentId || null,
+        documentType: doc.type || null,
+      }));
+
+    if (
+      existingTask.type === "Document Upload" &&
+      existingTask.requiredDocument &&
+      uploadedCompletionFiles.length === 0 &&
+      normalizedExistingSelections.length === 0
+    ) {
+      return res.status(400).json({
+        message: "Please select an existing matching document or upload a new one.",
+      });
+    }
+
     const updateData = {
       status: 'Completed',
       completedAt: new Date(),
       completionNotes,
-      completionFiles: completionFiles || []
+      completionFiles: [...normalizedExistingSelections, ...uploadedCompletionFiles]
     };
 
     const task = await Task.findByIdAndUpdate(
@@ -260,21 +384,14 @@ const markTaskComplete = async (req, res) => {
     .populate('candidate', 'name email')
     .populate('agent', 'name email companyName');
 
-    // If it's a document upload task, save to documents
-    if (task.type === 'Document Upload' && completionFiles && completionFiles.length > 0) {
-      const fileMappings = {
-        'cv': 'cv',
-        'passport': 'passport', 
-        'picture': 'photo',
-        'drivingLicense': 'drivingLicense'
-      };
-
-      const documentType = fileMappings[task.requiredDocument] || 'other';
+    // If it's a document upload task, save newly-uploaded files to candidate documents
+    if (task.type === 'Document Upload' && uploadedCompletionFiles.length > 0) {
+      const documentType = taskDocToB2CDocType[task.requiredDocument] || 'other';
 
       // Determine if B2C or B2B
       if (task.candidateType === 'B2C') {
         // Save to B2C Document collection
-        const documentPromises = completionFiles.map(file => {
+        const documentPromises = uploadedCompletionFiles.map(file => {
           return Document.create({
             user: task.candidate,
             type: documentType,
@@ -296,16 +413,9 @@ const markTaskComplete = async (req, res) => {
         if (agent) {
           const managedCandidate = agent.managedCandidates.id(task.managedCandidateId);
           if (managedCandidate) {
-            const b2bFileMappings = {
-              'cv': 'CV',
-              'passport': 'Passport', 
-              'picture': 'Picture',
-              'drivingLicense': 'DrivingLicense'
-            };
-
-            completionFiles.forEach(file => {
+            uploadedCompletionFiles.forEach(file => {
               managedCandidate.documents.push({
-                type: b2bFileMappings[task.requiredDocument] || 'Other',
+                type: taskDocToB2BDocType[task.requiredDocument] || 'Other',
                 fileName: file.fileName,
                 fileUrl: file.fileUrl,
                 uploadedAt: new Date(),
@@ -349,6 +459,7 @@ const uploadTaskFiles = async (req, res) => {
 
 module.exports = {
   getTasks,
+  getRelevantTaskDocuments,
   getAdminTasks,
   createTask,
   updateTask,

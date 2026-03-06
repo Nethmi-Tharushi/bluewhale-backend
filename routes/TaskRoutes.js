@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
   getTasks,
+  getRelevantTaskDocuments,
   createTask,
   updateTask,
   deleteTask,
@@ -15,6 +16,7 @@ const { uploadTaskFilesMulter } = require('../middlewares/upload');
 
 // GET /api/tasks - Get tasks for candidate (both B2C and B2B)
 router.get('/', protect, getTasks);
+router.get('/:id/relevant-documents', protect, getRelevantTaskDocuments);
 
 // Admin routes
 router.get('/admin', protectAdmin, authorizeAdmin('MainAdmin'), getAdminTasks);

@@ -1149,6 +1149,10 @@ const createSalesAdminTask = async (req, res) => {
       }
     }
 
+    if (type === "Document Upload" && (!requiredDocument || !String(requiredDocument).trim())) {
+      return res.status(400).json({ message: "Required document type is mandatory for document upload tasks" });
+    }
+
     const taskData = {
       title,
       description,

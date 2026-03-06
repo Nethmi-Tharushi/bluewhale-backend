@@ -1,5 +1,6 @@
 const asyncHandler = require("express-async-handler");
 const Invoice = require("../models/Invoice");
+const User = require("../models/User");
 const { buildInvoicePdfBuffer } = require("../services/invoicePdfService");
 const { sendInvoiceEmail } = require("../services/emailService");
 
@@ -74,9 +75,32 @@ const assertSalesAdmin = (req) => {
   }
 };
 
-const buildUserInvoiceFilter = (req) => {
+const buildUserInvoiceFilter = async (req) => {
+  const managedCandidateId = String(req.query?.managedCandidateId || "").trim();
   const userEmail = String(req.user?.email || "").trim().toLowerCase();
   const userId = req.user?._id;
+
+  if (managedCandidateId) {
+    const agent = await User.findById(userId).select("managedCandidates._id managedCandidates.email");
+    if (!agent) {
+      const err = new Error("Agent not found");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const managedCandidate = agent.managedCandidates?.id(managedCandidateId);
+    if (!managedCandidate) {
+      const err = new Error("Managed candidate not found");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const managedEmail = String(managedCandidate.email || "").trim().toLowerCase();
+    const managedFilter = { $or: [{ "customer.candidateId": managedCandidateId }] };
+    if (managedEmail) managedFilter.$or.push({ "customer.email": managedEmail });
+    return managedFilter;
+  }
+
   const filter = { $or: [] };
   if (userEmail) filter.$or.push({ "customer.email": userEmail });
   if (userId) filter.$or.push({ "customer.candidateId": userId });
@@ -227,7 +251,7 @@ const listInvoices = asyncHandler(async (req, res) => {
 });
 
 const listUserInvoices = asyncHandler(async (req, res) => {
-  const filter = buildUserInvoiceFilter(req);
+  const filter = await buildUserInvoiceFilter(req);
   if (filter.$or.length === 0) return res.status(400).json({ message: "User identity is required" });
 
   const rows = await Invoice.find(filter)
@@ -255,7 +279,7 @@ const listUserInvoices = asyncHandler(async (req, res) => {
 });
 
 const getUserInvoiceById = asyncHandler(async (req, res) => {
-  const filter = buildUserInvoiceFilter(req);
+  const filter = await buildUserInvoiceFilter(req);
   if (filter.$or.length === 0) return res.status(400).json({ message: "User identity is required" });
 
   const invoice = await Invoice.findOne({
@@ -280,7 +304,7 @@ const getUserInvoiceById = asyncHandler(async (req, res) => {
 });
 
 const downloadUserInvoicePdf = asyncHandler(async (req, res) => {
-  const filter = buildUserInvoiceFilter(req);
+  const filter = await buildUserInvoiceFilter(req);
   if (filter.$or.length === 0) return res.status(400).json({ message: "User identity is required" });
 
   const invoice = await Invoice.findOne({
@@ -297,7 +321,7 @@ const downloadUserInvoicePdf = asyncHandler(async (req, res) => {
 });
 
 const submitUserPaymentProof = asyncHandler(async (req, res) => {
-  const filter = buildUserInvoiceFilter(req);
+  const filter = await buildUserInvoiceFilter(req);
   if (filter.$or.length === 0) return res.status(400).json({ message: "User identity is required" });
 
   const invoice = await Invoice.findOne({
