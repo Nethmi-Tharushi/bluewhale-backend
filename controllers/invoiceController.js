@@ -3,6 +3,7 @@ const Invoice = require("../models/Invoice");
 const User = require("../models/User");
 const { buildInvoicePdfBuffer } = require("../services/invoicePdfService");
 const { sendInvoiceEmail } = require("../services/emailService");
+const { resolveManagedCandidateNotificationTarget } = require("../services/managedCandidateNotificationService");
 
 const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -496,7 +497,20 @@ const sendInvoiceByEmail = asyncHandler(async (req, res) => {
   const invoice = await Invoice.findOne({ _id: req.params.id, salesAdmin: req.admin._id });
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
-  const to = String(req.body?.to || invoice.customer?.email || "").trim();
+  const requestedTo = String(req.body?.to || invoice.customer?.email || "").trim();
+  const shouldResolveManagedTarget = String(invoice.customer?.candidateType || "").toUpperCase() !== "B2C";
+  const managedTarget = shouldResolveManagedTarget
+    ? await resolveManagedCandidateNotificationTarget({
+        candidateId: invoice.customer?.candidateId,
+        candidateEmail: invoice.customer?.email,
+      })
+    : { isManagedCandidate: false };
+
+  // For managed candidates, always route to the owning agent email.
+  const to = managedTarget.isManagedCandidate
+    ? String(managedTarget.agentEmail || "").trim()
+    : requestedTo;
+
   if (!to) return res.status(400).json({ message: "Recipient email is required" });
   if (!EMAIL_REGEX.test(to)) return res.status(400).json({ message: "Recipient email is invalid" });
 
@@ -507,6 +521,15 @@ const sendInvoiceByEmail = asyncHandler(async (req, res) => {
       invoiceNumber: invoice.invoiceNumber,
       customerName: invoice.customer?.name,
       pdfBuffer,
+      context: managedTarget.isManagedCandidate
+        ? {
+            targetType: "managedCandidate",
+            agentName: managedTarget.agentName,
+            candidateName: managedTarget.candidateName || invoice.customer?.name,
+            candidateEmail: managedTarget.candidateEmail || invoice.customer?.email,
+            candidateId: managedTarget.candidateId || String(invoice.customer?.candidateId || ""),
+          }
+        : undefined,
     });
   } catch (err) {
     return res.status(err?.statusCode || 500).json({
@@ -518,7 +541,12 @@ const sendInvoiceByEmail = asyncHandler(async (req, res) => {
   if (!invoice.sentAt) invoice.sentAt = new Date();
   await invoice.save();
 
-  return res.json({ success: true, message: "Invoice email sent successfully", data: ensureStatus(invoice.toObject()) });
+  return res.json({
+    success: true,
+    message: "Invoice email sent successfully",
+    recipientEmail: to,
+    data: ensureStatus(invoice.toObject()),
+  });
 });
 
 module.exports = {

@@ -138,8 +138,12 @@ const userSchema = new mongoose.Schema({
   managedCandidates: [
     {
       name: String,
+      firstname: String,
+      lastname: String,
       email: String,
       phone: String,
+      address: String,
+      country: String,
       dateOfBirth: Date,
       ageRange: {
         type: String,
@@ -156,8 +160,14 @@ const userSchema = new mongoose.Schema({
       location: String,
       profession: String,
       qualification: String,
+      qualifications: [String],
+      skills: [String],
       experience: String,
       jobInterest: String,
+      picture: String,
+      CV: String,
+      passport: String,
+      drivingLicense: String,
       categories: [String],
       aboutMe: String,
       socialNetworks: {

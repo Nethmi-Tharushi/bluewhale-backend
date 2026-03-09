@@ -56,7 +56,9 @@ cron.schedule('*/5 * * * *', async () => {
               name: agent.name, 
               email: agent.email,
               type: 'agent',
-              managedCandidateName: managedCandidate?.name || 'Managed Candidate'
+              managedCandidateName: managedCandidate?.name || 'Managed Candidate',
+              managedCandidateEmail: managedCandidate?.email || '',
+              managedCandidateId: managedCandidate?._id ? String(managedCandidate._id) : ''
             });
             console.log(`[MeetingReminderJob] Added agent to recipients: ${agent.email}`);
           } else {

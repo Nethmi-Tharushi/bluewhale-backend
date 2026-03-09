@@ -118,6 +118,10 @@ router.post(
         jobInterest: jobInterest || '',
         aboutMe: aboutMe || '',
         visaStatus: visaStatus || 'Not Started',
+        picture: '',
+        CV: '',
+        passport: '',
+        drivingLicense: '',
         // Handle array fields
         categories: categories ? (Array.isArray(categories) ? categories : categories.split(',').map(c => c.trim())) : [],
         skills: skills ? (Array.isArray(skills) ? skills : skills.split(',').map(s => s.trim())) : [],
@@ -147,6 +151,12 @@ router.post(
           picture: 'Picture',
           drivingLicense: 'DrivingLicense'
         };
+        const rootDocFieldByUploadKey = {
+          cv: 'CV',
+          passport: 'passport',
+          picture: 'picture',
+          drivingLicense: 'drivingLicense'
+        };
 
         Object.entries(req.files).forEach(([fieldName, files]) => {
           if (files && files[0]) {
@@ -156,6 +166,10 @@ router.post(
               fileUrl: files[0].path,
               uploadedAt: new Date()
             });
+            const rootField = rootDocFieldByUploadKey[fieldName];
+            if (rootField) {
+              candidateData[rootField] = files[0].path;
+            }
           }
         });
       }
@@ -337,6 +351,12 @@ arrayFields.forEach(field => {
           picture: 'Picture',
           drivingLicense: 'DrivingLicense'
         };
+        const rootDocFieldByUploadKey = {
+          cv: 'CV',
+          passport: 'passport',
+          picture: 'picture',
+          drivingLicense: 'drivingLicense'
+        };
 
         Object.entries(req.files).forEach(([fieldName, files]) => {
           if (files && files.length > 0) {
@@ -348,6 +368,10 @@ arrayFields.forEach(field => {
                 uploadedAt: new Date()
               });
             });
+            const rootField = rootDocFieldByUploadKey[fieldName];
+            if (rootField) {
+              candidate[rootField] = files[0].path;
+            }
           }
         });
       }

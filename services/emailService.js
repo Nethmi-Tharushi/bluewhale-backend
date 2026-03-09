@@ -250,6 +250,17 @@ const sendMeetingReminderEmail = async (user, meeting) => {
       meetingContext = `${user.managedCandidateName}'s upcoming meeting`;
     }
 
+    const managedCandidateDetailsHtml = user.type === 'agent'
+      ? `
+          <div style="margin-top:12px;padding:12px;border:1px solid #dbeafe;border-radius:8px;background:#f8fbff;">
+            <p style="margin:0 0 8px 0;"><strong>Managed Candidate Details</strong></p>
+            <p style="margin:0;"><strong>Name:</strong> ${user.managedCandidateName || "N/A"}</p>
+            <p style="margin:4px 0 0 0;"><strong>Email:</strong> ${user.managedCandidateEmail || "N/A"}</p>
+            <p style="margin:4px 0 0 0;"><strong>Candidate ID:</strong> ${user.managedCandidateId || "N/A"}</p>
+          </div>
+        `
+      : "";
+
     const mailOptions = {
       from: `"Job Portal" <${process.env.EMAIL_USER}>`,
       to: user.email,
@@ -266,6 +277,7 @@ const sendMeetingReminderEmail = async (user, meeting) => {
             ${meeting.link ? `<li><strong>Join Link:</strong> <a href="${meeting.link}">${meeting.link}</a></li>` : ""}
           </ul>
           ${user.type === 'agent' ? `<p><em>This meeting is for your managed candidate: ${user.managedCandidateName}</em></p>` : ""}
+          ${managedCandidateDetailsHtml}
           <p>Thanks,<br/>Job Portal Team</p>
         </div>
       `,
@@ -280,12 +292,22 @@ const sendMeetingReminderEmail = async (user, meeting) => {
   }
 };
 
-const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = null) => {
+const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = null, context = null) => {
   try {
     const transporter = createTransporter();
     
     // Use provided recipient email or fallback to inquiry email
     const toEmail = recipientEmail || inquiry.email;
+    const managedCandidateDetailsHtml = context?.targetType === "managedCandidate"
+      ? `
+          <div style="margin-top:14px;padding:12px;border:1px solid #dbeafe;border-radius:8px;background:#f8fbff;">
+            <p style="margin:0 0 8px 0;"><strong>Managed Candidate Details</strong></p>
+            <p style="margin:0;"><strong>Name:</strong> ${context?.candidateName || "N/A"}</p>
+            <p style="margin:4px 0 0 0;"><strong>Email:</strong> ${context?.candidateEmail || "N/A"}</p>
+            <p style="margin:4px 0 0 0;"><strong>Candidate ID:</strong> ${context?.candidateId || "N/A"}</p>
+          </div>
+        `
+      : "";
 
     const mailOptions = {
       from: `"Blue Whale Migration" <${process.env.EMAIL_USER}>`,
@@ -312,6 +334,7 @@ const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = 
               <div class="reply-box">
                 ${replyMessage}
               </div>
+              ${managedCandidateDetailsHtml}
 
               <div class="footer">
                 <p>Thank you for reaching out to us.<br/>— Blue Whale Migration Team</p>
@@ -330,15 +353,27 @@ const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = 
   }
 };
 
-const sendInvoiceEmail = async ({ to, invoiceNumber, customerName, pdfBuffer }) => {
+const sendInvoiceEmail = async ({ to, invoiceNumber, customerName, pdfBuffer, context }) => {
   try {
     assertEmailConfigured();
     const fromAddress = getFromAddress();
     const subject = `Invoice ${invoiceNumber} from Blue Whale Migration`;
+    const managedCandidateDetailsHtml = context?.targetType === "managedCandidate"
+      ? `
+        <div style="margin-top:12px;padding:12px;border:1px solid #dbeafe;border-radius:8px;background:#f8fbff;">
+          <p style="margin:0 0 8px 0;"><strong>Managed Candidate Details</strong></p>
+          <p style="margin:0;"><strong>Name:</strong> ${context?.candidateName || "N/A"}</p>
+          <p style="margin:4px 0 0 0;"><strong>Email:</strong> ${context?.candidateEmail || "N/A"}</p>
+          <p style="margin:4px 0 0 0;"><strong>Candidate ID:</strong> ${context?.candidateId || "N/A"}</p>
+        </div>
+      `
+      : "";
     const html = `
       <div style="font-family: Arial, sans-serif; padding: 20px;">
         <h2>Invoice ${invoiceNumber}</h2>
-        <p>Hello ${customerName || "Customer"},</p>
+        <p>Hello ${context?.targetType === "managedCandidate" ? (context?.agentName || "Agent") : (customerName || "Customer")},</p>
+        ${context?.targetType === "managedCandidate" ? `<p>This invoice belongs to your managed candidate.</p>` : ""}
+        ${managedCandidateDetailsHtml}
         <p>Please find your invoice attached as a PDF.</p>
         <p>Thank you,<br/>Blue Whale Migration Billing Team</p>
       </div>

@@ -2,6 +2,7 @@ const JobInquiry = require('../models/Inquiries');
 const Job = require('../models/Job');
 const User = require('../models/User');
 const { sendInquiryResponseEmail } = require("../services/emailService");
+const { resolveManagedCandidateNotificationTarget } = require("../services/managedCandidateNotificationService");
 
 // Create new job inquiry
 exports.createInquiry = async (req, res) => {
@@ -166,17 +167,29 @@ exports.respondToInquiry = async (req, res) => {
     inquiry.status = "Responded";
     await inquiry.save();
 
-    // For B2B inquiries, send email to agent instead of managed candidate email
-    let recipientEmail = inquiry.email; 
-    
-    if (inquiry.candidateType === 'B2B' && inquiry.managedCandidate?.agentId) {
-      const agent = await User.findById(inquiry.managedCandidate.agentId);
-      if (agent) {
-        recipientEmail = agent.email; // agent's email for B2B inquiries
+    // For B2B inquiries, send email to agent instead of managed candidate email.
+    let recipientEmail = inquiry.email;
+    let emailContext = undefined;
+
+    if (inquiry.candidateType === 'B2B') {
+      const managedTarget = await resolveManagedCandidateNotificationTarget({
+        candidateId: inquiry.managedCandidate?.candidateId,
+        candidateEmail: inquiry.email,
+      });
+
+      if (managedTarget.isManagedCandidate && managedTarget.agentEmail) {
+        recipientEmail = managedTarget.agentEmail;
+        emailContext = {
+          targetType: "managedCandidate",
+          agentName: managedTarget.agentName,
+          candidateName: managedTarget.candidateName,
+          candidateEmail: managedTarget.candidateEmail,
+          candidateId: managedTarget.candidateId,
+        };
       }
     }
 
-    await sendInquiryResponseEmail(inquiry, message, recipientEmail);
+    await sendInquiryResponseEmail(inquiry, message, recipientEmail, emailContext);
 
     res.json({ success: true, message: "Response sent successfully", inquiry });
   } catch (error) {

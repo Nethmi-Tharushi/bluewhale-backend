@@ -165,6 +165,10 @@ const addManagedCandidate = asyncHandler(async (req, res) => {
     experience,
     address,
     qualifications: Array.isArray(qualifications) ? qualifications : qualifications?.split(',').map(q => q.trim()),
+    picture: '',
+    CV: '',
+    passport: '',
+    drivingLicense: '',
     addedAt: new Date(),
     documents: [] // Initialize empty documents array
   };
@@ -174,12 +178,18 @@ const addManagedCandidate = asyncHandler(async (req, res) => {
   const uploadedFiles = flattenUploadedFiles(req);
   if (uploadedFiles.length > 0) {
     uploadedFiles.forEach(file => {
+      const normalizedType = normalizeUploadFieldName(file.fieldname);
       candidateData.documents.push({
-        type: normalizeUploadFieldName(file.fieldname), // e.g., 'cv', 'passport', 'photo', 'drivingLicense'
+        type: normalizedType, // e.g., 'cv', 'passport', 'photo', 'drivingLicense'
         fileName: file.originalname,
         fileUrl: file.path,
         status: 'Pending'
       });
+
+      if (normalizedType === 'cv') candidateData.CV = file.path;
+      if (normalizedType === 'passport') candidateData.passport = file.path;
+      if (normalizedType === 'photo') candidateData.picture = file.path;
+      if (normalizedType === 'drivingLicense') candidateData.drivingLicense = file.path;
     });
   }
 
@@ -249,6 +259,11 @@ const updateManagedCandidate = asyncHandler(async (req, res) => {
           uploadedAt: new Date()
         });
       }
+
+      if (normalizedType === 'cv') candidate.CV = file.path;
+      if (normalizedType === 'passport') candidate.passport = file.path;
+      if (normalizedType === 'photo') candidate.picture = file.path;
+      if (normalizedType === 'drivingLicense') candidate.drivingLicense = file.path;
     });
   }
 

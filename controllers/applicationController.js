@@ -121,11 +121,47 @@ const getAllApplications = async (req, res) => {
   try {
     const applications = await Application.find({})
       .populate('user', 'name email phoneNumber')
+      .populate('agent', 'name email')
       .populate('job', 'title company country location salary type')
       .sort({ appliedAt: -1 });
 
+    const managedCandidateIds = [
+      ...new Set(
+        applications
+          .filter((app) => !app.user && app.candidateId)
+          .map((app) => String(app.candidateId))
+      ),
+    ];
+
+    const managedCandidateMap = new Map();
+    if (managedCandidateIds.length > 0) {
+      const agents = await User.find({
+        userType: 'agent',
+        'managedCandidates._id': { $in: managedCandidateIds },
+      }).select('name email managedCandidates');
+
+      for (const agent of agents) {
+        for (const mc of agent.managedCandidates || []) {
+          const key = String(mc._id);
+          if (!managedCandidateIds.includes(key)) continue;
+          managedCandidateMap.set(key, {
+            _id: mc._id,
+            name: mc.name || 'Managed Candidate',
+            email: mc.email || agent.email || '',
+            phone: mc.phone || '',
+            managedByAgent: {
+              _id: agent._id,
+              name: agent.name || '',
+              email: agent.email || '',
+            },
+          });
+        }
+      }
+    }
+
     // Group by job for admin dashboard
     const groupedByJob = applications.reduce((acc, app) => {
+      if (!app.job?._id) return acc;
       const jobId = app.job._id.toString();
       if (!acc[jobId]) {
         acc[jobId] = {
@@ -133,10 +169,17 @@ const getAllApplications = async (req, res) => {
           applications: []
         };
       }
+      const resolvedUser =
+        app.user ||
+        (app.candidateId ? managedCandidateMap.get(String(app.candidateId)) : null);
+
       acc[jobId].applications.push({
         _id: app._id,
-        user: app.user,
+        user: resolvedUser,
+        agent: app.agent || null,
+        candidateId: app.candidateId || null,
         status: app.status,
+        createdAt: app.createdAt,
         appliedAt: app.appliedAt,
         coverLetter: app.coverLetter,
         cv: app.cv
@@ -184,15 +227,27 @@ const updateApplicationStatus = async (req, res) => {
     await application.save();
 
     // Update user's appliedJobs array to keep in sync
-    const user = await User.findById(application.user._id);
-    if (user) {
-      const appliedJobIndex = user.appliedJobs.findIndex(
-        job => job.jobId.toString() === application.job._id.toString()
-      );
+    if (application.user?._id) {
+      const user = await User.findById(application.user._id);
+      if (user) {
+        const appliedJobIndex = user.appliedJobs.findIndex(
+          (job) => job.jobId.toString() === application.job._id.toString()
+        );
 
-      if (appliedJobIndex !== -1) {
-        user.appliedJobs[appliedJobIndex].status = status;
-        await user.save();
+        if (appliedJobIndex !== -1) {
+          user.appliedJobs[appliedJobIndex].status = status;
+          await user.save();
+        }
+      }
+    } else if (application.agent && application.candidateId) {
+      const agent = await User.findById(application.agent);
+      const managedCandidate = agent?.managedCandidates?.id(application.candidateId);
+      const appliedJob = managedCandidate?.appliedJobs?.find(
+        (job) => job.jobId?.toString() === application.job._id.toString()
+      );
+      if (appliedJob) {
+        appliedJob.status = status;
+        await agent.save();
       }
     }
 
@@ -251,6 +306,15 @@ const submitAgentApplication = asyncHandler(async (req, res) => {
   }
 
   const { jobId, candidateId } = req.body;
+  const resolvedCoverLetter = firstNonEmptyString(req.body?.coverLetter, req.body?.note, req.body?.message);
+  const cvFromBody = firstNonEmptyString(
+    req.body?.cvUrl,
+    req.body?.cv,
+    req.body?.resumeUrl,
+    req.body?.resume,
+    req.body?.attachmentUrl,
+    req.body?.fileUrl
+  );
 
   // Find the job
   const job = await Job.findById(jobId);
@@ -280,6 +344,12 @@ const submitAgentApplication = asyncHandler(async (req, res) => {
     throw new Error('Candidate has already been submitted for this job');
   }
 
+  const resolvedCv = cvFromBody || firstNonEmptyString(managedCandidate.CV) || null;
+  if (!resolvedCv) {
+    res.status(400);
+    throw new Error('Please select a CV from candidate profile documents or upload a new CV.');
+  }
+
   // Create new application
   const application = new Application({
     user: null,
@@ -287,7 +357,8 @@ const submitAgentApplication = asyncHandler(async (req, res) => {
     candidateId: candidateId,
     job: jobId,
     status: 'Pending',
-    cv: managedCandidate.CV || null,
+    coverLetter: resolvedCoverLetter || '',
+    cv: resolvedCv,
     appliedAt: new Date()
   });
 
@@ -299,6 +370,11 @@ const submitAgentApplication = asyncHandler(async (req, res) => {
     appliedAt: new Date(),
     status: 'Pending'
   });
+
+  // Keep managed candidate root CV in sync when applying with a new CV URL.
+  if (cvFromBody && !firstNonEmptyString(managedCandidate.CV)) {
+    managedCandidate.CV = cvFromBody;
+  }
 
   await agent.save();
 

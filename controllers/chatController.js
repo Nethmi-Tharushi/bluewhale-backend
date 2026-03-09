@@ -107,8 +107,8 @@ exports.getUsersForAdmin = async (req, res) => {
   try {
     const adminId = req.admin._id;
 
-    // Get latest message per user conversation
-    const users = await Message.aggregate([
+    // Get latest message timestamp per user conversation with this admin
+    const conversationRows = await Message.aggregate([
       {
         $match: {
           $or: [
@@ -152,6 +152,30 @@ exports.getUsersForAdmin = async (req, res) => {
       },
       { $sort: { lastMessageAt: -1 } },
     ]);
+
+    const lastMessageMap = new Map(
+      conversationRows.map((row) => [String(row._id), row.lastMessageAt || null])
+    );
+
+    const allUsers = await User.find({})
+      .select("_id name email createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const users = allUsers.map((user) => ({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      lastMessageAt: lastMessageMap.get(String(user._id)) || null,
+      hasConversation: lastMessageMap.has(String(user._id)),
+    }));
+
+    users.sort((a, b) => {
+      const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+      const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+      if (bTime !== aTime) return bTime - aTime;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
 
     res.json(users);
   } catch (err) {
