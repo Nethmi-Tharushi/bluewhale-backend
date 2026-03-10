@@ -456,26 +456,33 @@ const markInvoicePaid = asyncHandler(async (req, res) => {
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
   if (invoice.status === "Cancelled") return res.status(400).json({ message: "Cancelled invoice cannot be paid" });
 
-  const amount = toNum(req.body.amount || invoice.balanceDue);
-  if (amount <= 0) return res.status(400).json({ message: "Payment amount must be greater than 0" });
-  if (amount > invoice.balanceDue) return res.status(400).json({ message: "Payment amount exceeds balance due" });
+  const outstanding = Number(Math.max(toNum(invoice.grandTotal) - toNum(invoice.paidAmount), 0).toFixed(2));
+  const requestedAmount =
+    req.body && Object.prototype.hasOwnProperty.call(req.body, "amount") ? toNum(req.body.amount) : outstanding;
 
-  invoice.payments.push({
-    amount,
-    paidAt: req.body.paidAt || new Date(),
-    method: req.body.method || "Manual",
-    reference: req.body.reference || "",
-    notes: req.body.notes || "",
-  });
-  invoice.paidAmount = Number((toNum(invoice.paidAmount) + amount).toFixed(2));
-  invoice.balanceDue = Number(Math.max(toNum(invoice.grandTotal) - invoice.paidAmount, 0).toFixed(2));
+  if (requestedAmount < 0) return res.status(400).json({ message: "Payment amount must be greater than 0" });
+  if (requestedAmount > outstanding) return res.status(400).json({ message: "Payment amount exceeds balance due" });
 
-  if (invoice.balanceDue === 0) {
-    invoice.status = "Paid";
-    invoice.paidAt = new Date();
-  } else if (invoice.status === "Draft") {
-    invoice.status = "Sent";
+  if (requestedAmount > 0) {
+    invoice.payments.push({
+      amount: requestedAmount,
+      paidAt: req.body.paidAt || new Date(),
+      method: req.body.method || "Manual",
+      reference: req.body.reference || "",
+      notes: req.body.notes || "",
+    });
+    invoice.paidAmount = Number((toNum(invoice.paidAmount) + requestedAmount).toFixed(2));
   }
+
+  invoice.balanceDue = Number(Math.max(toNum(invoice.grandTotal) - invoice.paidAmount, 0).toFixed(2));
+  if (invoice.balanceDue > 0 && requestedAmount === 0) {
+    return res.status(400).json({ message: "Payment amount must be greater than 0" });
+  }
+
+  invoice.status = "Paid";
+  invoice.paidAt = new Date();
+  invoice.balanceDue = 0;
+  invoice.paidAmount = Number(toNum(invoice.grandTotal).toFixed(2));
 
   await invoice.save();
   return res.json({ success: true, data: ensureStatus(invoice.toObject()) });
