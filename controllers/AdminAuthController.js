@@ -25,14 +25,30 @@ function generateApiKey() {
 
 // REGISTER ADMIN USER
 exports.registerAdmin = async (req, res) => {
-  const { name, email, password, role } = req.body;
+  const { name, email, password, role, phone, reportsTo } = req.body;
 
   try {
+    if (req.admin?.role === "SalesAdmin" && role !== "SalesStaff") {
+      return res.status(403).json({ message: "SalesAdmin can only create SalesStaff users" });
+    }
+
     const existing = await AdminUser.findOne({ email });
     if (existing) return res.status(400).json({ message: 'Email already exists' });
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const admin = new AdminUser({ name, email, password: hashedPassword, role });
+    const payload = {
+      name,
+      email,
+      phone: phone || "",
+      password: hashedPassword,
+      role,
+    };
+
+    if (role === "SalesStaff") {
+      payload.reportsTo = req.admin?.role === "SalesAdmin" ? req.admin._id : reportsTo || null;
+    }
+
+    const admin = new AdminUser(payload);
     await admin.save();
 
     res.status(201).json({ message: 'Admin registered successfully' });
@@ -93,10 +109,16 @@ exports.getAllAdmins = async (req, res) => {
 // UPDATE ADMIN (MainAdmin only existing)
 exports.updateAdmin = async (req, res) => {
   try {
-    const { name, email, role } = req.body;
+    const { name, email, role, phone, reportsTo } = req.body;
     const admin = await AdminUser.findByIdAndUpdate(
       req.params.id,
-      { name, email, role },
+      {
+        name,
+        email,
+        role,
+        phone,
+        reportsTo: role === "SalesStaff" ? reportsTo || null : null,
+      },
       { new: true }
     ).select("-password");
     if (!admin) return res.status(404).json({ message: "Admin not found" });

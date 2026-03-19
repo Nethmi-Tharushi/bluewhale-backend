@@ -1,0 +1,336 @@
+[
+  {
+    "_id": "6996e026d87ba6d891a1a949",
+    "invoiceNumber": "INV-202602-0001",
+    "salesAdmin": "698d5a7b1ee4e85633789cb5",
+    "customer": {
+      "name": "Nethmi",
+      "email": "tharushi",
+      "phone": "0716276803",
+      "address": "192, main street, weligama",
+      "candidateId": null,
+      "candidateType": "B2C"
+    },
+    "issueDate": "2026-02-19T00:00:00.000Z",
+    "dueDate": "2026-02-26T00:00:00.000Z",
+    "currency": "USD",
+    "items": [
+      {
+        "description": "Student Visa Consultation Fee",
+        "quantity": 1,
+        "unitPrice": 150,
+        "discount": 0,
+        "taxRate": 0,
+        "lineTotal": 150
+      },
+      {
+        "description": "University Application Processing",
+        "quantity": 1,
+        "unitPrice": 300,
+        "discount": 0,
+        "taxRate": 0,
+        "lineTotal": 300
+      },
+      {
+        "description": "Document Verification Service",
+        "quantity": 1,
+        "unitPrice": 120,
+        "discount": 0,
+        "taxRate": 0,
+        "lineTotal": 120
+      },
+      {
+        "description": "Visa Lodgement Service",
+        "quantity": 1,
+        "unitPrice": 250,
+        "discount": 20,
+        "taxRate": 0,
+        "lineTotal": 230
+      }
+    ],
+    "subtotal": 820,
+    "discountTotal": 20,
+    "taxTotal": 0,
+    "grandTotal": 800,
+    "paidAmount": 800,
+    "balanceDue": 0,
+    "status": "Paid",
+    "notes": "Payment for Australia Student Visa (Subclass 500) – Intake July 2026.\nPlease complete payment before due date to proceed with submission.",
+    "sentAt": "2026-02-19T12:11:53.900Z",
+    "paidAt": "2026-03-10T11:28:51.506Z",
+    "cancelledAt": null,
+    "payments": [
+      {
+        "amount": 800,
+        "paidAt": "2026-02-19T12:26:21.320Z",
+        "method": "Manual",
+        "reference": "",
+        "notes": ""
+      }
+    ],
+    "createdAt": "2026-02-19T10:04:22.545Z",
+    "updatedAt": "2026-03-10T11:28:51.509Z",
+    "__v": 1,
+    "attachmentFileName": "",
+    "attachmentUrl": ""
+  },
+  {
+    "_id": "699bec5340e94a3b628e408e",
+    "invoiceNumber": "INV-202602-0002",
+    "salesAdmin": "698d5a7b1ee4e85633789cb5",
+    "customer": {
+      "name": "Nethmi Tharushi",
+      "email": "nethmikp@gmail.com",
+      "phone": "0716276803",
+      "address": "198, main street, colombo",
+      "candidateId": null,
+      "candidateType": "B2C"
+    },
+    "issueDate": "2026-02-23T00:00:00.000Z",
+    "dueDate": "2026-03-02T00:00:00.000Z",
+    "currency": "USD",
+    "items": [
+      {
+        "description": "Student Visa Consultation Fee",
+        "quantity": 1,
+        "unitPrice": 50,
+        "discount": 5,
+        "taxRate": 2,
+        "lineTotal": 45.9
+      }
+    ],
+    "subtotal": 50,
+    "discountTotal": 5,
+    "taxTotal": 0.9,
+    "grandTotal": 45.9,
+    "paidAmount": 45.9,
+    "balanceDue": 0,
+    "status": "Sent",
+    "notes": "ABC",
+    "sentAt": "2026-02-23T05:58:29.407Z",
+    "paidAt": "2026-03-05T14:08:28.115Z",
+    "cancelledAt": null,
+    "payments": [
+      {
+        "amount": 0,
+        "paidAt": "2026-03-02T11:15:46.628Z",
+        "method": "ProofSubmitted",
+        "reference": "",
+        "notes": "",
+        "proofUrl": "https://res.cloudinary.com/daezpwmrj/image/upload/v1772450145/bluewhale/user_uploads/paymentSlip_698d902ed5136f4c8316c747_1772450141403.pdf",
+        "proofFileName": "Pawara%20Sasmina%20-%20CV.pdf"
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-02T11:34:33.739Z",
+        "method": "ProofSubmitted",
+        "reference": "Bank",
+        "notes": "Test",
+        "proofUrl": "https://res.cloudinary.com/daezpwmrj/image/upload/v1772451273/bluewhale/user_uploads/paymentSlip_698d902ed5136f4c8316c747_1772451271204.pdf",
+        "proofFileName": "invoice-699bec5340e94a3b628e408e.pdf"
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-03T09:32:42.357Z",
+        "method": "ProofSubmitted",
+        "reference": "121212",
+        "notes": "Slip URL: https://res.cloudinary.com/daezpwmrj/raw/upload/v1772530360/bluewhale/users/cvs/cv_698d902ed5136f4c8316c747_1772530358841",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-03T09:51:19.536Z",
+        "method": "ProofSubmitted",
+        "reference": "111",
+        "notes": "",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 45.9,
+        "paidAt": "2026-03-05T14:08:28.110Z",
+        "method": "Manual",
+        "reference": "",
+        "notes": "",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-06T09:11:56.472Z",
+        "method": "ProofSubmitted",
+        "reference": "",
+        "notes": "Slip URL: https://res.cloudinary.com/daezpwmrj/image/upload/v1772788306/bluewhale/users/attachments/file_698d902ed5136f4c8316c747_1772788305053.jpg",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-06T11:35:51.278Z",
+        "method": "ProofSubmitted",
+        "reference": "",
+        "notes": "Slip URL: https://res.cloudinary.com/daezpwmrj/image/upload/v1772796946/bluewhale/users/attachments/file_698d902ed5136f4c8316c747_1772796944365.jpg",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-10T06:55:13.718Z",
+        "method": "ProofSubmitted",
+        "reference": "BOC",
+        "notes": "Slip URL: https://res.cloudinary.com/daezpwmrj/image/upload/v1772796946/bluewhale/users/attachments/file_698d902ed5136f4c8316c747_1772796944365.jpg",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-11T09:44:14.340Z",
+        "method": "ProofSubmitted",
+        "reference": "BOC bank slip",
+        "notes": "Slip URL: https://res.cloudinary.com/daezpwmrj/image/upload/v1773222248/bluewhale/users/attachments/file_698d902ed5136f4c8316c747_1773222247900.jpg",
+        "proofUrl": "",
+        "proofFileName": ""
+      }
+    ],
+    "createdAt": "2026-02-23T05:57:39.513Z",
+    "updatedAt": "2026-03-11T09:44:14.343Z",
+    "__v": 9,
+    "attachmentFileName": "",
+    "attachmentUrl": ""
+  },
+  {
+    "_id": "69a58b41fd5941c38c57a3b7",
+    "invoiceNumber": "INV-202603-0001",
+    "salesAdmin": "698d5a7b1ee4e85633789cb5",
+    "customer": {
+      "name": "Pawara Sasmina",
+      "email": "pawarasasmina1@gmail.com",
+      "phone": "0775211771",
+      "address": "237/3\nUdyana Mawatha",
+      "candidateId": null,
+      "candidateType": "Other"
+    },
+    "issueDate": "2026-03-02T00:00:00.000Z",
+    "dueDate": "2026-03-09T00:00:00.000Z",
+    "currency": "USD",
+    "items": [
+      {
+        "description": "test",
+        "quantity": 1,
+        "unitPrice": 1,
+        "discount": 1,
+        "taxRate": 1,
+        "lineTotal": 0
+      }
+    ],
+    "subtotal": 1,
+    "discountTotal": 1,
+    "taxTotal": 0,
+    "grandTotal": 0,
+    "paidAmount": 0,
+    "balanceDue": 0,
+    "status": "Paid",
+    "notes": "",
+    "sentAt": "2026-03-03T05:54:59.914Z",
+    "paidAt": "2026-03-11T13:08:10.881Z",
+    "cancelledAt": null,
+    "payments": [
+      {
+        "amount": 0,
+        "paidAt": "2026-03-04T09:22:20.800Z",
+        "method": "ProofSubmitted",
+        "reference": "",
+        "notes": "Slip URL: https://res.cloudinary.com/daezpwmrj/image/upload/v1772616138/bluewhale/user_uploads/file_69a56852322aa9e07987cf0d_1772616137122.pdf",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-05T14:14:21.864Z",
+        "method": "ProofSubmitted",
+        "reference": "111",
+        "notes": "",
+        "proofUrl": "https://res.cloudinary.com/daezpwmrj/image/upload/v1772720061/bluewhale/users/attachments/paymentSlip_69a56852322aa9e07987cf0d_1772720059048.png",
+        "proofFileName": "Screenshot 2026-03-05 132945.png"
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-05T14:14:25.053Z",
+        "method": "ProofSubmitted",
+        "reference": "111",
+        "notes": "",
+        "proofUrl": "",
+        "proofFileName": ""
+      },
+      {
+        "amount": 0,
+        "paidAt": "2026-03-05T14:16:33.172Z",
+        "method": "ProofSubmitted",
+        "reference": "111",
+        "notes": "",
+        "proofUrl": "https://res.cloudinary.com/daezpwmrj/image/upload/v1772720192/bluewhale/users/attachments/paymentSlip_69a56852322aa9e07987cf0d_1772720190354.png",
+        "proofFileName": "Screenshot 2026-03-05 132350.png"
+      }
+    ],
+    "createdAt": "2026-03-02T13:06:09.043Z",
+    "updatedAt": "2026-03-11T13:08:10.955Z",
+    "__v": 4,
+    "attachmentFileName": "",
+    "attachmentUrl": "",
+    "teamAdmin": "698d5a7b1ee4e85633789cb5"
+  },
+  {
+    "_id": "69afffa95000a2f8098c3a3d",
+    "invoiceNumber": "INV-202603-0002",
+    "salesAdmin": "698d5a7b1ee4e85633789cb5",
+    "customer": {
+      "name": "Pawara",
+      "email": "pawarasasmina1@gmail.com",
+      "phone": "0775211771",
+      "address": "",
+      "candidateId": "69a56852322aa9e07987cf0d",
+      "candidateType": "B2C"
+    },
+    "issueDate": "2026-03-10T00:00:00.000Z",
+    "dueDate": "2026-03-17T00:00:00.000Z",
+    "currency": "USD",
+    "items": [
+      {
+        "description": "tt",
+        "quantity": 99,
+        "unitPrice": 2,
+        "discount": 3,
+        "taxRate": 2,
+        "lineTotal": 198.9
+      }
+    ],
+    "subtotal": 198,
+    "discountTotal": 3,
+    "taxTotal": 3.9,
+    "grandTotal": 198.9,
+    "paidAmount": 198.9,
+    "balanceDue": 0,
+    "status": "Paid",
+    "notes": "",
+    "attachmentUrl": "",
+    "attachmentFileName": "",
+    "sentAt": "2026-03-10T11:27:13.826Z",
+    "paidAt": "2026-03-10T11:28:47.991Z",
+    "cancelledAt": null,
+    "payments": [
+      {
+        "amount": 198.9,
+        "paidAt": "2026-03-10T11:25:36.243Z",
+        "method": "Manual",
+        "reference": "",
+        "notes": "",
+        "proofUrl": "",
+        "proofFileName": ""
+      }
+    ],
+    "createdAt": "2026-03-10T11:25:29.905Z",
+    "updatedAt": "2026-03-10T11:28:48.005Z",
+    "__v": 1
+  }
+]

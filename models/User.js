@@ -96,6 +96,10 @@ const userSchema = new mongoose.Schema({
   qualification: String,
   experience: String,
   jobInterest: String,
+  currentCompany: String,
+  targetJobPosition: String,
+  targetIndustry: String,
+  skills: [String],
   categories: [String],
   aboutMe: String,
   socialNetworks: {
@@ -107,6 +111,19 @@ const userSchema = new mongoose.Schema({
     type: String,
     enum: ['Not Started', 'Processing', 'Approved', 'Rejected', 'Completed'],
     default: 'Not Started'
+  },
+  recruitmentChannelId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'RecruitmentChannel',
+    default: null,
+  },
+  recruitmentChannelName: {
+    type: String,
+    default: "",
+  },
+  customChannelValues: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
   },
 
   // Agent-specific fields
@@ -164,10 +181,14 @@ const userSchema = new mongoose.Schema({
       skills: [String],
       experience: String,
       jobInterest: String,
+      currentCompany: String,
+      targetJobPosition: String,
+      targetIndustry: String,
       picture: String,
       CV: String,
       passport: String,
       drivingLicense: String,
+      skills: [String],
       categories: [String],
       aboutMe: String,
       socialNetworks: {

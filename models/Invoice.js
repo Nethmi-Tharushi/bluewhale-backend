@@ -29,6 +29,7 @@ const invoiceSchema = new mongoose.Schema(
   {
     invoiceNumber: { type: String, required: true, unique: true, index: true },
     salesAdmin: { type: mongoose.Schema.Types.ObjectId, ref: "AdminUser", required: true, index: true },
+    teamAdmin: { type: mongoose.Schema.Types.ObjectId, ref: "AdminUser", required: true, index: true },
     customer: {
       name: { type: String, required: true, trim: true },
       email: { type: String, required: true, trim: true, lowercase: true },
@@ -64,6 +65,6 @@ const invoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-invoiceSchema.index({ salesAdmin: 1, createdAt: -1 });
+invoiceSchema.index({ salesAdmin: 1, teamAdmin: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Invoice", invoiceSchema);

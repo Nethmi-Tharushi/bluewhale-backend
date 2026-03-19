@@ -111,7 +111,17 @@ router.get('/candidates/b2c/:id', protectAdmin, authorizeAdmin("MainAdmin"), get
 
 // Get candidates for admin dashboard
 router.get('/candidates', protectAdmin, authorizeAdmin('SalesAdmin','MainAdmin'), getAllCandidates);
-router.post('/candidates', protectAdmin, authorizeAdmin('SalesAdmin', 'MainAdmin'), createCandidateByAdmin);
+router.post('/candidates', protectAdmin, authorizeAdmin('SalesAdmin', 'MainAdmin'),
+  upload.fields([
+    { name: 'picture', maxCount: 1 },
+    { name: 'photo', maxCount: 1 },
+    { name: 'CV', maxCount: 1 },
+    { name: 'cv', maxCount: 1 },
+    { name: 'passport', maxCount: 1 },
+    { name: 'drivingLicense', maxCount: 1 },
+  ]),
+  createCandidateByAdmin
+);
 router.get('/candidates/:id', protectAdmin, authorizeAdmin('SalesAdmin','MainAdmin'), getCandidateDetails);
 
 // --------------------

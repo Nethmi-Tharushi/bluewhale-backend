@@ -1,9 +1,11 @@
 const asyncHandler = require("express-async-handler");
 const Invoice = require("../models/Invoice");
+const AdminUser = require("../models/AdminUser");
 const User = require("../models/User");
 const { buildInvoicePdfBuffer } = require("../services/invoicePdfService");
 const { sendInvoiceEmail } = require("../services/emailService");
 const { resolveManagedCandidateNotificationTarget } = require("../services/managedCandidateNotificationService");
+const { ensureSalesActor, getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
 
 const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -68,12 +70,16 @@ const generateInvoiceNumber = async () => {
   return `${prefix}-${String(seq).padStart(4, "0")}`;
 };
 
-const assertSalesAdmin = (req) => {
-  if (!req.admin || req.admin.role !== "SalesAdmin") {
-    const err = new Error("Access denied");
-    err.statusCode = 403;
-    throw err;
-  }
+const assertSalesAdmin = (req) => ensureSalesActor(req);
+
+const ensureInvoiceTeamAdmin = async (invoice) => {
+  if (!invoice || invoice.teamAdmin) return invoice;
+
+  const ownerAdmin = await AdminUser.findById(invoice.salesAdmin).select("role reportsTo");
+  if (!ownerAdmin) return invoice;
+
+  invoice.teamAdmin = ownerAdmin.role === "SalesStaff" && ownerAdmin.reportsTo ? ownerAdmin.reportsTo : ownerAdmin._id;
+  return invoice;
 };
 
 const buildUserInvoiceFilter = async (req) => {
@@ -176,6 +182,7 @@ const getLatestProof = (invoice) => {
 
 const createInvoice = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
+  const scope = getSalesScope(req);
 
   const body = req.body || {};
   const customer = toObjectMaybe(body.customer, {});
@@ -202,6 +209,7 @@ const createInvoice = asyncHandler(async (req, res) => {
   const invoice = await Invoice.create({
     invoiceNumber,
     salesAdmin: req.admin._id,
+    teamAdmin: scope.managerId,
     customer: {
       name: customer.name,
       email: customer.email,
@@ -232,7 +240,7 @@ const listInvoices = asyncHandler(async (req, res) => {
   const status = req.query.status;
   const q = String(req.query.q || "").trim();
 
-  const filter = { salesAdmin: req.admin._id };
+  const filter = { ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") };
   if (status && INVOICE_STATUSES.includes(status)) filter.status = status;
   if (q) {
     filter.$or = [
@@ -356,6 +364,7 @@ const submitUserPaymentProof = asyncHandler(async (req, res) => {
     if (!invoice.sentAt) invoice.sentAt = new Date();
   }
 
+  await ensureInvoiceTeamAdmin(invoice);
   await invoice.save();
 
   return res.status(201).json({
@@ -372,14 +381,14 @@ const submitUserPaymentProof = asyncHandler(async (req, res) => {
 
 const getInvoiceById = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
-  const invoice = await Invoice.findOne({ _id: req.params.id, salesAdmin: req.admin._id }).lean();
+  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") }).lean();
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
   return res.json({ success: true, data: ensureStatus(invoice) });
 });
 
 const updateInvoice = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
-  const invoice = await Invoice.findOne({ _id: req.params.id, salesAdmin: req.admin._id });
+  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") });
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
   if (invoice.status !== "Draft") return res.status(400).json({ message: "Only Draft invoices can be edited" });
 
@@ -425,6 +434,7 @@ const updateInvoice = asyncHandler(async (req, res) => {
   invoice.paidAmount = financials.paidAmount;
   invoice.balanceDue = financials.balanceDue;
 
+  await ensureInvoiceTeamAdmin(invoice);
   await invoice.save();
   return res.json({ success: true, data: ensureStatus(invoice.toObject()) });
 });
@@ -434,7 +444,7 @@ const updateInvoiceStatus = asyncHandler(async (req, res) => {
   const { status } = req.body;
   if (!INVOICE_STATUSES.includes(status)) return res.status(400).json({ message: "Invalid invoice status" });
 
-  const invoice = await Invoice.findOne({ _id: req.params.id, salesAdmin: req.admin._id });
+  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") });
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
   invoice.status = status;
@@ -446,13 +456,14 @@ const updateInvoiceStatus = asyncHandler(async (req, res) => {
   }
   if (status === "Cancelled") invoice.cancelledAt = new Date();
 
+  await ensureInvoiceTeamAdmin(invoice);
   await invoice.save();
   return res.json({ success: true, data: ensureStatus(invoice.toObject()) });
 });
 
 const markInvoicePaid = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
-  const invoice = await Invoice.findOne({ _id: req.params.id, salesAdmin: req.admin._id });
+  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") });
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
   if (invoice.status === "Cancelled") return res.status(400).json({ message: "Cancelled invoice cannot be paid" });
 
@@ -484,13 +495,42 @@ const markInvoicePaid = asyncHandler(async (req, res) => {
   invoice.balanceDue = 0;
   invoice.paidAmount = Number(toNum(invoice.grandTotal).toFixed(2));
 
+  await ensureInvoiceTeamAdmin(invoice);
   await invoice.save();
   return res.json({ success: true, data: ensureStatus(invoice.toObject()) });
 });
 
+const addInvoicePayment = asyncHandler(async (req, res) => {
+  assertSalesAdmin(req);
+  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") });
+  if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+  if (invoice.status === "Cancelled") return res.status(400).json({ message: "Cancelled invoice cannot accept payments" });
+
+  const amount = toNum(req.body?.amount);
+  if (amount <= 0) return res.status(400).json({ message: "Payment amount must be greater than zero" });
+
+  invoice.payments.push({
+    amount,
+    paidAt: req.body?.paidAt || new Date(),
+    method: req.body?.method || "Manual",
+    reference: req.body?.reference || "",
+    notes: req.body?.notes || "",
+  });
+
+  invoice.paidAmount = Number((toNum(invoice.paidAmount) + amount).toFixed(2));
+  invoice.balanceDue = Number(Math.max(toNum(invoice.grandTotal) - invoice.paidAmount, 0).toFixed(2));
+  invoice.status = invoice.balanceDue <= 0 ? "Paid" : "Sent";
+  if (!invoice.sentAt) invoice.sentAt = new Date();
+  if (invoice.balanceDue <= 0) invoice.paidAt = new Date();
+
+  await ensureInvoiceTeamAdmin(invoice);
+  await invoice.save();
+  return res.status(201).json({ success: true, data: ensureStatus(invoice.toObject()) });
+});
+
 const downloadInvoicePdf = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
-  const invoice = await Invoice.findOne({ _id: req.params.id, salesAdmin: req.admin._id }).lean();
+  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") }).lean();
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
   const pdfBuffer = buildInvoicePdfBuffer(invoice);
@@ -501,7 +541,7 @@ const downloadInvoicePdf = asyncHandler(async (req, res) => {
 
 const sendInvoiceByEmail = asyncHandler(async (req, res) => {
   assertSalesAdmin(req);
-  const invoice = await Invoice.findOne({ _id: req.params.id, salesAdmin: req.admin._id });
+  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") });
   if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
   const requestedTo = String(req.body?.to || invoice.customer?.email || "").trim();
@@ -546,6 +586,7 @@ const sendInvoiceByEmail = asyncHandler(async (req, res) => {
 
   if (invoice.status === "Draft") invoice.status = "Sent";
   if (!invoice.sentAt) invoice.sentAt = new Date();
+  await ensureInvoiceTeamAdmin(invoice);
   await invoice.save();
 
   return res.json({
@@ -567,6 +608,7 @@ module.exports = {
   updateInvoice,
   updateInvoiceStatus,
   markInvoicePaid,
+  addInvoicePayment,
   downloadInvoicePdf,
   sendInvoiceByEmail,
 };

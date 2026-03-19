@@ -17,8 +17,8 @@ const { protectAdmin, authorizeAdmin } = require('../middlewares/AdminAuth');
 // LOGIN (public)
 router.post('/login', loginAdmin);
 
-// REGISTER (only admin can create)
-router.post('/register', protectAdmin, authorizeAdmin('MainAdmin'), registerAdmin);
+// REGISTER
+router.post('/register', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), registerAdmin);
 
 // Settings Hub "me" APIs
 router.get('/me', protectAdmin, getMyAdminProfile);
@@ -32,7 +32,7 @@ router.get('/admin-dashboard', protectAdmin, authorizeAdmin('MainAdmin'), (req, 
   res.json({ message: 'Admin Dashboard' });
 });
 
-router.get('/sales-dashboard', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), (req, res) => {
+router.get('/sales-dashboard', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), (req, res) => {
   res.json({ message: 'Sales Dashboard' });
 });
 

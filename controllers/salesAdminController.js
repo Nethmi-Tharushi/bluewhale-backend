@@ -9,6 +9,7 @@ const JobInquiry = require('../models/Inquiries');
 const Task = require('../models/Task');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { generateOnboardingTasksForApplication } = require("../services/recruitmentWorkflowService");
 
 const getAllCandidates = asyncHandler(async (req, res) => {
   try {
@@ -392,7 +393,34 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
   if (b2cApplication) {
     b2cApplication.status = status;
     await b2cApplication.save();
-    return res.status(200).json({ success: true, message: 'Application status updated', type: 'B2C' });
+
+    const b2cCandidate = await User.findById(candidateId);
+    if (b2cCandidate) {
+      const appliedJob = (b2cCandidate.appliedJobs || []).find(
+        (item) => item.jobId && item.jobId.toString() === jobId.toString()
+      );
+      if (appliedJob) {
+        appliedJob.status = status;
+      }
+      await b2cCandidate.save();
+    }
+
+    let generatedTasks = [];
+    if (status === 'Accepted') {
+      generatedTasks = await generateOnboardingTasksForApplication({
+        admin: req.admin,
+        candidateType: 'B2C',
+        candidateId,
+        jobId,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Application status updated',
+      type: 'B2C',
+      generatedOnboardingTasks: generatedTasks.length,
+    });
   }
 
   // Update B2B managed candidate
@@ -421,11 +449,23 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
 
   await agent.save();
 
+  let generatedTasks = [];
+  if (status === 'Accepted') {
+    generatedTasks = await generateOnboardingTasksForApplication({
+      admin: req.admin,
+      candidateType: 'B2B',
+      candidateId,
+      agentId: agent._id,
+      jobId,
+    });
+  }
+
   res.status(200).json({
     success: true,
     message: 'Application status updated',
     type: 'B2B',
-    updatedIn: b2bApplication ? 'Application document & candidate record' : 'Candidate record only'
+    updatedIn: b2bApplication ? 'Application document & candidate record' : 'Candidate record only',
+    generatedOnboardingTasks: generatedTasks.length,
   });
 });
 
@@ -1033,7 +1073,7 @@ const changePassword = async (req, res) => {
 // Get tasks 
 const getSalesAdminTasks = async (req, res) => {
   try {
-    if (req.admin.role !== 'SalesAdmin') {
+    if (!['SalesAdmin', 'SalesStaff'].includes(req.admin.role)) {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -1110,7 +1150,7 @@ const getSalesAdminTasks = async (req, res) => {
 // Create task 
 const createSalesAdminTask = async (req, res) => {
   try {
-    if (req.admin.role !== 'SalesAdmin') {
+    if (!['SalesAdmin', 'SalesStaff'].includes(req.admin.role)) {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -1198,7 +1238,7 @@ const createSalesAdminTask = async (req, res) => {
 // Update task 
 const updateSalesAdminTask = async (req, res) => {
   try {
-    if (req.admin.role !== 'SalesAdmin') {
+    if (!['SalesAdmin', 'SalesStaff'].includes(req.admin.role)) {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -1252,7 +1292,7 @@ const updateSalesAdminTask = async (req, res) => {
 // Delete task 
 const deleteSalesAdminTask = async (req, res) => {
   try {
-    if (req.admin.role !== 'SalesAdmin') {
+    if (!['SalesAdmin', 'SalesStaff'].includes(req.admin.role)) {
       return res.status(403).json({ message: "Access denied" });
     }
 

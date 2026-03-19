@@ -41,6 +41,7 @@ app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 }));
 app.use(cors({ origin: (_origin, callback) => callback(null, true), credentials: true }));
 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/backups", express.static(path.join(__dirname, "backups")));
 
 // --- MongoDB Connection ---
 mongoose
@@ -199,6 +200,13 @@ app.use("/api/agent", require("./routes/agent"));
 app.use("/api", require("./routes/documents"));
 app.use("/api/overview", require("./routes/overview"));
 app.use("/api/sales-admin", require("./routes/SalesAdminRoutes"));
+app.use("/api/projects", require("./routes/projects"));
+app.use("/api/campaigns", require("./routes/campaigns"));
+app.use("/api/recruitment-channels", require("./routes/recruitmentChannels"));
+app.use("/api/recruitment-settings", require("./routes/recruitmentSettings"));
+app.use("/api/interview-schedules", require("./routes/interviewSchedules"));
+app.use("/api/leads", require("./routes/leads"));
+app.use("/api/utilities", require("./routes/utilities"));
 app.use("/api/meetings", require("./routes/meetings"));
 app.use("/api/activity-logs", require("./routes/activityLogs"));
 app.use("/api/reports", require("./routes/reports"));

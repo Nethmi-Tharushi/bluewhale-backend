@@ -10,6 +10,7 @@ const Message = require('../models/Message');
 const ChatAssignment = require('../models/ChatAssignment');
 const ChatUser = require('../models/ChatUser');
 const AdminUser = require("../models/AdminUser");
+const RecruitmentChannel = require("../models/RecruitmentChannel");
 
 const normalizeUploadFieldName = (fieldname = "") => {
   const f = String(fieldname).trim();
@@ -49,10 +50,38 @@ const getUsers = asyncHandler(async (req, res) => {
 // @route   POST /api/users/candidates
 // @access  Private/Admin
 const createCandidateByAdmin = asyncHandler(async (req, res) => {
-  const { name, email, phone, profession, location, qualification, experience, jobInterest } = req.body;
+  const {
+    name,
+    firstname,
+    lastname,
+    email,
+    phone,
+    address,
+    country,
+    dateOfBirth,
+    gender,
+    ageRange,
+    location,
+    profession,
+    qualification,
+    experience,
+    jobInterest,
+    currentCompany,
+    targetJobPosition,
+    targetIndustry,
+    skills,
+    categories,
+    aboutMe,
+    linkedin,
+    github,
+    visaStatus,
+    recruitmentChannelId,
+    recruitmentChannelName,
+    customChannelValues,
+  } = req.body;
 
-  if (!name || !email) {
-    return res.status(400).json({ success: false, message: "Name and email are required" });
+  if (!name || !firstname || !lastname || !email) {
+    return res.status(400).json({ success: false, message: "Name, first name, last name, and email are required" });
   }
 
   const existing = await User.findOne({ email });
@@ -62,18 +91,85 @@ const createCandidateByAdmin = asyncHandler(async (req, res) => {
 
   const tempPassword = `Lead@${Math.random().toString(36).slice(-8)}A1`;
 
-  const candidate = await User.create({
+  const categoryList = Array.isArray(categories)
+    ? categories
+    : String(categories || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+  const skillList = Array.isArray(skills)
+    ? skills
+    : String(skills || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+  const uploadedFiles = flattenUploadedFiles(req);
+  let channelReference = { _id: null, formName: recruitmentChannelName || "" };
+  if (recruitmentChannelId) {
+    const channel = await RecruitmentChannel.findById(recruitmentChannelId).select("_id formName");
+    if (!channel) {
+      return res.status(400).json({ success: false, message: "Selected recruitment channel is invalid" });
+    }
+    channelReference = channel;
+  }
+
+  let parsedCustomChannelValues = {};
+  if (customChannelValues) {
+    if (typeof customChannelValues === "string") {
+      try {
+        parsedCustomChannelValues = JSON.parse(customChannelValues);
+      } catch (_error) {
+        parsedCustomChannelValues = {};
+      }
+    } else if (typeof customChannelValues === "object") {
+      parsedCustomChannelValues = customChannelValues;
+    }
+  }
+
+  const candidatePayload = {
     name,
+    firstname,
+    lastname,
     email,
     password: tempPassword,
     userType: "candidate",
     phone: phone || "",
-    profession: profession || "",
+    address: address || "",
+    country: country || "",
+    dateOfBirth: dateOfBirth || undefined,
+    gender: gender || undefined,
+    ageRange: ageRange || undefined,
     location: location || "",
+    profession: profession || "",
     qualification: qualification || "",
     experience: experience || "",
     jobInterest: jobInterest || "",
+    currentCompany: currentCompany || "",
+    targetJobPosition: targetJobPosition || "",
+    targetIndustry: targetIndustry || "",
+    skills: skillList,
+    categories: categoryList,
+    aboutMe: aboutMe || "",
+    socialNetworks: {
+      linkedin: linkedin || "",
+      github: github || "",
+    },
+    visaStatus: visaStatus || "Not Started",
+    recruitmentChannelId: channelReference._id,
+    recruitmentChannelName: channelReference.formName || recruitmentChannelName || "",
+    customChannelValues: parsedCustomChannelValues,
+  };
+
+  uploadedFiles.forEach((file) => {
+    const normalizedType = normalizeUploadFieldName(file.fieldname);
+    if (normalizedType === "photo") candidatePayload.picture = file.path;
+    if (normalizedType === "cv") candidatePayload.CV = file.path;
+    if (normalizedType === "passport") candidatePayload.passport = file.path;
+    if (normalizedType === "drivingLicense") candidatePayload.drivingLicense = file.path;
   });
+
+  const candidate = await User.create(candidatePayload);
 
   const safeCandidate = await User.findById(candidate._id).select("-password");
   res.status(201).json({
@@ -1215,7 +1311,10 @@ const getCandidateDetails = asyncHandler(async (req, res) => {
       categories: candidate.categories || [],
       languages: candidate.languages || [],
       aboutMe: candidate.aboutMe || '',
-socialNetworks: candidate.socialNetworks || { linkedin: "", github: "" },
+      socialNetworks: candidate.socialNetworks || { linkedin: "", github: "" },
+      recruitmentChannelId: candidate.recruitmentChannelId || null,
+      recruitmentChannelName: candidate.recruitmentChannelName || "",
+      customChannelValues: candidate.customChannelValues || {},
       documents,
       applications
     };

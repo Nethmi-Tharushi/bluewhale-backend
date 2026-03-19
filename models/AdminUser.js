@@ -11,11 +11,18 @@ function generateApiKey() {
 const adminUserSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
+  phone: { type: String, default: "" },
   password: { type: String, required: true },
   role: {
     type: String,
-    enum: ['MainAdmin', 'SalesAdmin', 'AgentAdmin'],
+    enum: ['MainAdmin', 'SalesAdmin', 'SalesStaff', 'AgentAdmin'],
     required: true
+  },
+  reportsTo: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'AdminUser',
+    default: null,
+    index: true,
   },
 
   // ✅ Settings Hub support (optional fields; safe defaults)
