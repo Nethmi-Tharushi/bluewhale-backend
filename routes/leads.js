@@ -10,11 +10,11 @@ const {
   deleteLead,
 } = require("../controllers/leadController");
 
-router.get("/meta", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), getLeadMeta);
-router.get("/", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), listLeads);
-router.post("/", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), createLead);
-router.put("/:id", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), updateLead);
-router.patch("/:id/status", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), updateLeadStatus);
-router.delete("/:id", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), deleteLead);
+router.get("/meta", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getLeadMeta);
+router.get("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listLeads);
+router.post("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createLead);
+router.put("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateLead);
+router.patch("/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateLeadStatus);
+router.delete("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), deleteLead);
 
 module.exports = router;

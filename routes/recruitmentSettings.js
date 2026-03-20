@@ -9,10 +9,10 @@ const {
   updateOtherSettings,
 } = require("../controllers/recruitmentSettingsController");
 
-router.get("/", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), getRecruitmentSettings);
-router.put("/other/settings", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), updateOtherSettings);
-router.post("/:section", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), createSectionItem);
-router.put("/:section/:itemId", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), updateSectionItem);
-router.delete("/:section/:itemId", protectAdmin, authorizeAdmin("SalesAdmin", "SalesStaff"), deleteSectionItem);
+router.get("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getRecruitmentSettings);
+router.put("/other/settings", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateOtherSettings);
+router.post("/:section", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createSectionItem);
+router.put("/:section/:itemId", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateSectionItem);
+router.delete("/:section/:itemId", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), deleteSectionItem);
 
 module.exports = router;
