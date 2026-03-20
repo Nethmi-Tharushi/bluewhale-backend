@@ -1,4 +1,5 @@
 const AgentAnalytics = require('../models/AgentAnalytics');
+const Application = require('../models/Application');
 const User = require('../models/User');
 const Job = require('../models/Job');
 
@@ -200,66 +201,54 @@ const calculateCurrentMetrics = async (agentId, agent) => {
       return addedDate >= currentMonth;
     }).length;
 
-    // Get managed candidate emails for application tracking
-    const managedCandidateEmails = agent.managedCandidates.map(c => c.email).filter(email => email);
-    
-    // Get all jobs and calculate application metrics
-    const jobs = await Job.find({}).select('applicants title jobCategory');
-    
+    const agentApplications = await Application.find({ agent: agentId })
+      .select('status appliedAt updatedAt candidateId')
+      .lean();
+
     let totalApplications = 0;
     let pendingApplications = 0;
     let approvedApplications = 0;
     let rejectedApplications = 0;
     let interviewScheduled = 0;
+    let respondedApplications = 0;
+    let totalPlacementDays = 0;
 
-    // Job category tracking
-    const categoryStats = {};
+    agentApplications.forEach((application) => {
+      totalApplications++;
 
-    jobs.forEach(job => {
-      const jobCategory = job.jobCategory || 'Other';
-      
-      if (!categoryStats[jobCategory]) {
-        categoryStats[jobCategory] = {
-          applications: 0,
-          placements: 0,
-        };
+      const normalizedStatus = String(application.status || 'Pending').toLowerCase();
+      if (application.updatedAt && application.appliedAt && new Date(application.updatedAt) > new Date(application.appliedAt)) {
+        respondedApplications++;
       }
 
-      if (job.applicants && Array.isArray(job.applicants)) {
-        job.applicants.forEach(applicant => {
-          if (managedCandidateEmails.includes(applicant.email)) {
-            totalApplications++;
-            categoryStats[jobCategory].applications++;
-
-            const status = applicant.status?.toLowerCase() || 'applied';
-            
-            switch (status) {
-              case 'applied':
-              case 'under review':
-              case 'reviewing':
-              case 'pending':
-                pendingApplications++;
-                break;
-              case 'approved':
-              case 'hired':
-              case 'accepted':
-                approvedApplications++;
-                categoryStats[jobCategory].placements++;
-                break;
-              case 'rejected':
-              case 'declined':
-                rejectedApplications++;
-                break;
-              case 'interview':
-              case 'interview scheduled':
-                interviewScheduled++;
-                break;
-              default:
-                pendingApplications++;
-                break;
-            }
+      switch (normalizedStatus) {
+        case 'accepted':
+        case 'approved':
+        case 'hired':
+          approvedApplications++;
+          if (application.updatedAt && application.appliedAt) {
+            totalPlacementDays += Math.max(
+              0,
+              (new Date(application.updatedAt).getTime() - new Date(application.appliedAt).getTime()) / (1000 * 60 * 60 * 24)
+            );
           }
-        });
+          break;
+        case 'rejected':
+        case 'declined':
+          rejectedApplications++;
+          break;
+        case 'interview':
+        case 'interview scheduled':
+          interviewScheduled++;
+          pendingApplications++;
+          break;
+        case 'in review':
+        case 'under review':
+        case 'reviewing':
+        case 'pending':
+        default:
+          pendingApplications++;
+          break;
       }
     });
 
@@ -267,13 +256,18 @@ const calculateCurrentMetrics = async (agentId, agent) => {
     const placementSuccessRate = totalApplications > 0 
       ? (approvedApplications / totalApplications) * 100 
       : 0;
+    const averageTimeToPlacement = approvedApplications > 0 ? totalPlacementDays / approvedApplications : 0;
+    const responseRate = totalApplications > 0 ? (respondedApplications / totalApplications) * 100 : 0;
+    const inactiveCandidates = agent.managedCandidates.filter(candidate =>
+      ['Rejected', 'Inactive'].includes(String(candidate.status || ''))
+    ).length;
 
     return {
       candidateMetrics: {
         totalManaged: totalManagedCandidates,
         newCandidates: newCandidatesThisMonth,
-        activeCandidates: totalManagedCandidates,
-        inactiveCandidates: 0,
+        activeCandidates: Math.max(totalManagedCandidates - inactiveCandidates, 0),
+        inactiveCandidates,
         successfulPlacements: approvedApplications,
       },
       applicationMetrics: {
@@ -285,11 +279,10 @@ const calculateCurrentMetrics = async (agentId, agent) => {
       },
       performanceMetrics: {
         placementSuccessRate: Math.round(placementSuccessRate * 100) / 100,
-        averageTimeToPlacement: 0,
-        responseRate: 85,
-        clientSatisfactionScore: 4.2,
+        averageTimeToPlacement: Math.round(averageTimeToPlacement * 10) / 10,
+        responseRate: Math.round(responseRate * 10) / 10,
+        clientSatisfactionScore: 0,
       },
-      categoryStats,
     };
 
   } catch (error) {
@@ -323,60 +316,58 @@ const calculateCurrentMetrics = async (agentId, agent) => {
 const getMonthlyTrends = async (agentId, months) => {
   try {
     const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - months);
+    const startDate = new Date(endDate.getFullYear(), endDate.getMonth() - (months - 1), 1);
+    const nextMonthStart = new Date(endDate.getFullYear(), endDate.getMonth() + 1, 1);
 
-    // Try to get historical analytics data
-    let analytics = await AgentAnalytics.getAnalyticsRange(agentId, startDate, endDate);
-    
-    // If no historical data, generate sample data for demo
-    if (!analytics || analytics.length === 0) {
-      const trendData = [];
-      for (let i = months - 1; i >= 0; i--) {
-        const date = new Date();
-        date.setMonth(date.getMonth() - i);
-        const monthStr = date.toLocaleString('default', { month: 'short', year: 'numeric' });
-        
-        trendData.push({
-          month: monthStr,
-          applications: Math.floor(Math.random() * 20) + 10, // 10-30 applications
-          placements: Math.floor(Math.random() * 8) + 2,     // 2-10 placements  
-          candidates: Math.floor(Math.random() * 15) + 5,    // 5-20 new candidates
-        });
-      }
-      return trendData;
+    const [agent, applicationRows] = await Promise.all([
+      User.findById(agentId).select('managedCandidates.addedAt').lean(),
+      Application.find({
+        agent: agentId,
+        appliedAt: { $gte: startDate, $lt: nextMonthStart },
+      })
+        .select('status appliedAt')
+        .lean(),
+    ]);
+
+    const monthlyMap = new Map();
+    for (let i = 0; i < months; i++) {
+      const date = new Date(startDate.getFullYear(), startDate.getMonth() + i, 1);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      monthlyMap.set(key, {
+        month: date.toLocaleString('default', { month: 'short', year: 'numeric' }),
+        applications: 0,
+        placements: 0,
+        candidates: 0,
+      });
     }
-    
-    // Group existing data by month
-    const monthlyData = {};
-    analytics.forEach(record => {
-      const monthKey = record.date.toLocaleString('default', { month: 'short', year: 'numeric' });
-      if (!monthlyData[monthKey]) {
-        monthlyData[monthKey] = {
-          month: monthKey,
-          applications: 0,
-          placements: 0,
-          candidates: 0,
-        };
+
+    applicationRows.forEach((application) => {
+      const appliedAt = new Date(application.appliedAt);
+      if (Number.isNaN(appliedAt.getTime())) return;
+      const key = `${appliedAt.getFullYear()}-${String(appliedAt.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = monthlyMap.get(key);
+      if (!bucket) return;
+      bucket.applications += 1;
+      if (['Accepted', 'Approved', 'Hired'].includes(String(application.status || ''))) {
+        bucket.placements += 1;
       }
-      monthlyData[monthKey].applications += record.applicationMetrics?.totalApplications || 0;
-      monthlyData[monthKey].placements += record.candidateMetrics?.successfulPlacements || 0;
-      monthlyData[monthKey].candidates += record.candidateMetrics?.newCandidates || 0;
     });
 
-    return Object.values(monthlyData);
+    (agent?.managedCandidates || []).forEach((candidate) => {
+      const addedAt = new Date(candidate.addedAt);
+      if (Number.isNaN(addedAt.getTime()) || addedAt < startDate || addedAt >= nextMonthStart) return;
+      const key = `${addedAt.getFullYear()}-${String(addedAt.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = monthlyMap.get(key);
+      if (bucket) {
+        bucket.candidates += 1;
+      }
+    });
+
+    return Array.from(monthlyMap.values());
     
   } catch (error) {
     console.error('Error getting monthly trends:', error);
-    // Return sample data on error
-    return [
-      { month: 'Mar 2025', applications: 25, placements: 6, candidates: 12 },
-      { month: 'Apr 2025', applications: 32, placements: 8, candidates: 15 },
-      { month: 'May 2025', applications: 28, placements: 7, candidates: 10 },
-      { month: 'Jun 2025', applications: 35, placements: 9, candidates: 18 },
-      { month: 'Jul 2025', applications: 30, placements: 8, candidates: 14 },
-      { month: 'Aug 2025', applications: 40, placements: 12, candidates: 20 },
-    ];
+    return [];
   }
 };
 
@@ -387,32 +378,39 @@ const getPerformanceComparison = async (agentId) => {
     const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
     const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
 
-    const thisMonthData = await AgentAnalytics.find({
-      agentId,
-      date: { $gte: thisMonth }
-    });
+    const [agent, applicationRows] = await Promise.all([
+      User.findById(agentId).select('managedCandidates.addedAt').lean(),
+      Application.find({
+        agent: agentId,
+        appliedAt: { $gte: lastMonth, $lte: today },
+      })
+        .select('status appliedAt')
+        .lean(),
+    ]);
 
-    const lastMonthData = await AgentAnalytics.find({
-      agentId,
-      date: { 
-        $gte: lastMonth,
-        $lte: lastMonthEnd
+    const buildTotals = () => ({ applications: 0, placements: 0, candidates: 0 });
+    const thisMonthTotals = buildTotals();
+    const lastMonthTotals = buildTotals();
+
+    applicationRows.forEach((application) => {
+      const appliedAt = new Date(application.appliedAt);
+      const bucket = appliedAt >= thisMonth ? thisMonthTotals : (appliedAt >= lastMonth && appliedAt <= lastMonthEnd ? lastMonthTotals : null);
+      if (!bucket) return;
+      bucket.applications += 1;
+      if (['Accepted', 'Approved', 'Hired'].includes(String(application.status || ''))) {
+        bucket.placements += 1;
       }
     });
 
-    // Calculate totals for this month
-    const thisMonthTotals = thisMonthData.reduce((acc, record) => ({
-      applications: acc.applications + (record.applicationMetrics?.totalApplications || 0),
-      placements: acc.placements + (record.candidateMetrics?.successfulPlacements || 0),
-      candidates: acc.candidates + (record.candidateMetrics?.newCandidates || 0),
-    }), { applications: 0, placements: 0, candidates: 0 });
-
-    // Calculate totals for last month
-    const lastMonthTotals = lastMonthData.reduce((acc, record) => ({
-      applications: acc.applications + (record.applicationMetrics?.totalApplications || 0),
-      placements: acc.placements + (record.candidateMetrics?.successfulPlacements || 0),
-      candidates: acc.candidates + (record.candidateMetrics?.newCandidates || 0),
-    }), { applications: 0, placements: 0, candidates: 0 });
+    (agent?.managedCandidates || []).forEach((candidate) => {
+      const addedAt = new Date(candidate.addedAt);
+      if (Number.isNaN(addedAt.getTime())) return;
+      if (addedAt >= thisMonth) {
+        thisMonthTotals.candidates += 1;
+      } else if (addedAt >= lastMonth && addedAt <= lastMonthEnd) {
+        lastMonthTotals.candidates += 1;
+      }
+    });
 
     return {
       thisMonth: thisMonthTotals,
@@ -436,68 +434,44 @@ const getPerformanceComparison = async (agentId) => {
 
 const getJobCategoryBreakdown = async (agentId) => {
   try {
-    const agent = await User.findById(agentId);
-    if (!agent || !agent.managedCandidates) {
-      return getDefaultJobCategories();
-    }
+    const applicationRows = await Application.find({ agent: agentId })
+      .populate('job', 'jobCategory title')
+      .select('status job')
+      .lean();
 
-    const managedCandidateEmails = agent.managedCandidates.map(c => c.email).filter(email => email);
-    const jobs = await Job.find({}).select('applicants jobCategory title');
-    
-    const categoryStats = {};
+    const categoryStats = new Map();
 
-    jobs.forEach(job => {
-      const jobCategory = job.jobCategory || 'Other';
-      
-      if (!categoryStats[jobCategory]) {
-        categoryStats[jobCategory] = {
+    applicationRows.forEach((application) => {
+      const jobCategory = application?.job?.jobCategory || 'Other';
+      if (!categoryStats.has(jobCategory)) {
+        categoryStats.set(jobCategory, {
           category: jobCategory,
           applications: 0,
           placements: 0,
           successRate: 0,
-        };
-      }
-
-      if (job.applicants && Array.isArray(job.applicants)) {
-        job.applicants.forEach(applicant => {
-          if (managedCandidateEmails.includes(applicant.email)) {
-            categoryStats[jobCategory].applications++;
-
-            const status = applicant.status?.toLowerCase() || 'applied';
-            if (status === 'approved' || status === 'hired' || status === 'accepted') {
-              categoryStats[jobCategory].placements++;
-            }
-          }
         });
       }
-    });
 
-    // Calculate success rates
-    Object.values(categoryStats).forEach(category => {
-      if (category.applications > 0) {
-        category.successRate = (category.placements / category.applications) * 100;
+      const row = categoryStats.get(jobCategory);
+      row.applications += 1;
+      if (['Accepted', 'Approved', 'Hired'].includes(String(application.status || ''))) {
+        row.placements += 1;
       }
     });
 
-    const result = Object.values(categoryStats);
-    
-    // Return default categories if no data
-    return result.length > 0 ? result : getDefaultJobCategories();
+    const result = Array.from(categoryStats.values()).map((category) => ({
+      ...category,
+      successRate: category.applications > 0
+        ? Math.round((category.placements / category.applications) * 1000) / 10
+        : 0,
+    }));
+
+    return result;
 
   } catch (error) {
     console.error('Error getting job category breakdown:', error);
-    return getDefaultJobCategories();
+    return [];
   }
-};
-
-const getDefaultJobCategories = () => {
-  return [
-    { category: 'IT & Software', applications: 15, placements: 4, successRate: 26.7 },
-    { category: 'Healthcare', applications: 12, placements: 3, successRate: 25.0 },
-    { category: 'Engineering', applications: 10, placements: 2, successRate: 20.0 },
-    { category: 'Sales & Marketing', applications: 8, placements: 2, successRate: 25.0 },
-    { category: 'Finance', applications: 6, placements: 1, successRate: 16.7 },
-  ];
 };
 
 const aggregateAnalyticsData = (data, period) => {
