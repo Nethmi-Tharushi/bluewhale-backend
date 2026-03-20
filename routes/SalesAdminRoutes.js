@@ -47,8 +47,8 @@ const handleMulterError = (error, req, res, next) => {
   return next(error);
 };
 
-router.get('/candidates', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), getAllCandidates);
-router.get('/candidates/:id', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), getCandidateDetails);
+router.get('/candidates', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), getAllCandidates);
+router.get('/candidates/:id', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), getCandidateDetails);
 
 //agents
 router.get('/agents', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), getAssignedAgents);
@@ -59,9 +59,9 @@ router.get('/applications', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesSta
 router.put('/applications/:candidateId/status', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), updateApplicationStatus);
 
 //meetings
-router.post('/meetings', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), createMeeting);
-router.get('/meetings', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), getMeetings);
-router.put('/meetings/:id', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), updateMeeting);
+router.post('/meetings', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), createMeeting);
+router.get('/meetings', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), getMeetings);
+router.put('/meetings/:id', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), updateMeeting);
 
 //reports
 router.get('/reports', protectAdmin, authorizeAdmin('SalesAdmin', 'SalesStaff'), getReports);

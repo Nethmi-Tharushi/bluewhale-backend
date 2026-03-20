@@ -10,13 +10,18 @@ const Task = require('../models/Task');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { generateOnboardingTasksForApplication } = require("../services/recruitmentWorkflowService");
+const { createMeetingForTask, updateMeetingForTask } = require("../services/taskMeetingService");
 
 const getAllCandidates = asyncHandler(async (req, res) => {
   try {
+    const hasFullCandidateAccess = ['MainAdmin', 'SalesAdmin'].includes(req.admin.role);
     const salesAdminId = req.admin._id;
     //  B2C candidates
-    const b2cUsers = await User.find({ userType: 'candidate', assignedTo: salesAdminId })
-      .select('name email phone location profession status visaStatus jobInterest createdAt assignedTo');
+    const b2cUsers = await User.find(
+      hasFullCandidateAccess
+        ? { userType: 'candidate' }
+        : { userType: 'candidate', assignedTo: salesAdminId }
+    ).select('name email phone location profession status visaStatus jobInterest createdAt assignedTo');
 
     const unifiedCandidates = await Promise.all(
       b2cUsers.map(async user => {
@@ -43,9 +48,15 @@ const getAllCandidates = asyncHandler(async (req, res) => {
     );
 
     // B2B candidates from agents
-    const agents = await User.find({ userType: 'agent', 'managedCandidates.assignedTo': salesAdminId }).select('name companyName managedCandidates');
+    const agents = await User.find(
+      hasFullCandidateAccess
+        ? { userType: 'agent' }
+        : { userType: 'agent', 'managedCandidates.assignedTo': salesAdminId }
+    ).select('name companyName managedCandidates');
     agents.forEach(agent => {
-      agent.managedCandidates.filter(c => c.assignedTo).forEach(managedCandidate => {
+      agent.managedCandidates
+        .filter(c => hasFullCandidateAccess || (c.assignedTo && c.assignedTo.toString() === salesAdminId.toString()))
+        .forEach(managedCandidate => {
         unifiedCandidates.push({
           _id: managedCandidate._id,
           name: managedCandidate.name,
@@ -478,6 +489,7 @@ const createMeeting = async (req, res) => {
     let candidateType = 'B2C';
     let managedCandidateId = null;
     let candidateName = 'Candidate';
+    let resolvedSalesAdminId = null;
 
     // Check B2C candidate first
     let candidate = await User.findById(candidateId);
@@ -498,12 +510,14 @@ const createMeeting = async (req, res) => {
         // Get the managed candidate's name
         const managedCandidate = agentWithCandidate.managedCandidates.id(candidateId);
         candidateName = managedCandidate?.name || 'Managed Candidate';
+        resolvedSalesAdminId = managedCandidate?.assignedTo || null;
       } else {
         return res.status(404).json({ message: 'Candidate not found' });
       }
     } else {
       // B2C candidate
       candidateName = candidate.name;
+      resolvedSalesAdminId = candidate.assignedTo || null;
     }
 
     let salesAdminId = null;
@@ -513,7 +527,7 @@ const createMeeting = async (req, res) => {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    if (req.admin.role === 'SalesAdmin') {
+    if (req.admin.role === 'SalesAdmin' || req.admin.role === 'SalesStaff') {
       salesAdminId = req.admin._id;
 
       const mainAdmin = await AdminUser.findOne({ role: 'MainAdmin' });
@@ -524,6 +538,10 @@ const createMeeting = async (req, res) => {
 
     if (req.admin.role === 'MainAdmin') {
       mainAdminId = req.admin._id;
+      salesAdminId = resolvedSalesAdminId;
+      if (!salesAdminId) {
+        return res.status(400).json({ message: 'Selected candidate is not assigned to any sales admin' });
+      }
     }
 
     const meetingData = {
@@ -569,7 +587,7 @@ const getMeetings = async (req, res) => {
   try {
     let filter = {};
 
-    if (req.admin.role === 'SalesAdmin') {
+    if (req.admin.role === 'SalesAdmin' || req.admin.role === 'SalesStaff') {
       filter.salesAdmin = req.admin._id;
     }
 
@@ -636,7 +654,7 @@ const updateMeeting = async (req, res) => {
     let meeting;
 
     // SalesAdmin
-    if (req.admin.role === 'SalesAdmin') {
+    if (req.admin.role === 'SalesAdmin' || req.admin.role === 'SalesStaff') {
       meeting = await Meeting.findOneAndUpdate(
         { _id: id, salesAdmin: req.admin._id },
         updates,
@@ -1078,11 +1096,12 @@ const getSalesAdminTasks = async (req, res) => {
     }
 
     const salesAdminId = req.admin._id;
+    const hasFullCandidateAccess = req.admin.role === 'SalesAdmin';
 
     // Get B2C candidates assigned to this sales admin
     const b2cCandidates = await User.find({
       userType: 'candidate',
-      assignedTo: salesAdminId
+      ...(hasFullCandidateAccess ? {} : { assignedTo: salesAdminId })
     }).select('_id name email');
 
     const b2cCandidateIds = b2cCandidates.map(c => c._id);
@@ -1090,7 +1109,7 @@ const getSalesAdminTasks = async (req, res) => {
     // Get B2B agents with managed candidates assigned to this sales admin
     const agentsWithManagedCandidates = await User.find({
       userType: 'agent',
-      'managedCandidates.assignedTo': salesAdminId
+      ...(hasFullCandidateAccess ? {} : { 'managedCandidates.assignedTo': salesAdminId })
     }).select('_id managedCandidates');
 
     // Extract managed candidate IDs and create a map for quick lookup
@@ -1099,7 +1118,7 @@ const getSalesAdminTasks = async (req, res) => {
 
     agentsWithManagedCandidates.forEach(agent => {
       agent.managedCandidates.forEach(mc => {
-        if (mc.assignedTo && mc.assignedTo.toString() === salesAdminId.toString()) {
+        if (hasFullCandidateAccess || (mc.assignedTo && mc.assignedTo.toString() === salesAdminId.toString())) {
           managedCandidateIds.push(mc._id);
           // Store managed candidate name with ID as key
           managedCandidateMap.set(mc._id.toString(), {
@@ -1112,16 +1131,27 @@ const getSalesAdminTasks = async (req, res) => {
     });
 
     // Find tasks for both B2C and B2B candidates assigned to this sales admin
-    const tasks = await Task.find({
-      $or: [
-        { candidateType: 'B2C', candidate: { $in: b2cCandidateIds } },
-        { candidateType: 'B2B', managedCandidateId: { $in: managedCandidateIds } }
-      ]
-    })
+    const taskFilter = hasFullCandidateAccess
+      ? {
+          $or: [
+            { assignedBy: salesAdminId },
+            { candidateType: 'B2C', candidate: { $in: b2cCandidateIds } },
+            { candidateType: 'B2B', managedCandidateId: { $in: managedCandidateIds } }
+          ]
+        }
+      : {
+          $or: [
+            { candidateType: 'B2C', candidate: { $in: b2cCandidateIds } },
+            { candidateType: 'B2B', managedCandidateId: { $in: managedCandidateIds } }
+          ]
+        };
+
+    const tasks = await Task.find(taskFilter)
       .populate('assignedBy', 'name email')
       .populate('relatedJob', 'title company')
       .populate('candidate', 'name email')
       .populate('agent', 'name email companyName')
+      .populate('relatedMeeting')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -1155,6 +1185,7 @@ const createSalesAdminTask = async (req, res) => {
     }
 
     const salesAdminId = req.admin._id;
+    const hasFullCandidateAccess = req.admin.role === 'SalesAdmin';
     const {
       title,
       description,
@@ -1166,11 +1197,17 @@ const createSalesAdminTask = async (req, res) => {
       managedCandidateId,
       agent,
       requiredDocument,
-      relatedJob
+      relatedJob,
+      meetingDate,
+      meetingTime,
+      locationType,
+      link,
+      location,
+      notes
     } = req.body;
 
     // Validate candidate assignment
-    if (candidateType === 'B2C') {
+    if (!hasFullCandidateAccess && candidateType === 'B2C') {
       const b2cCandidate = await User.findOne({
         _id: candidate,
         assignedTo: salesAdminId
@@ -1178,7 +1215,7 @@ const createSalesAdminTask = async (req, res) => {
       if (!b2cCandidate) {
         return res.status(403).json({ message: "Candidate not assigned to you" });
       }
-    } else if (candidateType === 'B2B') {
+    } else if (!hasFullCandidateAccess && candidateType === 'B2B') {
       const agentWithCandidate = await User.findOne({
         _id: agent,
         'managedCandidates._id': managedCandidateId,
@@ -1193,12 +1230,18 @@ const createSalesAdminTask = async (req, res) => {
       return res.status(400).json({ message: "Required document type is mandatory for document upload tasks" });
     }
 
+    if (type === "Meeting") {
+      if (!meetingDate || !meetingTime || !locationType) {
+        return res.status(400).json({ message: "Meeting date, time, and location type are required for meeting tasks" });
+      }
+    }
+
     const taskData = {
       title,
-      description,
+      description: type === "Meeting" ? (notes || description || "") : description,
       type,
       priority: priority || 'Medium',
-      dueDate,
+      dueDate: type === "Meeting" ? new Date(`${meetingDate}T${meetingTime}`) : dueDate,
       candidateType,
       assignedBy: salesAdminId
     };
@@ -1220,13 +1263,33 @@ const createSalesAdminTask = async (req, res) => {
       taskData.agent = agent;
     }
 
+    if (type === "Meeting") {
+      const meeting = await createMeetingForTask({
+        admin: req.admin,
+        title,
+        candidateType,
+        candidate,
+        managedCandidateId,
+        agent,
+        meetingDate,
+        meetingTime,
+        locationType,
+        link,
+        location,
+        notes: notes || description || "",
+      });
+
+      taskData.relatedMeeting = meeting._id;
+    }
+
     const task = await Task.create(taskData);
 
     const populatedTask = await Task.findById(task._id)
       .populate('assignedBy', 'name email')
       .populate('relatedJob', 'title company')
       .populate('candidate', 'name email')
-      .populate('agent', 'name email companyName');
+      .populate('agent', 'name email companyName')
+      .populate('relatedMeeting');
 
     res.status(201).json(populatedTask);
   } catch (err) {
@@ -1272,6 +1335,36 @@ const updateSalesAdminTask = async (req, res) => {
       return res.status(403).json({ message: "Access denied to this task" });
     }
 
+    if (task.relatedMeeting && req.body.type && req.body.type !== 'Meeting') {
+      return res.status(400).json({ message: "Meeting tasks cannot be changed to another task type" });
+    }
+
+    if (!task.relatedMeeting && req.body.type === 'Meeting') {
+      return res.status(400).json({ message: "Convert existing tasks to meetings is not supported. Create a new meeting task instead." });
+    }
+
+    if (task.relatedMeeting) {
+      await updateMeetingForTask({
+        meetingId: task.relatedMeeting,
+        title: req.body.title || task.title,
+        notes: typeof req.body.notes === "string" ? req.body.notes : req.body.description,
+        status: req.body.status === "Cancelled" ? "Canceled" : req.body.status,
+        meetingDate: req.body.meetingDate,
+        meetingTime: req.body.meetingTime,
+        locationType: req.body.locationType,
+        link: req.body.link,
+        location: req.body.location,
+      });
+
+      if (req.body.meetingDate && req.body.meetingTime) {
+        req.body.dueDate = new Date(`${req.body.meetingDate}T${req.body.meetingTime}`);
+      }
+
+      if (typeof req.body.notes === "string") {
+        req.body.description = req.body.notes;
+      }
+    }
+
     const updatedTask = await Task.findByIdAndUpdate(
       taskId,
       req.body,
@@ -1280,7 +1373,8 @@ const updateSalesAdminTask = async (req, res) => {
       .populate('assignedBy', 'name email')
       .populate('relatedJob', 'title company')
       .populate('candidate', 'name email')
-      .populate('agent', 'name email companyName');
+      .populate('agent', 'name email companyName')
+      .populate('relatedMeeting');
 
     res.json(updatedTask);
   } catch (err) {

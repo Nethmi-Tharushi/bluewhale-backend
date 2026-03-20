@@ -2,6 +2,7 @@ const Document = require("../models/Document");
 const Task = require('../models/Task');
 const User = require('../models/User');
 const mongoose = require("mongoose");
+const { createMeetingForTask, updateMeetingForTask } = require("../services/taskMeetingService");
 
 const taskDocToB2CDocType = {
   cv: "cv",
@@ -43,6 +44,7 @@ const getTasks = async (req, res) => {
       })
         .populate('assignedBy', 'name email')
         .populate('relatedJob', 'title company')
+        .populate('relatedMeeting')
         .sort({ createdAt: -1 });
 
       return res.json({ tasks });
@@ -54,6 +56,7 @@ const getTasks = async (req, res) => {
       })
         .populate('assignedBy', 'name email')
         .populate('relatedJob', 'title company')
+        .populate('relatedMeeting')
         .sort({ createdAt: -1 });
 
       return res.json({ tasks });
@@ -157,6 +160,7 @@ const getAdminTasks = async (req, res) => {
       .populate("candidate", "name email")
       .populate("agent", "name email companyName")
       .populate("relatedJob", "title company")
+      .populate("relatedMeeting")
       .sort({ createdAt: -1 });
 
     const populatedTasks = [];
@@ -212,7 +216,14 @@ const createTask = async (req, res) => {
       managedCandidateId, 
       agent, 
       requiredDocument,
-      relatedJob
+      relatedJob,
+      meetingDate,
+      meetingTime,
+      locationType,
+      link,
+      location,
+      meetingStatus,
+      notes
     } = req.body;
 
     // Validate based on candidate type
@@ -228,12 +239,18 @@ const createTask = async (req, res) => {
       return res.status(400).json({ message: "Required document type is mandatory for document upload tasks" });
     }
 
+    if (type === "Meeting") {
+      if (!meetingDate || !meetingTime || !locationType) {
+        return res.status(400).json({ message: "Meeting date, time, and location type are required for meeting tasks" });
+      }
+    }
+
     const taskData = {
       title,
-      description,
+      description: type === "Meeting" ? (notes || description || "") : description,
       type,
-      priority: priority || 'medium',
-      dueDate,
+      priority: priority || 'Medium',
+      dueDate: type === "Meeting" ? new Date(`${meetingDate}T${meetingTime}`) : dueDate,
       candidateType,
       assignedBy: req.admin._id
     };
@@ -254,13 +271,33 @@ const createTask = async (req, res) => {
       taskData.agent = agent;
     }
 
+    if (type === "Meeting") {
+      const meeting = await createMeetingForTask({
+        admin: req.admin,
+        title,
+        candidateType,
+        candidate,
+        managedCandidateId,
+        agent,
+        meetingDate,
+        meetingTime,
+        locationType,
+        link,
+        location,
+        notes: notes || description || "",
+      });
+
+      taskData.relatedMeeting = meeting._id;
+    }
+
     const task = await Task.create(taskData);
 
     const populatedTask = await Task.findById(task._id)
       .populate('assignedBy', 'name email')
       .populate('relatedJob', 'title company')
       .populate('candidate', 'name email')
-      .populate('agent', 'name email companyName');
+      .populate('agent', 'name email companyName')
+      .populate('relatedMeeting');
 
     res.status(201).json(populatedTask);
   } catch (err) {
@@ -276,7 +313,20 @@ const updateTask = async (req, res) => {
       return res.status(403).json({ message: "Only Main Admin can update tasks" });
     }
 
-    const { requiredDocument, relatedJob, ...updateData } = req.body;
+    const { requiredDocument, relatedJob, meetingDate, meetingTime, locationType, link, location, notes, ...updateData } = req.body;
+
+    const existingTask = await Task.findById(req.params.id);
+    if (!existingTask) {
+      return res.status(404).json({ message: "Task not found" });
+    }
+
+    if (existingTask.relatedMeeting && updateData.type && updateData.type !== 'Meeting') {
+      return res.status(400).json({ message: "Meeting tasks cannot be changed to another task type" });
+    }
+
+    if (!existingTask.relatedMeeting && updateData.type === 'Meeting') {
+      return res.status(400).json({ message: "Convert existing tasks to meetings is not supported. Create a new meeting task instead." });
+    }
 
     const cleanData = { ...updateData };
     
@@ -290,6 +340,28 @@ const updateTask = async (req, res) => {
         : null;
     }
 
+    if (existingTask.relatedMeeting) {
+      await updateMeetingForTask({
+        meetingId: existingTask.relatedMeeting,
+        title: cleanData.title || existingTask.title,
+        notes: typeof notes === "string" ? notes : cleanData.description,
+        status: cleanData.status === "Cancelled" ? "Canceled" : cleanData.status,
+        meetingDate,
+        meetingTime,
+        locationType,
+        link,
+        location,
+      });
+
+      if (meetingDate && meetingTime) {
+        cleanData.dueDate = new Date(`${meetingDate}T${meetingTime}`);
+      }
+
+      if (typeof notes === "string") {
+        cleanData.description = notes;
+      }
+    }
+
     const task = await Task.findByIdAndUpdate(
       req.params.id,
       cleanData, 
@@ -297,7 +369,8 @@ const updateTask = async (req, res) => {
     ).populate('assignedBy', 'name email')
      .populate('relatedJob', 'title company')
      .populate('candidate', 'name email')
-     .populate('agent', 'name email companyName');
+     .populate('agent', 'name email companyName')
+     .populate('relatedMeeting');
 
     if (!task) {
       return res.status(404).json({ message: "Task not found" });
