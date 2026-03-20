@@ -75,7 +75,9 @@ const generateDocumentNumber = async (Model, prefix) => {
 
 const getTeamStaff = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
-  const query = scope.isSalesAdmin
+  const query = scope.isMainAdmin
+    ? { role: { $in: ["SalesAdmin", "SalesStaff"] } }
+    : scope.isSalesAdmin
     ? { $or: [{ _id: scope.actorId }, { reportsTo: scope.actorId, role: "SalesStaff" }] }
     : { _id: scope.actorId };
 
@@ -155,6 +157,13 @@ const createTarget = asyncHandler(async (req, res) => {
     const staff = await AdminUser.findOne({
       _id: ownerAdminId,
       $or: [{ _id: scope.actorId }, { reportsTo: scope.actorId, role: "SalesStaff" }],
+    }).select("_id");
+    if (!staff) return res.status(404).json({ message: "Selected staff member not found" });
+  }
+  if (scope.isMainAdmin && ownerAdminId) {
+    const staff = await AdminUser.findOne({
+      _id: ownerAdminId,
+      role: { $in: ["MainAdmin", "SalesAdmin", "SalesStaff"] },
     }).select("_id");
     if (!staff) return res.status(404).json({ message: "Selected staff member not found" });
   }
@@ -427,3 +436,4 @@ module.exports = {
   convertEstimateToInvoice,
   listPayments,
 };
+

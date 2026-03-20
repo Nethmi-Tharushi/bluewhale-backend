@@ -15,6 +15,12 @@ const toNumber = (value, fallback = 0) => {
 };
 
 const buildAssignableAdminFilter = (scope) => {
+  if (scope.isMainAdmin) {
+    return {
+      role: { $in: ["MainAdmin", "SalesAdmin", "SalesStaff"] },
+    };
+  }
+
   if (scope.isSalesStaff) {
     return {
       $or: [{ _id: scope.actorId }, { _id: scope.managerId }],
@@ -218,3 +224,4 @@ module.exports = {
   updateLeadStatus,
   deleteLead,
 };
+

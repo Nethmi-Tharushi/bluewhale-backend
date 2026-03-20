@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const SALES_ROLES = ["SalesAdmin", "SalesStaff"];
+const SALES_ROLES = ["MainAdmin", "SalesAdmin", "SalesStaff"];
 
 const normalizeObjectId = (value) => {
   if (!value) return null;
@@ -58,3 +58,4 @@ module.exports = {
   getSalesScope,
   buildOwnedFilter,
 };
+

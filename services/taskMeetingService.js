@@ -91,10 +91,7 @@ const createMeetingForTask = async ({
 
   if (admin.role === "MainAdmin") {
     mainAdminId = admin._id;
-    salesAdminId = candidateContext.resolvedSalesAdminId;
-    if (!salesAdminId) {
-      throw new Error("Selected candidate is not assigned to any sales admin");
-    }
+    salesAdminId = candidateContext.resolvedSalesAdminId || admin._id;
   } else if (admin.role === "SalesAdmin" || admin.role === "SalesStaff") {
     salesAdminId = admin._id;
     mainAdminId = await getMainAdminId();
@@ -177,3 +174,4 @@ module.exports = {
   createMeetingForTask,
   updateMeetingForTask,
 };
+

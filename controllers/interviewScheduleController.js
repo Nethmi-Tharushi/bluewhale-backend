@@ -14,6 +14,13 @@ const {
 const buildAccessibleAdminIds = async (req) => {
   const scope = getSalesScope(req);
 
+  if (scope.isMainAdmin) {
+    const admins = await AdminUser.find({
+      role: { $in: ["MainAdmin", "SalesAdmin", "SalesStaff"] },
+    }).select("_id");
+    return admins.map((admin) => String(admin._id));
+  }
+
   if (scope.isSalesStaff) {
     return [String(scope.actorId)];
   }
@@ -73,6 +80,12 @@ const getAccessibleCandidates = async (req) => {
 };
 
 const buildInterviewerFilter = (scope) => {
+  if (scope.isMainAdmin) {
+    return {
+      role: { $in: ["MainAdmin", "SalesAdmin", "SalesStaff"] },
+    };
+  }
+
   if (scope.isSalesStaff) {
     return {
       $or: [
@@ -326,3 +339,4 @@ module.exports = {
   evaluateInterviewScheduleCandidate,
   deleteInterviewSchedule,
 };
+

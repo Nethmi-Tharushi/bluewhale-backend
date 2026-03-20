@@ -117,6 +117,12 @@ const normalizeChannelPayload = (body = {}) => ({
 });
 
 const buildStaffFilter = (scope) => {
+  if (scope.isMainAdmin) {
+    return {
+      role: { $in: ["MainAdmin", ...STAFF_ROLE_OPTIONS] },
+    };
+  }
+
   if (scope.isSalesStaff) {
     return {
       _id: { $in: [scope.actorId, scope.managerId].filter(Boolean) },
@@ -292,3 +298,4 @@ module.exports = {
   updateRecruitmentChannel,
   deleteRecruitmentChannel,
 };
+

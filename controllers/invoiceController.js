@@ -33,6 +33,9 @@ const normalizeCandidateType = (value) => {
 
 const getAccessibleAdminIds = (req) => {
   const scope = getSalesScope(req);
+  if (scope.isMainAdmin || scope.isSalesAdmin) {
+    return [];
+  }
   const ids = [scope.actorId];
   if (scope.managerId && String(scope.managerId) !== String(scope.actorId)) {
     ids.push(scope.managerId);
@@ -67,6 +70,11 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
   const candidateId = String(customer.candidateId || "").trim();
   const explicitCandidateType = normalizeCandidateType(customer.candidateType);
   const accessibleAdminIds = getAccessibleAdminIds(req);
+  const salesScope = getSalesScope(req);
+  const assignmentFilter = (salesScope.isMainAdmin || salesScope.isSalesAdmin) ? {} : { assignedTo: { $in: accessibleAdminIds } };
+  const managedAssignmentFilter = (salesScope.isMainAdmin || salesScope.isSalesAdmin)
+    ? {}
+    : { "managedCandidates.assignedTo": { $in: accessibleAdminIds } };
 
   if (!candidateId) {
     customer.name = String(customer.name || "").trim();
@@ -81,7 +89,7 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
   const b2cCandidate = await User.findOne({
     _id: candidateId,
     userType: "candidate",
-    assignedTo: { $in: accessibleAdminIds },
+    ...assignmentFilter,
   }).select("name email phone address userType");
 
   if (b2cCandidate && explicitCandidateType !== "B2B") {
@@ -98,7 +106,7 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
   const agent = await User.findOne({
     userType: "agent",
     "managedCandidates._id": candidateId,
-    "managedCandidates.assignedTo": { $in: accessibleAdminIds },
+    ...managedAssignmentFilter,
   }).select("managedCandidates");
 
   if (agent) {
@@ -122,12 +130,20 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
   if (explicitCandidateType === "B2B") {
     const err = new Error("Managed candidate not found or not assigned to you");
     err.statusCode = 403;
+    err.details = {
+      candidateId,
+      candidateType: explicitCandidateType,
+    };
     throw err;
   }
 
   if (explicitCandidateType === "B2C") {
     const err = new Error("Candidate not found or not assigned to you");
     err.statusCode = 403;
+    err.details = {
+      candidateId,
+      candidateType: explicitCandidateType,
+    };
     throw err;
   }
 
@@ -298,60 +314,67 @@ const getLatestProof = (invoice) => {
 };
 
 const createInvoice = asyncHandler(async (req, res) => {
-  assertSalesAdmin(req);
-  const scope = getSalesScope(req);
+  try {
+    assertSalesAdmin(req);
+    const scope = getSalesScope(req);
 
-  const body = req.body || {};
-  const rawCustomer = toObjectMaybe(body.customer, {});
-  const items = toArrayMaybe(body.items, []);
-  const issueDate = body.issueDate;
-  const dueDate = body.dueDate;
-  const currency = body.currency || "USD";
-  const notes = body.notes || "";
-  const status = body.status || "Draft";
-  const attachmentUrlFromBody = String(body.attachmentUrl || body.fileUrl || "").trim();
-  const uploadedFile = getUploadedInvoiceFile(req);
+    const body = req.body || {};
+    const rawCustomer = toObjectMaybe(body.customer, {});
+    const items = toArrayMaybe(body.items, []);
+    const issueDate = body.issueDate;
+    const dueDate = body.dueDate;
+    const currency = body.currency || "USD";
+    const notes = body.notes || "";
+    const status = body.status || "Draft";
+    const attachmentUrlFromBody = String(body.attachmentUrl || body.fileUrl || "").trim();
+    const uploadedFile = getUploadedInvoiceFile(req);
 
-  if (!issueDate || !dueDate) return res.status(400).json({ message: "Issue date and due date are required" });
-  if (!INVOICE_STATUSES.includes(status)) return res.status(400).json({ message: "Invalid invoice status" });
+    if (!issueDate || !dueDate) return res.status(400).json({ message: "Issue date and due date are required" });
+    if (!INVOICE_STATUSES.includes(status)) return res.status(400).json({ message: "Invalid invoice status" });
 
-  const customer = await resolveInvoiceCustomer(req, rawCustomer);
-  if (!customer.name || !customer.email) {
-    return res.status(400).json({ message: "Customer name and email are required" });
+    const customer = await resolveInvoiceCustomer(req, rawCustomer);
+    if (!customer.name || !customer.email) {
+      return res.status(400).json({ message: "Customer name and email are required" });
+    }
+
+    const financials = computeFinancials({
+      ...body,
+      items,
+      paidAmount: body.paidAmount,
+    });
+    const invoiceNumber = await generateInvoiceNumber();
+
+    const invoice = await Invoice.create({
+      invoiceNumber,
+      salesAdmin: req.admin._id,
+      teamAdmin: scope.managerId,
+      customer: {
+        name: customer.name,
+        email: customer.email,
+        phone: customer.phone || "",
+        address: customer.address || "",
+        candidateId: customer.candidateId || null,
+        candidateType: customer.candidateType || "Other",
+      },
+      issueDate,
+      dueDate,
+      currency,
+      notes,
+      attachmentUrl: uploadedFile?.path || attachmentUrlFromBody || "",
+      attachmentFileName: uploadedFile?.originalname || "",
+      status,
+      ...financials,
+      sentAt: status === "Sent" ? new Date() : null,
+      paidAt: status === "Paid" ? new Date() : null,
+    });
+
+    return res.status(201).json({ success: true, data: ensureStatus(invoice.toObject()) });
+  } catch (err) {
+    return res.status(err?.statusCode || 500).json({
+      message: err?.message || "Failed to create invoice",
+      details: err?.details || null,
+    });
   }
-
-  const financials = computeFinancials({
-    ...body,
-    items,
-    paidAmount: body.paidAmount,
-  });
-  const invoiceNumber = await generateInvoiceNumber();
-
-  const invoice = await Invoice.create({
-    invoiceNumber,
-    salesAdmin: req.admin._id,
-    teamAdmin: scope.managerId,
-    customer: {
-      name: customer.name,
-      email: customer.email,
-      phone: customer.phone || "",
-      address: customer.address || "",
-      candidateId: customer.candidateId || null,
-      candidateType: customer.candidateType || "Other",
-    },
-    issueDate,
-    dueDate,
-    currency,
-    notes,
-    attachmentUrl: uploadedFile?.path || attachmentUrlFromBody || "",
-    attachmentFileName: uploadedFile?.originalname || "",
-    status,
-    ...financials,
-    sentAt: status === "Sent" ? new Date() : null,
-    paidAt: status === "Paid" ? new Date() : null,
-  });
-
-  return res.status(201).json({ success: true, data: ensureStatus(invoice.toObject()) });
 });
 
 const listInvoices = asyncHandler(async (req, res) => {
@@ -736,3 +759,4 @@ module.exports = {
   downloadInvoicePdf,
   sendInvoiceByEmail,
 };
+
