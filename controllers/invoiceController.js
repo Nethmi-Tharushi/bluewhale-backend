@@ -23,6 +23,123 @@ const ensureStatus = (invoice) => {
   return invoice;
 };
 
+const normalizeCandidateType = (value) => {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (normalized === "B2C" || normalized === "B2B" || normalized === "OTHER") {
+    return normalized === "OTHER" ? "Other" : normalized;
+  }
+  return "";
+};
+
+const getAccessibleAdminIds = (req) => {
+  const scope = getSalesScope(req);
+  const ids = [scope.actorId];
+  if (scope.managerId && String(scope.managerId) !== String(scope.actorId)) {
+    ids.push(scope.managerId);
+  }
+  return ids.filter(Boolean);
+};
+
+const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = null) => {
+  const fallback = existingCustomer
+    ? {
+        name: existingCustomer.name || "",
+        email: existingCustomer.email || "",
+        phone: existingCustomer.phone || "",
+        address: existingCustomer.address || "",
+        candidateId: existingCustomer.candidateId || null,
+        candidateType: existingCustomer.candidateType || "Other",
+      }
+    : {
+        name: "",
+        email: "",
+        phone: "",
+        address: "",
+        candidateId: null,
+        candidateType: "Other",
+      };
+
+  const customer = {
+    ...fallback,
+    ...rawCustomer,
+  };
+
+  const candidateId = String(customer.candidateId || "").trim();
+  const explicitCandidateType = normalizeCandidateType(customer.candidateType);
+  const accessibleAdminIds = getAccessibleAdminIds(req);
+
+  if (!candidateId) {
+    customer.name = String(customer.name || "").trim();
+    customer.email = String(customer.email || "").trim().toLowerCase();
+    customer.phone = String(customer.phone || "").trim();
+    customer.address = String(customer.address || "").trim();
+    customer.candidateType = explicitCandidateType || customer.candidateType || "Other";
+    customer.candidateId = null;
+    return customer;
+  }
+
+  const b2cCandidate = await User.findOne({
+    _id: candidateId,
+    userType: "candidate",
+    assignedTo: { $in: accessibleAdminIds },
+  }).select("name email phone address userType");
+
+  if (b2cCandidate && explicitCandidateType !== "B2B") {
+    return {
+      name: b2cCandidate.name || String(customer.name || "").trim(),
+      email: String(b2cCandidate.email || customer.email || "").trim().toLowerCase(),
+      phone: b2cCandidate.phone || String(customer.phone || "").trim(),
+      address: b2cCandidate.address || String(customer.address || "").trim(),
+      candidateId: b2cCandidate._id,
+      candidateType: "B2C",
+    };
+  }
+
+  const agent = await User.findOne({
+    userType: "agent",
+    "managedCandidates._id": candidateId,
+    "managedCandidates.assignedTo": { $in: accessibleAdminIds },
+  }).select("managedCandidates");
+
+  if (agent) {
+    const managedCandidate = agent.managedCandidates.id(candidateId);
+    if (!managedCandidate) {
+      const err = new Error("Managed candidate not found");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    return {
+      name: managedCandidate.name || String(customer.name || "").trim() || "Managed Candidate",
+      email: String(managedCandidate.email || customer.email || "").trim().toLowerCase(),
+      phone: managedCandidate.phone || String(customer.phone || "").trim(),
+      address: managedCandidate.address || String(customer.address || "").trim(),
+      candidateId: managedCandidate._id,
+      candidateType: "B2B",
+    };
+  }
+
+  if (explicitCandidateType === "B2B") {
+    const err = new Error("Managed candidate not found or not assigned to you");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  if (explicitCandidateType === "B2C") {
+    const err = new Error("Candidate not found or not assigned to you");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  customer.name = String(customer.name || "").trim();
+  customer.email = String(customer.email || "").trim().toLowerCase();
+  customer.phone = String(customer.phone || "").trim();
+  customer.address = String(customer.address || "").trim();
+  customer.candidateId = customer.candidateId || null;
+  customer.candidateType = explicitCandidateType || customer.candidateType || "Other";
+  return customer;
+};
+
 const computeFinancials = (payload) => {
   const rawItems = Array.isArray(payload.items) ? payload.items : [];
   if (rawItems.length === 0) throw new Error("At least one invoice item is required");
@@ -185,7 +302,7 @@ const createInvoice = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
 
   const body = req.body || {};
-  const customer = toObjectMaybe(body.customer, {});
+  const rawCustomer = toObjectMaybe(body.customer, {});
   const items = toArrayMaybe(body.items, []);
   const issueDate = body.issueDate;
   const dueDate = body.dueDate;
@@ -195,9 +312,13 @@ const createInvoice = asyncHandler(async (req, res) => {
   const attachmentUrlFromBody = String(body.attachmentUrl || body.fileUrl || "").trim();
   const uploadedFile = getUploadedInvoiceFile(req);
 
-  if (!customer.name || !customer.email) return res.status(400).json({ message: "Customer name and email are required" });
   if (!issueDate || !dueDate) return res.status(400).json({ message: "Issue date and due date are required" });
   if (!INVOICE_STATUSES.includes(status)) return res.status(400).json({ message: "Invalid invoice status" });
+
+  const customer = await resolveInvoiceCustomer(req, rawCustomer);
+  if (!customer.name || !customer.email) {
+    return res.status(400).json({ message: "Customer name and email are required" });
+  }
 
   const financials = computeFinancials({
     ...body,
@@ -393,7 +514,7 @@ const updateInvoice = asyncHandler(async (req, res) => {
   if (invoice.status !== "Draft") return res.status(400).json({ message: "Only Draft invoices can be edited" });
 
   const body = req.body || {};
-  const customer = toObjectMaybe(body.customer, {});
+  const rawCustomer = toObjectMaybe(body.customer, {});
   const issueDate = body.issueDate;
   const dueDate = body.dueDate;
   const currency = body.currency;
@@ -402,12 +523,15 @@ const updateInvoice = asyncHandler(async (req, res) => {
   const attachmentUrlFromBody = String(body.attachmentUrl || body.fileUrl || "").trim();
   const uploadedFile = getUploadedInvoiceFile(req);
 
-  if (customer.name) invoice.customer.name = customer.name;
-  if (customer.email) invoice.customer.email = customer.email;
-  if (customer.phone !== undefined) invoice.customer.phone = customer.phone;
-  if (customer.address !== undefined) invoice.customer.address = customer.address;
-  if (customer.candidateId !== undefined) invoice.customer.candidateId = customer.candidateId || null;
-  if (customer.candidateType) invoice.customer.candidateType = customer.candidateType;
+  if (Object.keys(rawCustomer).length > 0) {
+    const customer = await resolveInvoiceCustomer(req, rawCustomer, invoice.customer?.toObject?.() || invoice.customer);
+    invoice.customer.name = customer.name;
+    invoice.customer.email = customer.email;
+    invoice.customer.phone = customer.phone;
+    invoice.customer.address = customer.address;
+    invoice.customer.candidateId = customer.candidateId || null;
+    invoice.customer.candidateType = customer.candidateType;
+  }
 
   if (issueDate) invoice.issueDate = issueDate;
   if (dueDate) invoice.dueDate = dueDate;
