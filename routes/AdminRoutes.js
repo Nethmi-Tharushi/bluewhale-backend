@@ -12,6 +12,12 @@ const {
   regenerateMyApiKey,
   getMyAuditLogs,
 } = require('../controllers/AdminAuthController');
+const {
+  createAdminMeeting,
+  getAdminMeetings,
+  getAdminMeetingById,
+  updateAdminMeeting,
+} = require('../controllers/meetingController');
 const { protectAdmin, authorizeAdmin } = require('../middlewares/AdminAuth');
 
 // LOGIN (public)
@@ -39,6 +45,11 @@ router.get('/sales-dashboard', protectAdmin, authorizeAdmin('MainAdmin', 'SalesA
 router.get('/agent-dashboard', protectAdmin, authorizeAdmin('MainAdmin', 'AgentAdmin'), (req, res) => {
   res.json({ message: 'Agent Dashboard' });
 });
+
+router.get('/meetings', protectAdmin, authorizeAdmin('MainAdmin'), getAdminMeetings);
+router.get('/meetings/:id', protectAdmin, authorizeAdmin('MainAdmin'), getAdminMeetingById);
+router.post('/meetings', protectAdmin, authorizeAdmin('MainAdmin'), createAdminMeeting);
+router.put('/meetings/:id', protectAdmin, authorizeAdmin('MainAdmin'), updateAdminMeeting);
 
 // Get all admins
 router.get('/', protectAdmin, authorizeAdmin('MainAdmin'), getAllAdmins);

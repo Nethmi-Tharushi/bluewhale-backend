@@ -10,6 +10,7 @@ const Task = require('../models/Task');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { generateOnboardingTasksForApplication } = require("../services/recruitmentWorkflowService");
+const { formatMeetingResponse, formatMeetingsResponse } = require("../services/meetingFormatter");
 
 const getAllCandidates = asyncHandler(async (req, res) => {
   try {
@@ -473,11 +474,10 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
 //meetings endpoints
 const createMeeting = async (req, res) => {
   try {
-    const { candidateId, date, title, locationType, link, notes } = req.body;
+    const { candidateId, date, title, locationType, link, location, notes } = req.body;
 
     let candidateType = 'B2C';
     let managedCandidateId = null;
-    let candidateName = 'Candidate';
 
     // Check B2C candidate first
     let candidate = await User.findById(candidateId);
@@ -493,17 +493,9 @@ const createMeeting = async (req, res) => {
         // This is a B2B managed candidate
         candidateType = 'B2B';
         managedCandidateId = candidateId;
-        candidate = agentWithCandidate; // Use the agent as the candidate
-
-        // Get the managed candidate's name
-        const managedCandidate = agentWithCandidate.managedCandidates.id(candidateId);
-        candidateName = managedCandidate?.name || 'Managed Candidate';
       } else {
         return res.status(404).json({ message: 'Candidate not found' });
       }
-    } else {
-      // B2C candidate
-      candidateName = candidate.name;
     }
 
     let salesAdminId = null;
@@ -513,7 +505,7 @@ const createMeeting = async (req, res) => {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    if (req.admin.role === 'SalesAdmin') {
+    if (req.admin.role === 'SalesAdmin' || req.admin.role === 'SalesStaff') {
       salesAdminId = req.admin._id;
 
       const mainAdmin = await AdminUser.findOne({ role: 'MainAdmin' });
@@ -534,6 +526,7 @@ const createMeeting = async (req, res) => {
       date: new Date(date),
       locationType,
       link,
+      location,
       notes,
       candidateType,
     };
@@ -546,18 +539,13 @@ const createMeeting = async (req, res) => {
     const meeting = await Meeting.create(meetingData);
 
     const populatedMeeting = await Meeting.findById(meeting._id)
-      .populate('candidate', 'name email userType')
-      .populate('salesAdmin', 'name')
-      .populate('mainAdmin', 'name');
+      .populate('candidate', 'name email phone userType')
+      .populate('salesAdmin', 'name email')
+      .populate('mainAdmin', 'name email');
 
-    res.status(201).json({
-      ...populatedMeeting.toObject(),
-      participants: [
-        candidateName,
-        populatedMeeting.salesAdmin?.name || 'SalesAdmin',
-        populatedMeeting.mainAdmin?.name || 'MainAdmin'
-      ]
-    });
+    const formattedMeeting = await formatMeetingResponse(populatedMeeting);
+
+    res.status(201).json(formattedMeeting);
   } catch (error) {
     console.error("Error creating meeting:", error);
     res.status(500).json({ message: error.message });
@@ -569,56 +557,18 @@ const getMeetings = async (req, res) => {
   try {
     let filter = {};
 
-    if (req.admin.role === 'SalesAdmin') {
+    if (req.admin.role === 'SalesAdmin' || req.admin.role === 'SalesStaff') {
       filter.salesAdmin = req.admin._id;
     }
 
     const meetings = await Meeting.find(filter)
+      .populate('candidate', 'name email phone userType')
       .populate('salesAdmin', 'name email')
       .populate('mainAdmin', 'name email')
       .sort({ createdAt: -1 })
       .lean();
 
-    // Manually populate candidate data for both B2C and B2B
-    const formattedMeetings = await Promise.all(
-      meetings.map(async (m) => {
-        const dateObj = new Date(m.date);
-        let candidateData = null;
-
-        // Try to find candidate in User collection (B2C)
-        const b2cCandidate = await User.findById(m.candidate).select('name email phone');
-
-        if (b2cCandidate) {
-          candidateData = b2cCandidate;
-        } else {
-          // If not found in User collection, look for B2B managed candidate
-          const agentWithCandidate = await User.findOne({
-            'managedCandidates._id': m.candidate
-          });
-
-          if (agentWithCandidate) {
-            const managedCandidate = agentWithCandidate.managedCandidates.id(m.candidate);
-            candidateData = {
-              _id: managedCandidate._id,
-              name: managedCandidate.name,
-              email: managedCandidate.email,
-              phone: managedCandidate.phone
-            };
-          }
-        }
-
-        return {
-          ...m,
-          candidate: candidateData,
-          time: dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-          participants: [
-            candidateData ? `${candidateData.name} (${candidateData.email || 'N/A'})` : 'Candidate',
-            m.salesAdmin ? `${m.salesAdmin.name} (${m.salesAdmin.email || 'N/A'})` : 'SalesAdmin',
-            m.mainAdmin ? `${m.mainAdmin.name} (${m.mainAdmin.email || 'N/A'})` : 'MainAdmin'
-          ]
-        };
-      })
-    );
+    const formattedMeetings = await formatMeetingsResponse(meetings);
 
     res.json({ meetings: formattedMeetings });
   } catch (error) {
@@ -633,15 +583,31 @@ const updateMeeting = async (req, res) => {
     const { id } = req.params;
     const { candidate, salesAdmin, mainAdmin, ...updates } = req.body;
 
+    if (updates.dateTime || updates.scheduledAt) {
+      updates.date = updates.dateTime || updates.scheduledAt;
+    }
+
+    if (updates.date) {
+      const parsedDate = new Date(updates.date);
+      if (Number.isNaN(parsedDate.getTime())) {
+        return res.status(400).json({ message: 'Invalid dateTime value' });
+      }
+      updates.date = parsedDate;
+    }
+
+    delete updates.dateTime;
+    delete updates.scheduledAt;
+
     let meeting;
 
     // SalesAdmin
-    if (req.admin.role === 'SalesAdmin') {
+    if (req.admin.role === 'SalesAdmin' || req.admin.role === 'SalesStaff') {
       meeting = await Meeting.findOneAndUpdate(
         { _id: id, salesAdmin: req.admin._id },
         updates,
         { new: true }
       )
+        .populate('candidate', 'name email phone userType')
         .populate('salesAdmin', 'name email')
         .populate('mainAdmin', 'name email');
 
@@ -651,80 +617,14 @@ const updateMeeting = async (req, res) => {
     } else {
       // MainAdmin 
       meeting = await Meeting.findByIdAndUpdate(id, updates, { new: true })
+        .populate('candidate', 'name email phone userType')
         .populate('salesAdmin', 'name email')
         .populate('mainAdmin', 'name email');
 
       if (!meeting) return res.status(404).json({ message: 'Meeting not found' });
     }
 
-    // populate candidate data for both B2C and B2B
-    let candidateData = null;
-    let candidateName = 'Candidate';
-
-    // Check if this is a B2B meeting
-    if (meeting.candidateType === 'B2B' && meeting.managedCandidateId) {
-      // This is a B2B meeting - find the agent and managed candidate
-      const agent = await User.findById(meeting.candidate).select('name email userType managedCandidates');
-
-      if (agent && agent.userType === 'agent') {
-        const managedCandidate = agent.managedCandidates.id(meeting.managedCandidateId);
-
-        if (managedCandidate) {
-          candidateData = {
-            _id: managedCandidate._id,
-            name: managedCandidate.name,
-            email: managedCandidate.email,
-            phone: managedCandidate.phone,
-            userType: 'managedCandidate'
-          };
-          candidateName = `${managedCandidate.name} (Managed by ${agent.name})`;
-        } else {
-          candidateData = {
-            _id: meeting.candidate,
-            name: 'Managed Candidate',
-            email: agent.email,
-            userType: 'agent'
-          };
-          candidateName = 'Managed Candidate';
-        }
-      }
-    } else {
-      // This is a B2C meeting - find regular candidate
-      const b2cCandidate = await User.findById(meeting.candidate).select('name email phone userType');
-
-      if (b2cCandidate) {
-        candidateData = b2cCandidate;
-        candidateName = b2cCandidate.name;
-      } else {
-        // try to find as B2B managed candidate
-        const agentWithCandidate = await User.findOne({
-          'managedCandidates._id': meeting.candidate
-        });
-
-        if (agentWithCandidate) {
-          const managedCandidate = agentWithCandidate.managedCandidates.id(meeting.candidate);
-          candidateData = {
-            _id: managedCandidate._id,
-            name: managedCandidate.name,
-            email: managedCandidate.email,
-            phone: managedCandidate.phone,
-            userType: 'managedCandidate'
-          };
-          candidateName = `${managedCandidate.name} (Managed by ${agentWithCandidate.name})`;
-        }
-      }
-    }
-
-    // Format the response with candidate data
-    const formattedMeeting = {
-      ...meeting.toObject(),
-      candidate: candidateData,
-      participants: [
-        candidateName,
-        meeting.salesAdmin ? `${meeting.salesAdmin.name} (${meeting.salesAdmin.email || 'N/A'})` : 'SalesAdmin',
-        meeting.mainAdmin ? `${meeting.mainAdmin.name} (${meeting.mainAdmin.email || 'N/A'})` : 'MainAdmin'
-      ]
-    };
+    const formattedMeeting = await formatMeetingResponse(meeting);
 
     res.json(formattedMeeting);
   } catch (error) {
