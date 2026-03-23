@@ -215,6 +215,7 @@ app.use("/api/utilities", require("./routes/utilities"));
 app.use("/api/meetings", require("./routes/meetings"));
 app.use("/api/activity-logs", require("./routes/activityLogs"));
 app.use("/api/reports", require("./routes/reports"));
+app.use("/api/whatsapp", require("./routes/whatsapp"));
 app.use("/", require("./routes/whatsapp"));
 
 // --- Serve frontend in production ---
