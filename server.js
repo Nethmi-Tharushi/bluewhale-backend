@@ -34,7 +34,12 @@ const server = http.createServer(app);
 // --- Middleware ---
 app.use(helmet());
 app.use(compression());
-app.use(express.json({ limit: "10kb" }));
+app.use(express.json({
+  limit: "1mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = Buffer.from(buf);
+  },
+}));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 }));
 
 // allow all origins (dev). You already do this:
@@ -210,6 +215,7 @@ app.use("/api/utilities", require("./routes/utilities"));
 app.use("/api/meetings", require("./routes/meetings"));
 app.use("/api/activity-logs", require("./routes/activityLogs"));
 app.use("/api/reports", require("./routes/reports"));
+app.use("/", require("./routes/whatsapp"));
 
 // --- Serve frontend in production ---
 if (process.env.NODE_ENV === "production") {

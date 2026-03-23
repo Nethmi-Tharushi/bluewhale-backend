@@ -62,6 +62,22 @@ const adminUserSchema = new mongoose.Schema({
       ip: { type: String, default: '' },
     }
   ],
+
+  whatsappInbox: {
+    status: {
+      type: String,
+      enum: ['available', 'busy', 'offline'],
+      default: 'available',
+    },
+    allowAutoAssignment: {
+      type: Boolean,
+      default: true,
+    },
+    lastAssignedAt: {
+      type: Date,
+      default: null,
+    },
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('AdminUser', adminUserSchema);
