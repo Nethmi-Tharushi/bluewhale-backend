@@ -22,12 +22,12 @@ const verifyMetaSignature = ({ rawBody, signatureHeader, appSecret }) => {
 
 const extractMessageContent = (message) => {
   if (!message || typeof message !== "object") {
-    return { content: "", type: "unknown" };
+    return { content: "", type: "unknown", media: null };
   }
 
   switch (message.type) {
     case "text":
-      return { content: message.text?.body || "", type: "text" };
+      return { content: message.text?.body || "", type: "text", media: null };
     case "interactive":
       return {
         content:
@@ -35,19 +35,27 @@ const extractMessageContent = (message) => {
           message.interactive?.list_reply?.title ||
           "[interactive]",
         type: "interactive",
+        media: null,
       };
     case "button":
-      return { content: message.button?.text || "[button]", type: "interactive" };
+      return { content: message.button?.text || "[button]", type: "interactive", media: null };
     case "image":
     case "audio":
     case "video":
     case "document":
       return {
-        content: message[message.type]?.caption || `[${message.type}]`,
+        content: message[message.type]?.caption || message[message.type]?.filename || `[${message.type}]`,
         type: message.type,
+        media: {
+          id: message[message.type]?.id || "",
+          mimeType: message[message.type]?.mime_type || "",
+          sha256: message[message.type]?.sha256 || "",
+          caption: message[message.type]?.caption || "",
+          filename: message[message.type]?.filename || "",
+        },
       };
     default:
-      return { content: `[${message.type || "unknown"}]`, type: "unknown" };
+      return { content: `[${message.type || "unknown"}]`, type: "unknown", media: null };
   }
 };
 
@@ -64,7 +72,7 @@ const parseWebhookPayload = (payload) => {
 
       for (const message of messages) {
         const contact = contacts.find((item) => item.wa_id === message.from) || contacts[0] || {};
-        const { content, type } = extractMessageContent(message);
+        const { content, type, media } = extractMessageContent(message);
 
         inboundMessages.push({
           phone: normalizePhone(message.from || contact.wa_id),
@@ -72,6 +80,7 @@ const parseWebhookPayload = (payload) => {
           name: contact.profile?.name || "",
           text: content,
           type,
+          media,
           messageId: message.id || "",
           timestamp: message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date(),
           phoneNumberId: value.metadata?.phone_number_id || "",

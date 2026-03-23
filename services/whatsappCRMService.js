@@ -109,6 +109,7 @@ const saveInboundMessage = async ({ app, message }) => {
         status: "received",
         metadata: {
           phoneNumberId: message.phoneNumberId || "",
+          media: message.media || null,
         },
         rawPayload: {
           message: message.rawMessage || {},
@@ -156,6 +157,7 @@ const saveOutgoingMessage = async ({
   content,
   response,
   requestPayload,
+  media = null,
 }) => {
   const externalMessageId = response?.messages?.[0]?.id || "";
   const savedMessage = await WhatsAppMessage.create({
@@ -171,6 +173,7 @@ const saveOutgoingMessage = async ({
     status: "sent",
     metadata: {
       contacts: response?.contacts || [],
+      media: media || null,
     },
     rawPayload: {
       requestPayload,

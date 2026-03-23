@@ -2,6 +2,7 @@ const AdminUser = require("../models/AdminUser");
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppContact = require("../models/WhatsAppContact");
+const WhatsAppMessage = require("../models/WhatsAppMessage");
 const { getAvailableAgents } = require("../services/whatsappAssignmentService");
 const {
   saveInboundMessage,
@@ -15,8 +16,16 @@ const {
   ensureConversation,
   upsertContact,
 } = require("../services/whatsappCRMService");
-const { sendMessage } = require("../services/whatsappService");
+const { sendMessage, downloadMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
+
+const inferMediaMessageType = (file) => {
+  if (!file?.mimetype) return null;
+  if (file.mimetype.startsWith("image/")) return "image";
+  if (file.mimetype.startsWith("audio/")) return "audio";
+  if (file.mimetype.startsWith("video/")) return "video";
+  return "document";
+};
 
 const getWebhookChallenge = async (req, res) => {
   const mode = req.query["hub.mode"];
@@ -114,6 +123,47 @@ const getConversationMessages = async (req, res) => {
   }
 };
 
+const getMessageMedia = async (req, res) => {
+  try {
+    const message = await WhatsAppMessage.findById(req.params.messageId).lean();
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const media = message.metadata?.media;
+    if (!media) {
+      return res.status(404).json({ message: "No media found for this message" });
+    }
+
+    if (media.url && !media.id) {
+      return res.redirect(media.url);
+    }
+
+    if (!media.id) {
+      return res.status(404).json({ message: "Media reference is missing" });
+    }
+
+    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    if (!accessToken) {
+      return res.status(500).json({ message: "Missing WhatsApp access token" });
+    }
+
+    const { buffer, contentType } = await downloadMedia({
+      mediaId: media.id,
+      accessToken,
+    });
+
+    if (media.filename) {
+      res.setHeader("Content-Disposition", `inline; filename="${media.filename.replace(/"/g, "")}"`);
+    }
+    res.setHeader("Content-Type", media.mimeType || contentType || "application/octet-stream");
+    return res.status(200).send(buffer);
+  } catch (error) {
+    console.error("Failed to load WhatsApp media:", error);
+    return res.status(500).json({ message: error.message || "Failed to load WhatsApp media" });
+  }
+};
+
 const getAgents = async (_req, res) => {
   try {
     const autoAssignableAgents = await getAvailableAgents();
@@ -184,9 +234,12 @@ const sendOutgoingMessage = async (req, res) => {
       contactId,
       phone,
       text,
-      type = "text",
+      type: requestedType = "text",
       template,
     } = req.body || {};
+    const uploadedFile = req.file || null;
+    const inferredType = uploadedFile ? inferMediaMessageType(uploadedFile) : null;
+    const type = inferredType || requestedType;
 
     let conversation = null;
     let contact = null;
@@ -234,11 +287,31 @@ const sendOutgoingMessage = async (req, res) => {
       return res.status(400).json({ message: "template.name is required for template messages" });
     }
 
+    if (!["text", "template", ...SUPPORTED_MEDIA_TYPES].includes(type)) {
+      return res.status(400).json({ message: "Unsupported WhatsApp message type" });
+    }
+
+    const media = uploadedFile
+      ? {
+          url: uploadedFile.path || uploadedFile.secure_url,
+          mimeType: uploadedFile.mimetype,
+          filename: uploadedFile.originalname,
+          size: uploadedFile.size || 0,
+          publicId: uploadedFile.filename || "",
+          caption: String(text || "").trim(),
+        }
+      : null;
+
+    if (SUPPORTED_MEDIA_TYPES.includes(type) && !media?.url) {
+      return res.status(400).json({ message: `attachment is required for ${type} messages` });
+    }
+
     const { payload, response } = await sendMessage({
       to: contact.phone,
       type,
       text,
       template,
+      media,
       context: {
         conversationId: conversation._id,
         contactId: contact._id,
@@ -252,9 +325,15 @@ const sendOutgoingMessage = async (req, res) => {
       contact,
       agentId: req.admin?._id || conversation.agentId || null,
       messageType: type,
-      content: type === "text" ? String(text || "").trim() : `Template: ${template.name}`,
+      content:
+        type === "text"
+          ? String(text || "").trim()
+          : type === "template"
+            ? `Template: ${template.name}`
+            : String(text || "").trim() || uploadedFile?.originalname || `[${type}]`,
       response,
       requestPayload: payload,
+      media,
     });
 
     return res.status(201).json({
@@ -273,6 +352,7 @@ module.exports = {
   receiveWebhook,
   getConversations,
   getConversationMessages,
+  getMessageMedia,
   getAgents,
   assignAgent,
   setConversationStatus,

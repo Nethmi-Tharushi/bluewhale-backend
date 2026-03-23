@@ -1,12 +1,13 @@
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
+const SUPPORTED_MEDIA_TYPES = ["image", "document", "audio", "video"];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const normalizePhone = (phone) => String(phone || "").replace(/[^\d+]/g, "").replace(/^00/, "+");
 
-const buildSendPayload = ({ to, type = "text", text, template }) => {
+const buildSendPayload = ({ to, type = "text", text, template, media }) => {
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -24,6 +25,23 @@ const buildSendPayload = ({ to, type = "text", text, template }) => {
       },
       components: Array.isArray(template?.components) ? template.components : [],
     };
+  } else if (SUPPORTED_MEDIA_TYPES.includes(type)) {
+    const mediaLink = media?.link || media?.url;
+    if (!mediaLink) {
+      throw new Error(`media.link is required for ${type} messages`);
+    }
+
+    payload[type] = {
+      link: mediaLink,
+    };
+
+    if (["image", "video", "document"].includes(type) && String(media?.caption || text || "").trim()) {
+      payload[type].caption = String(media?.caption || text || "").trim();
+    }
+
+    if (type === "document" && String(media?.filename || "").trim()) {
+      payload[type].filename = String(media.filename).trim();
+    }
   } else {
     throw new Error(`Unsupported WhatsApp message type: ${type}`);
   }
@@ -66,7 +84,53 @@ const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries =
   throw lastError;
 };
 
-const sendMessage = async ({ to, type = "text", text, template, context = {} }) => {
+const getMediaMetadata = async ({ mediaId, accessToken }) => {
+  const response = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data?.error?.message || "Failed to fetch WhatsApp media metadata");
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+
+  return data;
+};
+
+const downloadMedia = async ({ mediaId, accessToken }) => {
+  const metadata = await getMediaMetadata({ mediaId, accessToken });
+  const response = await fetch(metadata.url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const error = new Error(data?.error?.message || "Failed to download WhatsApp media");
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    metadata,
+    contentType: response.headers.get("content-type") || metadata.mime_type || "application/octet-stream",
+    contentLength: response.headers.get("content-length") || String(Buffer.byteLength(Buffer.from(arrayBuffer))),
+  };
+};
+
+const sendMessage = async ({ to, type = "text", text, template, media, context = {} }) => {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
@@ -74,7 +138,7 @@ const sendMessage = async ({ to, type = "text", text, template, context = {} }) 
     throw new Error("Missing WhatsApp Cloud API credentials in environment variables");
   }
 
-  const payload = buildSendPayload({ to, type, text, template });
+  const payload = buildSendPayload({ to, type, text, template, media });
 
   const eventLog = await WhatsAppEventLog.create({
     direction: "outgoing",
@@ -104,4 +168,7 @@ const sendMessage = async ({ to, type = "text", text, template, context = {} }) 
 module.exports = {
   sendMessage,
   normalizePhone,
+  downloadMedia,
+  getMediaMetadata,
+  SUPPORTED_MEDIA_TYPES,
 };
