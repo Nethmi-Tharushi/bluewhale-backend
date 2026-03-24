@@ -28,6 +28,28 @@ const inferMediaMessageType = (file) => {
   return "document";
 };
 
+const isMainAdmin = (admin) => String(admin?.role || "") === "MainAdmin";
+const isSalesAdmin = (admin) => String(admin?.role || "") === "SalesAdmin";
+const isSalesStaff = (admin) => String(admin?.role || "") === "SalesStaff";
+
+const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
+
+const canSendConversationMessage = ({ admin, conversation }) => {
+  if (isMainAdmin(admin)) return true;
+  if (isSalesStaff(admin)) {
+    return String(conversation?.agentId || "") === String(admin?._id || "");
+  }
+  return false;
+};
+
+const canUpdateConversationStatus = ({ admin, conversation }) => {
+  if (canManageAssignments(admin)) return true;
+  if (isSalesStaff(admin)) {
+    return String(conversation?.agentId || "") === String(admin?._id || "");
+  }
+  return false;
+};
+
 const hydrateMediaMessage = async (messageDoc) => {
   const message = messageDoc?.toObject ? messageDoc.toObject() : messageDoc;
   const media = message?.metadata?.media;
@@ -144,6 +166,7 @@ const getConversations = async (req, res) => {
     const conversations = await listConversations({
       status: req.query.status,
       search: req.query.search,
+      admin: req.admin,
     });
     return res.json({ success: true, data: conversations });
   } catch (error) {
@@ -159,12 +182,15 @@ const getConversationMessages = async (req, res) => {
       return res.status(404).json({ message: "Conversation not found" });
     }
 
-    const messages = await listMessages({ conversationId: req.params.conversationId });
+    const messages = await listMessages({
+      conversationId: req.params.conversationId,
+      admin: req.admin,
+    });
     const hydratedMessages = await Promise.all(messages.map((message) => hydrateMediaMessage(message)));
     return res.json({ success: true, data: hydratedMessages });
   } catch (error) {
     console.error("Failed to fetch WhatsApp messages:", error);
-    return res.status(500).json({ message: "Failed to fetch messages" });
+    return res.status(error.message?.includes("Access denied") ? 403 : 500).json({ message: error.message || "Failed to fetch messages" });
   }
 };
 
@@ -235,7 +261,7 @@ const getMessageMedia = async (req, res) => {
 const getAgents = async (_req, res) => {
   try {
     const autoAssignableAgents = await getAvailableAgents();
-    const allAgents = await AdminUser.find({})
+    const allAgents = await AdminUser.find({ role: "SalesStaff" })
       .select("_id name email role whatsappInbox createdAt")
       .sort({ createdAt: 1 })
       .lean();
@@ -268,6 +294,10 @@ const getTemplates = async (req, res) => {
 
 const assignAgent = async (req, res) => {
   try {
+    if (!canManageAssignments(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only SalesAdmin or MainAdmin can assign chats" });
+    }
+
     const { conversationId, agentId } = req.body || {};
     if (!conversationId || !agentId) {
       return res.status(400).json({ message: "conversationId and agentId are required" });
@@ -295,13 +325,22 @@ const setConversationStatus = async (req, res) => {
       return res.status(400).json({ message: "status must be open, assigned, or closed" });
     }
 
-    const conversation = await updateConversationStatus({
+    const conversation = await WhatsAppConversation.findById(req.params.conversationId).select("_id agentId");
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (!canUpdateConversationStatus({ admin: req.admin, conversation })) {
+      return res.status(403).json({ message: "Access denied: you cannot update this conversation" });
+    }
+
+    const updatedConversation = await updateConversationStatus({
       conversationId: req.params.conversationId,
       status,
     });
 
-    await emitConversationEvents(req.app, conversation._id);
-    return res.json({ success: true, data: conversation });
+    await emitConversationEvents(req.app, updatedConversation._id);
+    return res.json({ success: true, data: updatedConversation });
   } catch (error) {
     console.error("Failed to update WhatsApp conversation status:", error);
     return res.status(400).json({ message: error.message || "Failed to update conversation status" });
@@ -330,10 +369,17 @@ const sendOutgoingMessage = async (req, res) => {
       if (!conversation) {
         return res.status(404).json({ message: "Conversation not found" });
       }
+      if (!canSendConversationMessage({ admin: req.admin, conversation })) {
+        return res.status(403).json({ message: "Access denied: only the assigned SalesStaff member can chat on this conversation" });
+      }
       contact = await WhatsAppContact.findById(conversation.contactId);
     } else {
       if (!contactId && !phone) {
         return res.status(400).json({ message: "conversationId or contactId or phone is required" });
+      }
+
+      if (!canManageAssignments(req.admin) && !isMainAdmin(req.admin)) {
+        return res.status(403).json({ message: "Access denied: only SalesAdmin or MainAdmin can start a new outbound chat" });
       }
 
       if (contactId) {
@@ -396,7 +442,7 @@ const sendOutgoingMessage = async (req, res) => {
       context: {
         conversationId: conversation._id,
         contactId: contact._id,
-        agentId: req.admin?._id || conversation.agentId || null,
+        agentId: conversation.agentId || (isSalesStaff(req.admin) ? req.admin?._id : null),
       },
     });
 
@@ -404,7 +450,7 @@ const sendOutgoingMessage = async (req, res) => {
       app: req.app,
       conversation,
       contact,
-      agentId: req.admin?._id || conversation.agentId || null,
+      agentId: conversation.agentId || (isSalesStaff(req.admin) ? req.admin?._id : null),
       messageType: type,
       content:
         type === "text"

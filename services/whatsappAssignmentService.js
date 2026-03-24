@@ -1,7 +1,7 @@
 const AdminUser = require("../models/AdminUser");
 const WhatsAppAssignmentState = require("../models/WhatsAppAssignmentState");
 
-const DEFAULT_AGENT_ROLES = ["MainAdmin", "SalesAdmin", "SalesStaff", "AgentAdmin"];
+const DEFAULT_AGENT_ROLES = ["SalesStaff"];
 
 const getAvailableAgents = async () => {
   return AdminUser.find({

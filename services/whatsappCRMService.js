@@ -29,6 +29,8 @@ const emitMessageEvent = (app, message) => {
   io.emit("whatsapp:message.created", message);
 };
 
+const isSalesStaff = (admin) => String(admin?.role || "") === "SalesStaff";
+
 const upsertContact = async ({ phone, waId, name, profile = {} }) => {
   const normalizedPhone = normalizePhone(phone || waId);
   if (!normalizedPhone) {
@@ -247,9 +249,12 @@ const updateMessageStatusFromWebhook = async ({ externalMessageId, status, times
   return message;
 };
 
-const listConversations = async ({ status, search }) => {
+const listConversations = async ({ status, search, admin }) => {
   const query = {};
   if (status) query.status = status;
+  if (isSalesStaff(admin)) {
+    query.agentId = admin._id;
+  }
 
   if (search) {
     const contacts = await WhatsAppContact.find({
@@ -267,7 +272,16 @@ const listConversations = async ({ status, search }) => {
     .lean();
 };
 
-const listMessages = async ({ conversationId }) => {
+const listMessages = async ({ conversationId, admin }) => {
+  const conversation = await WhatsAppConversation.findById(conversationId).select("_id agentId");
+  if (!conversation) {
+    return [];
+  }
+
+  if (isSalesStaff(admin) && String(conversation.agentId || "") !== String(admin._id || "")) {
+    throw new Error("Access denied: conversation is not assigned to you");
+  }
+
   return WhatsAppMessage.find({ conversationId })
     .sort({ timestamp: 1, createdAt: 1 })
     .lean();
@@ -277,6 +291,9 @@ const assignConversation = async ({ conversationId, agentId, assignedBy, method 
   const agent = await AdminUser.findById(agentId).select("_id name email role");
   if (!agent) {
     throw new Error("Agent not found");
+  }
+  if (agent.role !== "SalesStaff") {
+    throw new Error("WhatsApp chats can only be assigned to SalesStaff members");
   }
 
   const conversation = await WhatsAppConversation.findById(conversationId);
