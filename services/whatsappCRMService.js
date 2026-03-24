@@ -4,6 +4,7 @@ const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
 const { pickNextAgentRoundRobin } = require("./whatsappAssignmentService");
 const { normalizePhone } = require("./whatsappWebhookService");
+const { cacheInboundMedia } = require("./whatsappService");
 
 const conversationPopulate = [
   { path: "contactId", select: "name phone waId lastActivityAt" },
@@ -83,6 +84,25 @@ const ensureConversation = async ({ contactId, autoAssign = true }) => {
 };
 
 const saveInboundMessage = async ({ app, message }) => {
+  let inboundMedia = message.media || null;
+
+  if (inboundMedia?.id && !inboundMedia?.url) {
+    try {
+      const cachedMedia = await cacheInboundMedia({
+        mediaId: inboundMedia.id,
+        mimeType: inboundMedia.mimeType || "",
+        filename: inboundMedia.filename || "",
+      });
+
+      inboundMedia = {
+        ...inboundMedia,
+        ...cachedMedia,
+      };
+    } catch (error) {
+      console.error("Failed to cache inbound WhatsApp media:", error);
+    }
+  }
+
   const contact = await upsertContact({
     phone: message.phone,
     waId: message.waId,
@@ -109,7 +129,7 @@ const saveInboundMessage = async ({ app, message }) => {
         status: "received",
         metadata: {
           phoneNumberId: message.phoneNumberId || "",
-          media: message.media || null,
+          media: inboundMedia,
         },
         rawPayload: {
           message: message.rawMessage || {},

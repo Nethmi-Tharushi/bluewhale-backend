@@ -16,7 +16,7 @@ const {
   ensureConversation,
   upsertContact,
 } = require("../services/whatsappCRMService");
-const { sendMessage, downloadMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
+const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
 
 const inferMediaMessageType = (file) => {
@@ -25,6 +25,49 @@ const inferMediaMessageType = (file) => {
   if (file.mimetype.startsWith("audio/")) return "audio";
   if (file.mimetype.startsWith("video/")) return "video";
   return "document";
+};
+
+const hydrateMediaMessage = async (messageDoc) => {
+  const message = messageDoc?.toObject ? messageDoc.toObject() : messageDoc;
+  const media = message?.metadata?.media;
+
+  if (!media?.id || media?.url) {
+    return message;
+  }
+
+  try {
+    const cachedMedia = await cacheInboundMedia({
+      mediaId: media.id,
+      mimeType: media.mimeType || "",
+      filename: media.filename || "",
+    });
+
+    await WhatsAppMessage.updateOne(
+      { _id: message._id },
+      {
+        $set: {
+          "metadata.media": {
+            ...media,
+            ...cachedMedia,
+          },
+        },
+      }
+    );
+
+    return {
+      ...message,
+      metadata: {
+        ...(message.metadata || {}),
+        media: {
+          ...media,
+          ...cachedMedia,
+        },
+      },
+    };
+  } catch (error) {
+    console.error("Failed to hydrate WhatsApp media message:", error);
+    return message;
+  }
 };
 
 const getWebhookChallenge = async (req, res) => {
@@ -116,7 +159,8 @@ const getConversationMessages = async (req, res) => {
     }
 
     const messages = await listMessages({ conversationId: req.params.conversationId });
-    return res.json({ success: true, data: messages });
+    const hydratedMessages = await Promise.all(messages.map((message) => hydrateMediaMessage(message)));
+    return res.json({ success: true, data: hydratedMessages });
   } catch (error) {
     console.error("Failed to fetch WhatsApp messages:", error);
     return res.status(500).json({ message: "Failed to fetch messages" });
@@ -135,7 +179,30 @@ const getMessageMedia = async (req, res) => {
       return res.status(404).json({ message: "No media found for this message" });
     }
 
-    if (media.url && !media.id) {
+    if (!media.url && media.id) {
+      const cachedMedia = await cacheInboundMedia({
+        mediaId: media.id,
+        mimeType: media.mimeType || "",
+        filename: media.filename || "",
+      });
+
+      await WhatsAppMessage.updateOne(
+        { _id: message._id },
+        {
+          $set: {
+            "metadata.media": {
+              ...media,
+              ...cachedMedia,
+            },
+          },
+        }
+      );
+
+      media.url = cachedMedia.url;
+      media.mimeType = cachedMedia.mimeType || media.mimeType || "";
+    }
+
+    if (media.url) {
       return res.redirect(media.url);
     }
 

@@ -1,4 +1,6 @@
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
+const cloudinary = require("../config/cloudinary");
+const streamifier = require("streamifier");
 
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 const SUPPORTED_MEDIA_TYPES = ["image", "document", "audio", "video"];
@@ -130,6 +132,57 @@ const downloadMedia = async ({ mediaId, accessToken }) => {
   };
 };
 
+const uploadBufferToCloudinary = ({ buffer, resourceType, publicId, filename }) =>
+  new Promise((resolve, reject) => {
+    const upload = cloudinary.uploader.upload_stream(
+      {
+        folder: "bluewhale/whatsapp/inbound",
+        resource_type: resourceType,
+        public_id: publicId,
+        use_filename: !publicId,
+        filename_override: filename || undefined,
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(result);
+      }
+    );
+
+    streamifier.createReadStream(buffer).pipe(upload);
+  });
+
+const getCloudinaryResourceType = (mimeType = "") => {
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  return "raw";
+};
+
+const cacheInboundMedia = async ({ mediaId, mimeType = "", filename = "" }) => {
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!accessToken || !mediaId) {
+    throw new Error("Missing WhatsApp access token or media id");
+  }
+
+  const downloaded = await downloadMedia({ mediaId, accessToken });
+  const uploadResult = await uploadBufferToCloudinary({
+    buffer: downloaded.buffer,
+    resourceType: getCloudinaryResourceType(mimeType || downloaded.metadata?.mime_type || ""),
+    publicId: `wa_${mediaId}_${Date.now()}`,
+    filename,
+  });
+
+  return {
+    url: uploadResult.secure_url,
+    publicId: uploadResult.public_id,
+    resourceType: uploadResult.resource_type,
+    bytes: uploadResult.bytes,
+    mimeType: mimeType || downloaded.metadata?.mime_type || downloaded.contentType || "",
+  };
+};
+
 const sendMessage = async ({ to, type = "text", text, template, media, context = {} }) => {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -169,6 +222,7 @@ module.exports = {
   sendMessage,
   normalizePhone,
   downloadMedia,
+  cacheInboundMedia,
   getMediaMetadata,
   SUPPORTED_MEDIA_TYPES,
 };
