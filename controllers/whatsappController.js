@@ -17,6 +17,7 @@ const {
   upsertContact,
 } = require("../services/whatsappCRMService");
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
+const { listTemplates } = require("../services/whatsappTemplateService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
 
 const inferMediaMessageType = (file) => {
@@ -252,6 +253,19 @@ const getAgents = async (_req, res) => {
   }
 };
 
+const getTemplates = async (req, res) => {
+  try {
+    const templates = await listTemplates({
+      search: req.query.search || "",
+      status: req.query.status || "",
+    });
+    return res.json({ success: true, data: templates });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp templates:", error);
+    return res.status(500).json({ message: error.message || "Failed to fetch WhatsApp templates" });
+  }
+};
+
 const assignAgent = async (req, res) => {
   try {
     const { conversationId, agentId } = req.body || {};
@@ -421,6 +435,7 @@ module.exports = {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getTemplates,
   assignAgent,
   setConversationStatus,
   sendOutgoingMessage,
