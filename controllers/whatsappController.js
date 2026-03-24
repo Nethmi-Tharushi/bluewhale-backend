@@ -36,17 +36,21 @@ const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin
 
 const canSendConversationMessage = ({ admin, conversation }) => {
   if (isMainAdmin(admin)) return true;
+
   if (isSalesStaff(admin)) {
     return String(conversation?.agentId || "") === String(admin?._id || "");
   }
+
   return false;
 };
 
 const canUpdateConversationStatus = ({ admin, conversation }) => {
   if (canManageAssignments(admin)) return true;
+
   if (isSalesStaff(admin)) {
     return String(conversation?.agentId || "") === String(admin?._id || "");
   }
+
   return false;
 };
 

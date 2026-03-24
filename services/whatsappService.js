@@ -29,6 +29,7 @@ const buildSendPayload = ({ to, type = "text", text, template, media }) => {
     };
   } else if (SUPPORTED_MEDIA_TYPES.includes(type)) {
     const mediaLink = media?.link || media?.url;
+
     if (!mediaLink) {
       throw new Error(`media.link is required for ${type} messages`);
     }

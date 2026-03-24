@@ -59,6 +59,7 @@ const upsertContact = async ({ phone, waId, name, profile = {} }) => {
 
 const ensureConversation = async ({ contactId, autoAssign = true }) => {
   let conversation = await WhatsAppConversation.findOne({ contactId, channel: "whatsapp" });
+
   if (conversation) return conversation;
 
   conversation = await WhatsAppConversation.create({
@@ -320,6 +321,7 @@ const assignConversation = async ({ conversationId, agentId, assignedBy, method 
 
 const updateConversationStatus = async ({ conversationId, status }) => {
   const conversation = await WhatsAppConversation.findById(conversationId);
+
   if (!conversation) {
     throw new Error("Conversation not found");
   }

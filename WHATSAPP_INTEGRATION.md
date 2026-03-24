@@ -4,9 +4,12 @@ This CRM now includes an in-house WhatsApp Business Cloud API module with:
 
 - `GET /webhook` for Meta verification
 - `POST /webhook` for inbound webhook events
+
 - `GET /conversations`
 - `GET /messages/:conversationId`
 - `GET /agents`
+- `GET /templates`
+
 - `POST /assign-agent`
 - `POST /send-message`
 - `POST /conversations/:conversationId/status`
@@ -31,10 +34,13 @@ Set these in `server/.env`:
 
 ## Agent assignment
 
-- Agents are pulled from `AdminUser`.
-- Auto-assignment uses round robin across admins where:
+- Assignable chat handlers are pulled from `AdminUser`.
+- Auto-assignment uses round robin across available `SalesStaff` users where:
   - `whatsappInbox.allowAutoAssignment = true`
   - `whatsappInbox.status` is `available` or `busy`
+- `SalesAdmin` can manually reassign chats to a preferred `SalesStaff` member.
+- `SalesStaff` can only work chats assigned to them.
+- `MainAdmin` retains override visibility and management access.
 
 ## Conversation lifecycle
 
@@ -42,6 +48,8 @@ Set these in `server/.env`:
 - A `WhatsAppConversation` is created per contact
 - First unassigned conversation is auto-assigned round-robin
 - Conversation status is tracked as `open`, `assigned`, or `closed`
+- Approved WhatsApp templates are fetched from Meta and can be selected from the CRM
+- Media messages can be previewed and downloaded in the CRM inbox
 
 ## Example send message payload
 
