@@ -34,8 +34,8 @@ router.post('/:jobId', protect, (req, res, next) => {
 router.get('/my', protect, getUserInquiries);
 
 // Admin routes
-router.get('/', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), getAllInquiries);
-router.put('/:id/respond', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), respondToInquiry);
+router.get('/', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), getAllInquiries);
+router.put('/:id/respond', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), respondToInquiry);
 router.delete('/:id', protectAdmin, authorizeAdmin('MainAdmin'), deleteInquiry);
 
 module.exports = router;

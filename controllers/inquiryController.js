@@ -91,11 +91,23 @@ exports.getAllInquiries = async (req, res) => {
   try {
     let filter = {};
 
-    if (req.admin.role === "SalesAdmin") {
-      // Find users assigned to this sales admin
-      const assignedUsers = await User.find({ assignedTo: req.admin._id }).select("_id");
-      const userIds = assignedUsers.map(u => u._id);
-      filter.user = { $in: userIds };
+    if (req.admin.role === "SalesAdmin" || req.admin.role === "SalesStaff") {
+      const assignedCandidates = await User.find({ assignedTo: req.admin._id }).select("_id");
+      const assignedCandidateIds = assignedCandidates.map((user) => user._id);
+
+      const agentOwners = await User.find({ "managedCandidates.assignedTo": req.admin._id }).select("managedCandidates");
+      const managedCandidateIds = agentOwners.flatMap((agent) =>
+        (agent.managedCandidates || [])
+          .filter((candidate) => candidate?.assignedTo?.toString() === req.admin._id.toString())
+          .map((candidate) => String(candidate._id))
+      );
+
+      filter = {
+        $or: [
+          { user: { $in: assignedCandidateIds } },
+          { "managedCandidate.candidateId": { $in: managedCandidateIds } },
+        ],
+      };
     }
 
     const inquiries = await JobInquiry.find(filter)
@@ -151,10 +163,17 @@ exports.respondToInquiry = async (req, res) => {
 
     if (!inquiry) return res.status(404).json({ message: "Inquiry not found" });
 
-    // SalesAdmin can only respond to their assigned candidates
-    if (req.admin.role === "SalesAdmin") {
-      const user = await User.findById(inquiry.user);
-      if (!user || user.assignedTo?.toString() !== req.admin._id.toString()) {
+    // Sales team members can only respond to inquiries tied to their assigned candidates.
+    if (req.admin.role === "SalesAdmin" || req.admin.role === "SalesStaff") {
+      const user = await User.findById(inquiry.user).select("assignedTo managedCandidates");
+      const ownsDirectCandidate = user?.assignedTo?.toString() === req.admin._id.toString();
+      const ownsManagedCandidate = (user?.managedCandidates || []).some(
+        (candidate) =>
+          String(candidate?._id) === String(inquiry.managedCandidate?.candidateId || "") &&
+          candidate?.assignedTo?.toString() === req.admin._id.toString()
+      );
+
+      if (!ownsDirectCandidate && !ownsManagedCandidate) {
         return res.status(403).json({ message: "Unauthorized to respond to this inquiry" });
       }
     }

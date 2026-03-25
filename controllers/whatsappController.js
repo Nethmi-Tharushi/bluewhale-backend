@@ -1,3 +1,4 @@
+const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
@@ -33,9 +34,10 @@ const isSalesAdmin = (admin) => String(admin?.role || "") === "SalesAdmin";
 const isSalesStaff = (admin) => String(admin?.role || "") === "SalesStaff";
 
 const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
+const isValidObjectId = (value) => Types.ObjectId.isValid(String(value || ""));
 
 const canSendConversationMessage = ({ admin, conversation }) => {
-  if (isMainAdmin(admin)) return true;
+  if (canManageAssignments(admin)) return true;
 
   if (isSalesStaff(admin)) {
     return String(conversation?.agentId || "") === String(admin?._id || "");
@@ -181,6 +183,10 @@ const getConversations = async (req, res) => {
 
 const getConversationMessages = async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.conversationId)) {
+      return res.status(400).json({ message: "Invalid conversation id" });
+    }
+
     const conversation = await WhatsAppConversation.findById(req.params.conversationId).select("_id");
     if (!conversation) {
       return res.status(404).json({ message: "Conversation not found" });
@@ -329,6 +335,10 @@ const setConversationStatus = async (req, res) => {
       return res.status(400).json({ message: "status must be open, assigned, or closed" });
     }
 
+    if (!isValidObjectId(req.params.conversationId)) {
+      return res.status(400).json({ message: "Invalid conversation id" });
+    }
+
     const conversation = await WhatsAppConversation.findById(req.params.conversationId).select("_id agentId");
     if (!conversation) {
       return res.status(404).json({ message: "Conversation not found" });
@@ -369,6 +379,9 @@ const sendOutgoingMessage = async (req, res) => {
     let contact = null;
 
     if (conversationId) {
+      if (!isValidObjectId(conversationId)) {
+        return res.status(400).json({ message: "Invalid conversation id" });
+      }
       conversation = await WhatsAppConversation.findById(conversationId);
       if (!conversation) {
         return res.status(404).json({ message: "Conversation not found" });
