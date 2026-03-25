@@ -8,7 +8,10 @@ const {
   getAssignedAdmin,
   getAdminsForUser,
   getUsersForAdmin,
+  getInternalAdminsForAdmin,
+  getInternalAdminMessages,
   sendMessageToAdmin,
+  sendMessageToInternalAdmin,
   sendMessageToUser,
 } = require("../controllers/chatController");
 
@@ -33,5 +36,8 @@ router.post("/messages/:userId", protectAdmin, authorizeAdmin(), sendMessageToUs
 router.get("/admin/users", protectAdmin, authorizeAdmin(), getUsersForAdmin);
 router.get("/admin/messages/:userId", protectAdmin, authorizeAdmin(), getAdminMessages);
 router.post("/admin/messages/:userId", protectAdmin, authorizeAdmin(), sendMessageToUser);
+router.get("/admin/internal/contacts", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getInternalAdminsForAdmin);
+router.get("/admin/internal/messages/:adminId", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getInternalAdminMessages);
+router.post("/admin/internal/messages/:adminId", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), sendMessageToInternalAdmin);
 
 module.exports = router;
