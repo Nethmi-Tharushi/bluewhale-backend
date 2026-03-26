@@ -43,6 +43,18 @@ const taskSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  conversationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'WhatsAppConversation',
+    default: null,
+    index: true,
+  },
+  linkedLeadId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Lead',
+    default: null,
+    index: true,
+  },
   managedCandidateId: {
     type: mongoose.Schema.Types.ObjectId
   },

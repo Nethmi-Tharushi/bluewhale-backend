@@ -9,6 +9,6 @@ const { protect, protectAdmin, authorizeAdmin } = require("../middlewares/AdminA
 
 router.get('/', protect, getCandidateMeetings);
 router.get('/:id', protect, getCandidateMeetingById);
-router.post('/', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), createAdminMeeting);
+router.post('/', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), createAdminMeeting);
 
 module.exports = router;

@@ -5,6 +5,7 @@ const User = require("../models/User");
 const { buildInvoicePdfBuffer } = require("../services/invoicePdfService");
 const { sendInvoiceEmail } = require("../services/emailService");
 const { resolveManagedCandidateNotificationTarget } = require("../services/managedCandidateNotificationService");
+const { createInvoiceWithGeneratedNumber } = require("../services/invoiceNumberService");
 const { ensureSalesActor, getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
 
 const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
@@ -194,15 +195,6 @@ const computeFinancials = (payload) => {
   return { items, subtotal, discountTotal, taxTotal, grandTotal, paidAmount, balanceDue };
 };
 
-const generateInvoiceNumber = async () => {
-  const now = new Date();
-  const prefix = `INV-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const pattern = new RegExp(`^${prefix}-\\d{4}$`);
-  const latest = await Invoice.findOne({ invoiceNumber: { $regex: pattern } }).sort({ invoiceNumber: -1 }).select("invoiceNumber");
-  const seq = latest ? Number(String(latest.invoiceNumber).split("-").pop()) + 1 : 1;
-  return `${prefix}-${String(seq).padStart(4, "0")}`;
-};
-
 const assertSalesAdmin = (req) => ensureSalesActor(req);
 
 const ensureInvoiceTeamAdmin = async (invoice) => {
@@ -342,10 +334,7 @@ const createInvoice = asyncHandler(async (req, res) => {
       items,
       paidAmount: body.paidAmount,
     });
-    const invoiceNumber = await generateInvoiceNumber();
-
-    const invoice = await Invoice.create({
-      invoiceNumber,
+    const invoice = await createInvoiceWithGeneratedNumber({
       salesAdmin: req.admin._id,
       teamAdmin: scope.managerId,
       customer: {
