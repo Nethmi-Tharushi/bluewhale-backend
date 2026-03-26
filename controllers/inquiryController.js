@@ -1,8 +1,251 @@
+const mongoose = require("mongoose");
 const JobInquiry = require('../models/Inquiries');
 const Job = require('../models/Job');
 const User = require('../models/User');
 const { sendInquiryResponseEmail } = require("../services/emailService");
 const { resolveManagedCandidateNotificationTarget } = require("../services/managedCandidateNotificationService");
+const { listAccessibleSalesCandidates } = require("../services/salesCandidateAccessService");
+const {
+  listAccessibleSalesLeadIds,
+  listAccessibleSalesConversationIds,
+} = require("../services/salesTaskAccessService");
+
+const toIdString = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && value._id) return String(value._id);
+  return String(value);
+};
+
+const getInquiryCandidateType = (inquiry) => {
+  const normalized = String(inquiry?.candidateType || "").trim().toUpperCase();
+  if (normalized === "B2B" || inquiry?.managedCandidate?.candidateId) return "B2B";
+  return "B2C";
+};
+
+const toMongoUnknownFieldIdValues = (ids = []) => {
+  const seen = new Set();
+  const values = [];
+
+  ids.forEach((id) => {
+    const normalized = toIdString(id);
+    if (!normalized || seen.has(normalized)) return;
+
+    seen.add(normalized);
+    values.push(normalized);
+
+    if (mongoose.Types.ObjectId.isValid(normalized)) {
+      values.push(new mongoose.Types.ObjectId(normalized));
+    }
+  });
+
+  return values;
+};
+
+const addIdToSet = (set, value) => {
+  const normalized = toIdString(value);
+  if (normalized) {
+    set.add(normalized);
+  }
+};
+
+const EMPTY_MANAGED_CANDIDATE_FILTERS = [
+  { managedCandidate: { $exists: false } },
+  { "managedCandidate.candidateId": { $exists: false } },
+  { "managedCandidate.candidateId": null },
+  { "managedCandidate.candidateId": "" },
+];
+
+const buildB2cInquiryFilter = (candidateIds) => (
+  candidateIds.size
+    ? {
+        user: { $in: Array.from(candidateIds) },
+        $or: EMPTY_MANAGED_CANDIDATE_FILTERS,
+      }
+    : null
+);
+
+const buildB2bInquiryFilter = (managedCandidateIds, agentIds) => {
+  const or = [];
+
+  if (managedCandidateIds.size) {
+    or.push({
+      "managedCandidate.candidateId": { $in: Array.from(managedCandidateIds) },
+    });
+  }
+
+  if (agentIds.size) {
+    or.push({
+      "managedCandidate.agentId": { $in: Array.from(agentIds) },
+      $or: EMPTY_MANAGED_CANDIDATE_FILTERS.slice(1),
+    });
+  }
+
+  return or.length ? { $or: or } : null;
+};
+
+const buildCrmLinkedInquiryFilters = ({ accessibleLeadIds, accessibleConversationIds }) => {
+  const filters = [];
+  const leadIds = toMongoUnknownFieldIdValues(Array.from(accessibleLeadIds));
+  const conversationIds = toMongoUnknownFieldIdValues(Array.from(accessibleConversationIds));
+
+  if (leadIds.length) {
+    filters.push({ linkedLeadId: { $in: leadIds } });
+    filters.push({ leadId: { $in: leadIds } });
+    filters.push({ "crmContext.linkedLeadId": { $in: leadIds } });
+  }
+
+  if (conversationIds.length) {
+    filters.push({ conversationId: { $in: conversationIds } });
+    filters.push({ "crmContext.conversationId": { $in: conversationIds } });
+  }
+
+  return filters;
+};
+
+const buildAccessibleInquiryScope = async (admin) => {
+  if (admin?.role === "MainAdmin") {
+    return {
+      fullAccess: true,
+      inquiryFilter: {},
+      b2cCandidateIds: new Set(),
+      b2bManagedCandidateIds: new Set(),
+      b2bAgentIds: new Set(),
+      accessibleLeadIds: new Set(),
+      accessibleConversationIds: new Set(),
+    };
+  }
+
+  const b2cCandidateIds = new Set();
+  const b2bManagedCandidateIds = new Set();
+  const b2bAgentIds = new Set();
+  const accessibleLeadIds = new Set();
+  const accessibleConversationIds = new Set();
+
+  if (admin?.role === "SalesStaff") {
+    const accessibleCandidates = await listAccessibleSalesCandidates(admin);
+
+    accessibleCandidates.forEach((candidate) => {
+      if (candidate?.type === "B2B") {
+        addIdToSet(b2bManagedCandidateIds, candidate?._id);
+        addIdToSet(b2bAgentIds, candidate?.agent?.id);
+        return;
+      }
+
+      addIdToSet(b2cCandidateIds, candidate?._id);
+    });
+
+    const leadIds = await listAccessibleSalesLeadIds(admin);
+    leadIds.forEach((id) => addIdToSet(accessibleLeadIds, id));
+
+    const conversationIds = await listAccessibleSalesConversationIds(admin, {
+      accessibleLeadIds: Array.from(accessibleLeadIds),
+    });
+    conversationIds.forEach((id) => addIdToSet(accessibleConversationIds, id));
+  } else {
+    const visibleAssigneeIds = [toIdString(admin?._id)].filter(Boolean);
+    const [b2cCandidates, agents] = await Promise.all([
+      User.find({
+        userType: "candidate",
+        assignedTo: { $in: visibleAssigneeIds },
+      })
+        .select("_id")
+        .lean(),
+      User.find({
+        userType: "agent",
+        $or: [
+          { assignedTo: { $in: visibleAssigneeIds } },
+          { "managedCandidates.assignedTo": { $in: visibleAssigneeIds } },
+        ],
+      })
+        .select("assignedTo managedCandidates")
+        .lean(),
+    ]);
+
+    b2cCandidates.forEach((candidate) => {
+      addIdToSet(b2cCandidateIds, candidate._id);
+    });
+
+    agents.forEach((agent) => {
+      (agent.managedCandidates || []).forEach((candidate) => {
+        const effectiveAssignedTo = toIdString(candidate?.assignedTo || agent?.assignedTo);
+        if (!effectiveAssignedTo || !visibleAssigneeIds.includes(effectiveAssignedTo)) {
+          return;
+        }
+
+        addIdToSet(b2bManagedCandidateIds, candidate._id);
+        addIdToSet(b2bAgentIds, agent._id);
+      });
+    });
+  }
+
+  const or = [];
+  const b2cFilter = buildB2cInquiryFilter(b2cCandidateIds);
+  const b2bFilter = buildB2bInquiryFilter(b2bManagedCandidateIds, b2bAgentIds);
+
+  if (b2cFilter) {
+    or.push(b2cFilter);
+  }
+  if (b2bFilter) {
+    or.push(b2bFilter);
+  }
+  or.push(
+    ...buildCrmLinkedInquiryFilters({
+      accessibleLeadIds,
+      accessibleConversationIds,
+    })
+  );
+
+  return {
+    fullAccess: false,
+    inquiryFilter: or.length ? { $or: or } : { _id: { $in: [] } },
+    b2cCandidateIds,
+    b2bManagedCandidateIds,
+    b2bAgentIds,
+    accessibleLeadIds,
+    accessibleConversationIds,
+  };
+};
+
+const canAccessInquiry = (scope, inquiry) => {
+  if (scope?.fullAccess) return true;
+
+  const managedCandidateId = toIdString(inquiry?.managedCandidate?.candidateId);
+  if (managedCandidateId) {
+    return scope?.b2bManagedCandidateIds?.has(managedCandidateId) || false;
+  }
+
+  const managedCandidateAgentId = toIdString(inquiry?.managedCandidate?.agentId);
+  if (!managedCandidateId && managedCandidateAgentId && scope?.b2bAgentIds?.has(managedCandidateAgentId)) {
+    return true;
+  }
+
+  const inquiryType = getInquiryCandidateType(inquiry);
+  if (inquiryType === "B2C" && scope?.b2cCandidateIds?.has(toIdString(inquiry?.user))) {
+    return true;
+  }
+
+  const linkedLeadIds = [
+    inquiry?.linkedLeadId,
+    inquiry?.leadId,
+    inquiry?.crmContext?.linkedLeadId,
+  ]
+    .map(toIdString)
+    .filter(Boolean);
+
+  if (linkedLeadIds.some((id) => scope?.accessibleLeadIds?.has(id))) {
+    return true;
+  }
+
+  const conversationIds = [
+    inquiry?.conversationId,
+    inquiry?.crmContext?.conversationId,
+  ]
+    .map(toIdString)
+    .filter(Boolean);
+
+  return conversationIds.some((id) => scope?.accessibleConversationIds?.has(id));
+};
 
 // Create new job inquiry
 exports.createInquiry = async (req, res) => {
@@ -89,34 +332,18 @@ exports.createInquiry = async (req, res) => {
 // Get all inquiries (role-based)
 exports.getAllInquiries = async (req, res) => {
   try {
-    let filter = {};
-
-    if (req.admin.role === "SalesAdmin" || req.admin.role === "SalesStaff") {
-      const assignedCandidates = await User.find({ assignedTo: req.admin._id }).select("_id");
-      const assignedCandidateIds = assignedCandidates.map((user) => user._id);
-
-      const agentOwners = await User.find({ "managedCandidates.assignedTo": req.admin._id }).select("managedCandidates");
-      const managedCandidateIds = agentOwners.flatMap((agent) =>
-        (agent.managedCandidates || [])
-          .filter((candidate) => candidate?.assignedTo?.toString() === req.admin._id.toString())
-          .map((candidate) => String(candidate._id))
-      );
-
-      filter = {
-        $or: [
-          { user: { $in: assignedCandidateIds } },
-          { "managedCandidate.candidateId": { $in: managedCandidateIds } },
-        ],
-      };
-    }
-
-    const inquiries = await JobInquiry.find(filter)
+    const scope = await buildAccessibleInquiryScope(req.admin);
+    const inquiries = await JobInquiry.find(scope.inquiryFilter)
       .populate('job', 'title company')
       .populate('user', 'name email')
       .populate('response.repliedBy', 'name role')
       .sort({ createdAt: -1 });
 
-    res.json({ success: true, count: inquiries.length, inquiries });
+    const accessibleInquiries = scope.fullAccess
+      ? inquiries
+      : inquiries.filter((inquiry) => canAccessInquiry(scope, inquiry));
+
+    res.json({ success: true, count: accessibleInquiries.length, inquiries: accessibleInquiries });
   } catch (error) {
     console.error("Fetch inquiries error:", error);
     res.status(500).json({ message: "Server error" });
@@ -163,19 +390,9 @@ exports.respondToInquiry = async (req, res) => {
 
     if (!inquiry) return res.status(404).json({ message: "Inquiry not found" });
 
-    // Sales team members can only respond to inquiries tied to their assigned candidates.
-    if (req.admin.role === "SalesAdmin" || req.admin.role === "SalesStaff") {
-      const user = await User.findById(inquiry.user).select("assignedTo managedCandidates");
-      const ownsDirectCandidate = user?.assignedTo?.toString() === req.admin._id.toString();
-      const ownsManagedCandidate = (user?.managedCandidates || []).some(
-        (candidate) =>
-          String(candidate?._id) === String(inquiry.managedCandidate?.candidateId || "") &&
-          candidate?.assignedTo?.toString() === req.admin._id.toString()
-      );
-
-      if (!ownsDirectCandidate && !ownsManagedCandidate) {
-        return res.status(403).json({ message: "Unauthorized to respond to this inquiry" });
-      }
+    const scope = await buildAccessibleInquiryScope(req.admin);
+    if (!canAccessInquiry(scope, inquiry)) {
+      return res.status(403).json({ message: "Unauthorized to respond to this inquiry" });
     }
 
     inquiry.response = {

@@ -1,5 +1,6 @@
 const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
+const Lead = require("../models/Lead");
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppContact = require("../models/WhatsAppContact");
@@ -13,13 +14,18 @@ const {
   listMessages,
   assignConversation,
   updateConversationStatus,
+  addConversationNote: createConversationNote,
+  replaceConversationTags,
+  linkConversationLead,
   emitConversationEvents,
   ensureConversation,
+  getConversationById,
   upsertContact,
 } = require("../services/whatsappCRMService");
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
 const { listTemplates } = require("../services/whatsappTemplateService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
+const { SALES_ROLES, buildOwnedFilter } = require("../utils/salesScope");
 
 const inferMediaMessageType = (file) => {
   if (!file?.mimetype) return null;
@@ -54,6 +60,17 @@ const canUpdateConversationStatus = ({ admin, conversation }) => {
   }
 
   return false;
+};
+
+const getAuthenticatedActor = (req) => req.admin || req.user || null;
+
+const findAccessibleLead = async (req, leadId) => {
+  const query =
+    req.admin && SALES_ROLES.includes(req.admin.role)
+      ? { _id: leadId, ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin") }
+      : { _id: leadId };
+
+  return Lead.findOne(query).select("_id");
 };
 
 const hydrateMediaMessage = async (messageDoc) => {
@@ -184,7 +201,7 @@ const getConversations = async (req, res) => {
 const getConversationMessages = async (req, res) => {
   try {
     if (!isValidObjectId(req.params.conversationId)) {
-      return res.status(400).json({ message: "Invalid conversation id" });
+      return res.status(400).json({ message: "Invalid conversationId" });
     }
 
     const conversation = await WhatsAppConversation.findById(req.params.conversationId).select("_id");
@@ -197,7 +214,13 @@ const getConversationMessages = async (req, res) => {
       admin: req.admin,
     });
     const hydratedMessages = await Promise.all(messages.map((message) => hydrateMediaMessage(message)));
-    return res.json({ success: true, data: hydratedMessages });
+    const conversationData = await getConversationById(req.params.conversationId);
+
+    return res.json({
+      success: true,
+      data: hydratedMessages,
+      conversation: conversationData,
+    });
   } catch (error) {
     console.error("Failed to fetch WhatsApp messages:", error);
     return res.status(error.message?.includes("Access denied") ? 403 : 500).json({ message: error.message || "Failed to fetch messages" });
@@ -312,6 +335,9 @@ const assignAgent = async (req, res) => {
     if (!conversationId || !agentId) {
       return res.status(400).json({ message: "conversationId and agentId are required" });
     }
+    if (!isValidObjectId(conversationId) || !isValidObjectId(agentId)) {
+      return res.status(400).json({ message: "Invalid conversationId or agentId" });
+    }
 
     const conversation = await assignConversation({
       conversationId,
@@ -330,13 +356,13 @@ const assignAgent = async (req, res) => {
 
 const setConversationStatus = async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.conversationId)) {
+      return res.status(400).json({ message: "Invalid conversationId" });
+    }
+
     const { status } = req.body || {};
     if (!["open", "assigned", "closed"].includes(status)) {
       return res.status(400).json({ message: "status must be open, assigned, or closed" });
-    }
-
-    if (!isValidObjectId(req.params.conversationId)) {
-      return res.status(400).json({ message: "Invalid conversation id" });
     }
 
     const conversation = await WhatsAppConversation.findById(req.params.conversationId).select("_id agentId");
@@ -358,6 +384,100 @@ const setConversationStatus = async (req, res) => {
   } catch (error) {
     console.error("Failed to update WhatsApp conversation status:", error);
     return res.status(400).json({ message: error.message || "Failed to update conversation status" });
+  }
+};
+
+const addConversationNote = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.conversationId)) {
+      return res.status(400).json({ message: "Invalid conversationId" });
+    }
+
+    const text = String(req.body?.text || "").trim();
+    if (!text) {
+      return res.status(400).json({ message: "text is required" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const result = await createConversationNote({
+      conversationId: req.params.conversationId,
+      text,
+      authorId: actor?._id || null,
+      authorName: actor?.name || actor?.email || "",
+    });
+
+    await emitConversationEvents(req.app, result.conversation?._id || req.params.conversationId);
+
+    return res.status(201).json({
+      success: true,
+      note: result.note,
+      conversation: result.conversation,
+    });
+  } catch (error) {
+    console.error("Failed to add WhatsApp conversation note:", error);
+    return res.status(400).json({ message: error.message || "Failed to add conversation note" });
+  }
+};
+
+const updateConversationTags = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.conversationId)) {
+      return res.status(400).json({ message: "Invalid conversationId" });
+    }
+
+    if (!Array.isArray(req.body?.tags)) {
+      return res.status(400).json({ message: "tags must be an array" });
+    }
+
+    const result = await replaceConversationTags({
+      conversationId: req.params.conversationId,
+      tags: req.body.tags,
+    });
+
+    await emitConversationEvents(req.app, result.conversation?._id || req.params.conversationId);
+
+    return res.json({
+      success: true,
+      tags: result.tags,
+      conversation: result.conversation,
+    });
+  } catch (error) {
+    console.error("Failed to update WhatsApp conversation tags:", error);
+    return res.status(400).json({ message: error.message || "Failed to update conversation tags" });
+  }
+};
+
+const setConversationLinkedLead = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.conversationId)) {
+      return res.status(400).json({ message: "Invalid conversationId" });
+    }
+
+    const leadId = req.body?.leadId;
+    if (!isValidObjectId(leadId)) {
+      return res.status(400).json({ message: "Valid leadId is required" });
+    }
+
+    const lead = await findAccessibleLead(req, leadId);
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found" });
+    }
+
+    const conversation = await linkConversationLead({
+      conversationId: req.params.conversationId,
+      leadId: lead._id,
+    });
+
+    await emitConversationEvents(req.app, conversation._id);
+
+    return res.json({
+      success: true,
+      data: conversation,
+      linkedLead: conversation.linkedLead,
+    });
+  } catch (error) {
+    console.error("Failed to link WhatsApp conversation to lead:", error);
+    return res.status(error.statusCode || 400).json({ message: error.message || "Failed to link conversation lead" });
   }
 };
 
@@ -480,9 +600,12 @@ const sendOutgoingMessage = async (req, res) => {
       media,
     });
 
+    const conversationData = await getConversationById(conversation._id);
+
     return res.status(201).json({
       success: true,
       data: savedMessage,
+      conversation: conversationData,
       response,
     });
   } catch (error) {
@@ -501,5 +624,8 @@ module.exports = {
   getTemplates,
   assignAgent,
   setConversationStatus,
+  addConversationNote,
+  updateConversationTags,
+  setConversationLinkedLead,
   sendOutgoingMessage,
 };

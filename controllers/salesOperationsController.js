@@ -4,6 +4,10 @@ const Invoice = require("../models/Invoice");
 const SalesTarget = require("../models/SalesTarget");
 const SalesProposal = require("../models/SalesProposal");
 const SalesEstimate = require("../models/SalesEstimate");
+const {
+  createInvoiceWithGeneratedNumber,
+  normalizeInvoicePersistenceError,
+} = require("../services/invoiceNumberService");
 const { getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
 
 const PROPOSAL_STATUSES = ["Draft", "Sent", "Accepted", "Rejected", "Expired", "Converted"];
@@ -354,40 +358,44 @@ const updateEstimateStatus = asyncHandler(async (req, res) => {
 });
 
 const convertEstimateToInvoice = asyncHandler(async (req, res) => {
-  const estimate = await SalesEstimate.findOne({
-    _id: req.params.id,
-    ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
-  });
-  if (!estimate) return res.status(404).json({ message: "Estimate not found" });
-  if (estimate.invoiceId) return res.status(400).json({ message: "Estimate already invoiced" });
+  try {
+    const estimate = await SalesEstimate.findOne({
+      _id: req.params.id,
+      ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+    });
+    if (!estimate) return res.status(404).json({ message: "Estimate not found" });
+    if (estimate.invoiceId) return res.status(400).json({ message: "Estimate already invoiced" });
 
-  const invoiceCount = await Invoice.countDocuments({ teamAdmin: estimate.teamAdmin });
-  const invoiceNumber = `INV-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(invoiceCount + 1).padStart(4, "0")}`;
+    const invoice = await createInvoiceWithGeneratedNumber({
+      salesAdmin: estimate.ownerAdmin,
+      teamAdmin: estimate.teamAdmin,
+      customer: estimate.customer,
+      issueDate: estimate.issueDate,
+      dueDate: estimate.validUntil,
+      currency: estimate.currency,
+      items: estimate.items,
+      subtotal: estimate.subtotal,
+      discountTotal: estimate.discountTotal,
+      taxTotal: estimate.taxTotal,
+      grandTotal: estimate.grandTotal,
+      paidAmount: 0,
+      balanceDue: estimate.grandTotal,
+      notes: estimate.notes,
+      status: "Draft",
+    });
 
-  const invoice = await Invoice.create({
-    invoiceNumber,
-    salesAdmin: estimate.ownerAdmin,
-    teamAdmin: estimate.teamAdmin,
-    customer: estimate.customer,
-    issueDate: estimate.issueDate,
-    dueDate: estimate.validUntil,
-    currency: estimate.currency,
-    items: estimate.items,
-    subtotal: estimate.subtotal,
-    discountTotal: estimate.discountTotal,
-    taxTotal: estimate.taxTotal,
-    grandTotal: estimate.grandTotal,
-    paidAmount: 0,
-    balanceDue: estimate.grandTotal,
-    notes: estimate.notes,
-    status: "Draft",
-  });
+    estimate.invoiceId = invoice._id;
+    estimate.status = "Invoiced";
+    await estimate.save();
 
-  estimate.invoiceId = invoice._id;
-  estimate.status = "Invoiced";
-  await estimate.save();
-
-  return res.status(201).json({ success: true, data: invoice });
+    return res.status(201).json({ success: true, data: invoice });
+  } catch (error) {
+    const normalizedError = normalizeInvoicePersistenceError(error, "Failed to convert estimate to invoice");
+    return res.status(normalizedError?.statusCode || 500).json({
+      message: normalizedError?.message || "Failed to convert estimate to invoice",
+      details: normalizedError?.details || null,
+    });
+  }
 });
 
 const listPayments = asyncHandler(async (req, res) => {

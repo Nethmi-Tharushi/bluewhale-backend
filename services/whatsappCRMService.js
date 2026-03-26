@@ -7,18 +7,198 @@ const { normalizePhone } = require("./whatsappWebhookService");
 const { cacheInboundMedia } = require("./whatsappService");
 
 const conversationPopulate = [
-  { path: "contactId", select: "name phone waId lastActivityAt" },
+  { path: "contactId", select: "name phone waId profile lastActivityAt" },
   { path: "agentId", select: "name email role whatsappInbox" },
+  {
+    path: "linkedLeadId",
+    select: "leadNumber name email phone status source company tags assignedTo ownerAdmin teamAdmin createdAt updatedAt",
+    populate: [
+      { path: "assignedTo", select: "name email role" },
+      { path: "ownerAdmin", select: "name email role" },
+      { path: "teamAdmin", select: "name email role" },
+    ],
+  },
+  { path: "notes.authorId", select: "name email role" },
 ];
+
+const toIdString = (value) => {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && value._id) return String(value._id);
+  return String(value);
+};
+
+const normalizeConversationTags = (tags) => {
+  const source = Array.isArray(tags)
+    ? tags
+    : typeof tags === "string"
+      ? tags.split(",")
+      : [];
+
+  const seen = new Set();
+  const normalized = [];
+
+  for (const tag of source) {
+    const trimmed = String(tag || "").trim();
+    if (!trimmed) continue;
+
+    const dedupeKey = trimmed.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+
+    seen.add(dedupeKey);
+    normalized.push(trimmed);
+  }
+
+  return normalized;
+};
+
+const buildContactPayload = (contact) => {
+  if (!contact || typeof contact !== "object") {
+    return {
+      name: "",
+      phone: "",
+      email: "",
+    };
+  }
+
+  const profile = contact.profile && typeof contact.profile === "object" ? contact.profile : {};
+
+  return {
+    name: String(contact.name || profile.name || "").trim(),
+    phone: String(contact.phone || contact.waId || "").trim(),
+    email: String(contact.email || profile.email || "").trim(),
+  };
+};
+
+const buildAssignedToPayload = (agent) => {
+  const agentId = toIdString(agent);
+  if (!agentId) return null;
+
+  if (!agent || typeof agent !== "object") {
+    return {
+      _id: agentId,
+      name: "",
+    };
+  }
+
+  return {
+    _id: agentId,
+    name: String(agent.name || "").trim(),
+    email: String(agent.email || "").trim(),
+    role: String(agent.role || "").trim(),
+  };
+};
+
+const formatConversationNote = (note) => {
+  const base = note?.toObject ? note.toObject() : note;
+  if (!base) return null;
+
+  const authorSource =
+    base.authorId && typeof base.authorId === "object" && (base.authorId._id || base.authorId.name)
+      ? base.authorId
+      : null;
+  const authorId = toIdString(authorSource?._id || base.authorId);
+  const authorName = String(base.authorName || authorSource?.name || "").trim();
+
+  return {
+    _id: toIdString(base._id),
+    text: String(base.text || ""),
+    createdAt: base.createdAt || null,
+    author: authorId || authorName
+      ? {
+          _id: authorId,
+          name: authorName,
+        }
+      : null,
+    authorId,
+    authorName,
+  };
+};
+
+const buildLinkedLeadPayload = (lead) => {
+  if (!lead || typeof lead !== "object") return null;
+
+  return {
+    _id: toIdString(lead._id),
+    leadNumber: lead.leadNumber ?? null,
+    name: String(lead.name || "").trim(),
+    email: String(lead.email || "").trim(),
+    phone: String(lead.phone || "").trim(),
+    status: String(lead.status || "").trim(),
+    source: String(lead.source || "").trim(),
+    company: String(lead.company || "").trim(),
+    tags: normalizeConversationTags(lead.tags),
+    assignedTo: lead.assignedTo || null,
+    ownerAdmin: lead.ownerAdmin || null,
+    teamAdmin: lead.teamAdmin || null,
+    createdAt: lead.createdAt || null,
+    updatedAt: lead.updatedAt || null,
+  };
+};
+
+const formatConversation = (conversation) => {
+  const base = conversation?.toObject ? conversation.toObject() : conversation;
+  if (!base) return null;
+
+  const contactSource =
+    base.contact && typeof base.contact === "object"
+      ? base.contact
+      : base.contactId && typeof base.contactId === "object"
+        ? base.contactId
+        : null;
+  const assignedSource =
+    base.assignedTo && typeof base.assignedTo === "object"
+      ? base.assignedTo
+      : base.agentId || null;
+  const linkedLeadSource =
+    base.linkedLead && typeof base.linkedLead === "object"
+      ? base.linkedLead
+      : base.linkedLeadId && typeof base.linkedLeadId === "object"
+        ? base.linkedLeadId
+        : null;
+  const notes = Array.isArray(base.notes)
+    ? base.notes.map(formatConversationNote).filter(Boolean)
+    : [];
+  const assignedTo = buildAssignedToPayload(assignedSource);
+  const assigneeId = assignedTo?._id || toIdString(base.assigneeId) || null;
+
+  return {
+    ...base,
+    _id: toIdString(base._id),
+    contact: buildContactPayload(contactSource),
+    lastMessage: {
+      content: String(base.lastMessage?.content || base.lastMessagePreview || ""),
+      timestamp: base.lastMessage?.timestamp || base.lastMessageAt || null,
+    },
+    unreadCount: Number(base.unreadCount || 0),
+    status: String(base.status || "open"),
+    workflowStatus: typeof base.workflowStatus === "string" ? base.workflowStatus : "",
+    assigneeId,
+    assignedTo,
+    linkedLead: buildLinkedLeadPayload(linkedLeadSource),
+    tags: normalizeConversationTags(base.tags),
+    notes,
+    counts: {
+      notes: notes.length,
+      tasks: Number(base.counts?.tasks || 0),
+      meetings: Number(base.counts?.meetings || 0),
+    },
+  };
+};
+
+const getConversationById = async (conversationId) => {
+  const conversation = await WhatsAppConversation.findById(conversationId)
+    .populate(conversationPopulate)
+    .lean();
+
+  return formatConversation(conversation);
+};
 
 const emitConversationEvents = async (app, conversationId) => {
   const io = app?.get?.("io");
   if (!io || !conversationId) return;
 
-  const conversation = await WhatsAppConversation.findById(conversationId)
-    .populate(conversationPopulate)
-    .lean();
-
+  const conversation = await getConversationById(conversationId);
   if (!conversation) return;
   io.emit("whatsapp:conversation.updated", conversation);
 };
@@ -267,10 +447,12 @@ const listConversations = async ({ status, search, admin }) => {
     query.contactId = { $in: contacts.map((item) => item._id) };
   }
 
-  return WhatsAppConversation.find(query)
+  const conversations = await WhatsAppConversation.find(query)
     .populate(conversationPopulate)
     .sort({ lastMessageAt: -1 })
     .lean();
+
+  return conversations.map((conversation) => formatConversation(conversation));
 };
 
 const listMessages = async ({ conversationId, admin }) => {
@@ -316,7 +498,7 @@ const assignConversation = async ({ conversationId, agentId, assignedBy, method 
     $set: { "whatsappInbox.lastAssignedAt": new Date() },
   });
 
-  return conversation;
+  return getConversationById(conversation._id);
 };
 
 const updateConversationStatus = async ({ conversationId, status }) => {
@@ -331,7 +513,55 @@ const updateConversationStatus = async ({ conversationId, status }) => {
     conversation.unreadCount = 0;
   }
   await conversation.save();
-  return conversation;
+  return getConversationById(conversation._id);
+};
+
+const addConversationNote = async ({ conversationId, text, authorId = null, authorName = "" }) => {
+  const conversation = await WhatsAppConversation.findById(conversationId);
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
+
+  conversation.notes.push({
+    text: String(text || "").trim(),
+    authorId: authorId || null,
+    authorName: String(authorName || "").trim(),
+  });
+  await conversation.save();
+
+  const note = conversation.notes[conversation.notes.length - 1];
+
+  return {
+    note: formatConversationNote(note),
+    conversation: await getConversationById(conversation._id),
+  };
+};
+
+const replaceConversationTags = async ({ conversationId, tags }) => {
+  const conversation = await WhatsAppConversation.findById(conversationId);
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
+
+  conversation.tags = normalizeConversationTags(tags);
+  await conversation.save();
+
+  return {
+    tags: conversation.tags,
+    conversation: await getConversationById(conversation._id),
+  };
+};
+
+const linkConversationLead = async ({ conversationId, leadId }) => {
+  const conversation = await WhatsAppConversation.findById(conversationId);
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
+
+  conversation.linkedLeadId = leadId;
+  await conversation.save();
+
+  return getConversationById(conversation._id);
 };
 
 module.exports = {
@@ -344,5 +574,12 @@ module.exports = {
   listMessages,
   assignConversation,
   updateConversationStatus,
+  addConversationNote,
+  replaceConversationTags,
+  linkConversationLead,
   emitConversationEvents,
+  getConversationById,
+  formatConversation,
+  formatConversationNote,
+  normalizeConversationTags,
 };

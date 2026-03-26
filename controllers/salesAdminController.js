@@ -3,82 +3,122 @@ const User = require("../models/User");
 const Application = require("../models/Application");
 const Document = require("../models/Document");
 const Job = require("../models/Job");
+const Lead = require("../models/Lead");
 const Meeting = require("../models/Meeting");
 const AdminUser = require("../models/AdminUser");
 const JobInquiry = require('../models/Inquiries');
 const Task = require('../models/Task');
+const WhatsAppConversation = require("../models/WhatsAppConversation");
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { generateOnboardingTasksForApplication } = require("../services/recruitmentWorkflowService");
 const { createMeetingForTask, updateMeetingForTask } = require("../services/taskMeetingService");
 const { formatMeetingResponse, formatMeetingsResponse } = require("../services/meetingFormatter");
+const {
+  listAccessibleSalesCandidates,
+  resolveAccessibleSalesCandidate,
+} = require("../services/salesCandidateAccessService");
+const {
+  buildAccessibleSalesTaskAccess,
+} = require("../services/salesTaskAccessService");
+
+const parseTaskCrmContext = (value) => {
+  if (!value) return {};
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" ? value : {};
+};
+
+const buildTaskCrmContext = (task) => {
+  const base = task?.toObject ? task.toObject() : task;
+  const conversationId = base?.conversationId ? String(base.conversationId._id || base.conversationId) : "";
+  const linkedLeadId = base?.linkedLeadId ? String(base.linkedLeadId._id || base.linkedLeadId) : "";
+
+  if (!conversationId && !linkedLeadId) {
+    return null;
+  }
+
+  return {
+    source: "whatsapp",
+    conversationId: conversationId || null,
+    linkedLeadId: linkedLeadId || null,
+  };
+};
+
+const withTaskCrmContext = (task) => {
+  const base = task?.toObject ? task.toObject() : task;
+  const crmContext = buildTaskCrmContext(base);
+
+  return {
+    ...base,
+    conversationId: crmContext?.conversationId || null,
+    linkedLeadId: crmContext?.linkedLeadId || null,
+    crmContext,
+  };
+};
+
+const resolveTaskLinkingPayload = async (body = {}) => {
+  const crmContext = parseTaskCrmContext(body.crmContext);
+  const conversationId = String(body.conversationId || crmContext.conversationId || "").trim();
+  const linkedLeadId = String(body.linkedLeadId || crmContext.linkedLeadId || "").trim();
+
+  if (conversationId && !mongoose.Types.ObjectId.isValid(conversationId)) {
+    return {
+      error: {
+        code: 400,
+        message: "Invalid conversationId",
+      },
+    };
+  }
+
+  if (linkedLeadId && !mongoose.Types.ObjectId.isValid(linkedLeadId)) {
+    return {
+      error: {
+        code: 400,
+        message: "Invalid linkedLeadId",
+      },
+    };
+  }
+
+  if (conversationId) {
+    const conversation = await WhatsAppConversation.findById(conversationId).select("_id");
+    if (!conversation) {
+      return {
+        error: {
+          code: 404,
+          message: "WhatsApp conversation not found",
+        },
+      };
+    }
+  }
+
+  if (linkedLeadId) {
+    const lead = await Lead.findById(linkedLeadId).select("_id");
+    if (!lead) {
+      return {
+        error: {
+          code: 404,
+          message: "Linked lead not found",
+        },
+      };
+    }
+  }
+
+  return {
+    conversationId: conversationId || null,
+    linkedLeadId: linkedLeadId || null,
+  };
+};
 
 const getAllCandidates = asyncHandler(async (req, res) => {
   try {
-    const hasFullCandidateAccess = ['MainAdmin', 'SalesAdmin'].includes(req.admin.role);
-    const salesAdminId = req.admin._id;
-    //  B2C candidates
-    const b2cUsers = await User.find(
-      hasFullCandidateAccess
-        ? { userType: 'candidate' }
-        : { userType: 'candidate', assignedTo: salesAdminId }
-    ).select('name email phone location profession status visaStatus jobInterest createdAt assignedTo');
-
-    const unifiedCandidates = await Promise.all(
-      b2cUsers.map(async user => {
-        // latest application for this candidate
-        const latestApplication = await Application.findOne({ user: user._id })
-          .sort({ appliedAt: -1 })
-          .select('status');
-
-        return {
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          location: user.location,
-          profession: user.profession,
-          status: latestApplication ? latestApplication.status : "Not Applied",
-          visaStatus: user.visaStatus,
-          type: 'B2C',
-          agent: null,
-          jobInterest: user.jobInterest || '',
-          createdAt: user.createdAt
-        };
-      })
-    );
-
-    // B2B candidates from agents
-    const agents = await User.find(
-      hasFullCandidateAccess
-        ? { userType: 'agent' }
-        : { userType: 'agent', 'managedCandidates.assignedTo': salesAdminId }
-    ).select('name companyName managedCandidates');
-    agents.forEach(agent => {
-      agent.managedCandidates
-        .filter(c => hasFullCandidateAccess || (c.assignedTo && c.assignedTo.toString() === salesAdminId.toString()))
-        .forEach(managedCandidate => {
-        unifiedCandidates.push({
-          _id: managedCandidate._id,
-          name: managedCandidate.name,
-          email: managedCandidate.email,
-          phone: managedCandidate.phone,
-          location: managedCandidate.location,
-          profession: managedCandidate.profession,
-          status: managedCandidate.status,
-          visaStatus: managedCandidate.visaStatus,
-          type: 'B2B',
-          agent: {
-            id: agent._id,
-            name: agent.name,
-            companyName: agent.companyName
-          },
-          createdAt: managedCandidate.addedAt
-        });
-      });
-    });
-
-    unifiedCandidates.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const unifiedCandidates = await listAccessibleSalesCandidates(req.admin);
 
     res.status(200).json({
       success: true,
@@ -1027,53 +1067,60 @@ const getSalesAdminTasks = async (req, res) => {
     const salesAdminId = req.admin._id;
     const hasFullCandidateAccess = ['MainAdmin', 'SalesAdmin'].includes(req.admin.role);
 
-    // Get B2C candidates assigned to this sales admin
-    const b2cCandidates = await User.find({
-      userType: 'candidate',
-      ...(hasFullCandidateAccess ? {} : { assignedTo: salesAdminId })
-    }).select('_id name email');
-
-    const b2cCandidateIds = b2cCandidates.map(c => c._id);
-
-    // Get B2B agents with managed candidates assigned to this sales admin
-    const agentsWithManagedCandidates = await User.find({
-      userType: 'agent',
-      ...(hasFullCandidateAccess ? {} : { 'managedCandidates.assignedTo': salesAdminId })
-    }).select('_id managedCandidates');
-
-    // Extract managed candidate IDs and create a map for quick lookup
     const managedCandidateMap = new Map();
-    const managedCandidateIds = [];
+    let b2cCandidateIds = [];
+    let managedCandidateIds = [];
+    let taskFilter;
 
-    agentsWithManagedCandidates.forEach(agent => {
-      agent.managedCandidates.forEach(mc => {
-        if (hasFullCandidateAccess || (mc.assignedTo && mc.assignedTo.toString() === salesAdminId.toString())) {
+    if (hasFullCandidateAccess) {
+      const b2cCandidates = await User.find({ userType: 'candidate' }).select('_id name email');
+      b2cCandidateIds = b2cCandidates.map((candidate) => candidate._id);
+
+      const agentsWithManagedCandidates = await User.find({ userType: 'agent' }).select('_id managedCandidates');
+      agentsWithManagedCandidates.forEach((agent) => {
+        agent.managedCandidates.forEach((mc) => {
           managedCandidateIds.push(mc._id);
-          // Store managed candidate name with ID as key
           managedCandidateMap.set(mc._id.toString(), {
             name: mc.name || 'Managed Candidate',
             email: mc.email,
-            agentId: agent._id
+            agentId: agent._id,
+          });
+        });
+      });
+
+      taskFilter = {
+        $or: [
+          { assignedBy: salesAdminId },
+          { candidateType: 'B2C', candidate: { $in: b2cCandidateIds } },
+          { candidateType: 'B2B', managedCandidateId: { $in: managedCandidateIds } },
+        ],
+      };
+    } else {
+      const salesTaskAccess = await buildAccessibleSalesTaskAccess(req.admin);
+      const {
+        accessibleCandidates,
+        accessibleLeadIds,
+        accessibleConversationIds,
+      } = salesTaskAccess;
+
+      accessibleCandidates.forEach((candidate) => {
+        if (candidate.type === 'B2C') {
+          b2cCandidateIds.push(candidate._id);
+          return;
+        }
+
+        if (candidate.type === 'B2B') {
+          managedCandidateIds.push(candidate._id);
+          managedCandidateMap.set(String(candidate._id), {
+            name: candidate.name || 'Managed Candidate',
+            email: candidate.email || '',
+            agentId: candidate.agent?.id || null,
           });
         }
       });
-    });
 
-    // Find tasks for both B2C and B2B candidates assigned to this sales admin
-    const taskFilter = hasFullCandidateAccess
-      ? {
-          $or: [
-            { assignedBy: salesAdminId },
-            { candidateType: 'B2C', candidate: { $in: b2cCandidateIds } },
-            { candidateType: 'B2B', managedCandidateId: { $in: managedCandidateIds } }
-          ]
-        }
-      : {
-          $or: [
-            { candidateType: 'B2C', candidate: { $in: b2cCandidateIds } },
-            { candidateType: 'B2B', managedCandidateId: { $in: managedCandidateIds } }
-          ]
-        };
+      taskFilter = salesTaskAccess.taskFilter;
+    }
 
     const tasks = await Task.find(taskFilter)
       .populate('assignedBy', 'name email')
@@ -1096,7 +1143,7 @@ const getSalesAdminTasks = async (req, res) => {
         // Add candidateName for B2C
         task.candidateName = task.candidate.name;
       }
-      return task;
+      return withTaskCrmContext(task);
     });
 
     res.json({ tasks: tasksWithCandidateNames });
@@ -1114,7 +1161,6 @@ const createSalesAdminTask = async (req, res) => {
     }
 
     const salesAdminId = req.admin._id;
-    const hasFullCandidateAccess = ['MainAdmin', 'SalesAdmin'].includes(req.admin.role);
     const {
       title,
       description,
@@ -1135,24 +1181,33 @@ const createSalesAdminTask = async (req, res) => {
       notes
     } = req.body;
 
-    // Validate candidate assignment
-    if (!hasFullCandidateAccess && candidateType === 'B2C') {
-      const b2cCandidate = await User.findOne({
-        _id: candidate,
-        assignedTo: salesAdminId
+    const resolvedCandidate = await resolveAccessibleSalesCandidate({
+      admin: req.admin,
+      candidateType,
+      candidateId: candidate || req.body.candidateId,
+      managedCandidateId: managedCandidateId || candidate || req.body.candidateId,
+      agentId: agent || req.body.agentId,
+    });
+
+    const taskLinking = await resolveTaskLinkingPayload(req.body);
+
+    if (!resolvedCandidate.success) {
+      return res.status(resolvedCandidate.statusCode || 400).json({
+        success: false,
+        message: resolvedCandidate.message,
+        details: resolvedCandidate.details || {
+          candidateId: String(managedCandidateId || candidate || req.body.candidateId || ""),
+          candidateType: String(candidateType || ""),
+          userId: String(req.admin?._id || ""),
+        },
       });
-      if (!b2cCandidate) {
-        return res.status(403).json({ message: "Candidate not assigned to you" });
-      }
-    } else if (!hasFullCandidateAccess && candidateType === 'B2B') {
-      const agentWithCandidate = await User.findOne({
-        _id: agent,
-        'managedCandidates._id': managedCandidateId,
-        'managedCandidates.assignedTo': salesAdminId
+    }
+
+    if (taskLinking.error) {
+      return res.status(taskLinking.error.code).json({
+        success: false,
+        message: taskLinking.error.message,
       });
-      if (!agentWithCandidate) {
-        return res.status(403).json({ message: "Managed candidate not assigned to you" });
-      }
     }
 
     if (type === "Document Upload" && (!requiredDocument || !String(requiredDocument).trim())) {
@@ -1171,7 +1226,7 @@ const createSalesAdminTask = async (req, res) => {
       type,
       priority: priority || 'Medium',
       dueDate: type === "Meeting" ? new Date(`${meetingDate}T${meetingTime}`) : dueDate,
-      candidateType,
+      candidateType: resolvedCandidate.candidateType,
       assignedBy: salesAdminId
     };
 
@@ -1185,21 +1240,29 @@ const createSalesAdminTask = async (req, res) => {
       taskData.relatedJob = relatedJob;
     }
 
-    if (candidateType === 'B2C') {
-      taskData.candidate = candidate;
-    } else if (candidateType === 'B2B') {
-      taskData.managedCandidateId = managedCandidateId;
-      taskData.agent = agent;
+    if (taskLinking.conversationId) {
+      taskData.conversationId = taskLinking.conversationId;
+    }
+
+    if (taskLinking.linkedLeadId) {
+      taskData.linkedLeadId = taskLinking.linkedLeadId;
+    }
+
+    if (resolvedCandidate.candidateType === 'B2C') {
+      taskData.candidate = resolvedCandidate.candidateId;
+    } else if (resolvedCandidate.candidateType === 'B2B') {
+      taskData.managedCandidateId = resolvedCandidate.managedCandidateId;
+      taskData.agent = resolvedCandidate.agentId;
     }
 
     if (type === "Meeting") {
       const meeting = await createMeetingForTask({
         admin: req.admin,
         title,
-        candidateType,
-        candidate,
-        managedCandidateId,
-        agent,
+        candidateType: resolvedCandidate.candidateType,
+        candidate: resolvedCandidate.candidateType === 'B2C' ? resolvedCandidate.candidateId : undefined,
+        managedCandidateId: resolvedCandidate.candidateType === 'B2B' ? resolvedCandidate.managedCandidateId : undefined,
+        agent: resolvedCandidate.candidateType === 'B2B' ? resolvedCandidate.agentId : undefined,
         meetingDate,
         meetingTime,
         locationType,
@@ -1220,7 +1283,7 @@ const createSalesAdminTask = async (req, res) => {
       .populate('agent', 'name email companyName')
       .populate('relatedMeeting');
 
-    res.status(201).json(populatedTask);
+    res.status(201).json(withTaskCrmContext(populatedTask));
   } catch (err) {
     console.error("Error creating sales admin task:", err);
     res.status(500).json({ message: err.message });
@@ -1234,7 +1297,6 @@ const updateSalesAdminTask = async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const salesAdminId = req.admin._id;
     const hasFullCandidateAccess = ['MainAdmin', 'SalesAdmin'].includes(req.admin.role);
     const taskId = req.params.id;
 
@@ -1244,29 +1306,14 @@ const updateSalesAdminTask = async (req, res) => {
       return res.status(404).json({ message: "Task not found" });
     }
 
-    let hasAccess = false;
+    let hasAccess = hasFullCandidateAccess;
 
-    if (task.candidateType === 'B2C') {
-      const candidate = await User.findOne(
-        hasFullCandidateAccess
-          ? { _id: task.candidate }
-          : { _id: task.candidate, assignedTo: salesAdminId }
-      );
-      hasAccess = !!candidate;
-    } else if (task.candidateType === 'B2B') {
-      const agentWithCandidate = await User.findOne(
-        hasFullCandidateAccess
-          ? {
-              _id: task.agent,
-              'managedCandidates._id': task.managedCandidateId,
-            }
-          : {
-              _id: task.agent,
-              'managedCandidates._id': task.managedCandidateId,
-              'managedCandidates.assignedTo': salesAdminId,
-            }
-      );
-      hasAccess = !!agentWithCandidate;
+    if (!hasAccess) {
+      const salesTaskAccess = await buildAccessibleSalesTaskAccess(req.admin);
+      hasAccess = !!(await Task.exists({
+        _id: taskId,
+        ...salesTaskAccess.taskFilter,
+      }));
     }
 
     if (!hasAccess) {
@@ -1314,7 +1361,7 @@ const updateSalesAdminTask = async (req, res) => {
       .populate('agent', 'name email companyName')
       .populate('relatedMeeting');
 
-    res.json(updatedTask);
+    res.json(withTaskCrmContext(updatedTask));
   } catch (err) {
     console.error("Error updating sales admin task:", err);
     res.status(500).json({ message: err.message });
@@ -1328,7 +1375,6 @@ const deleteSalesAdminTask = async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const salesAdminId = req.admin._id;
     const hasFullCandidateAccess = ['MainAdmin', 'SalesAdmin'].includes(req.admin.role);
     const taskId = req.params.id;
 
@@ -1338,29 +1384,14 @@ const deleteSalesAdminTask = async (req, res) => {
       return res.status(404).json({ message: "Task not found" });
     }
 
-    let hasAccess = false;
+    let hasAccess = hasFullCandidateAccess;
 
-    if (task.candidateType === 'B2C') {
-      const candidate = await User.findOne(
-        hasFullCandidateAccess
-          ? { _id: task.candidate }
-          : { _id: task.candidate, assignedTo: salesAdminId }
-      );
-      hasAccess = !!candidate;
-    } else if (task.candidateType === 'B2B') {
-      const agentWithCandidate = await User.findOne(
-        hasFullCandidateAccess
-          ? {
-              _id: task.agent,
-              'managedCandidates._id': task.managedCandidateId,
-            }
-          : {
-              _id: task.agent,
-              'managedCandidates._id': task.managedCandidateId,
-              'managedCandidates.assignedTo': salesAdminId,
-            }
-      );
-      hasAccess = !!agentWithCandidate;
+    if (!hasAccess) {
+      const salesTaskAccess = await buildAccessibleSalesTaskAccess(req.admin);
+      hasAccess = !!(await Task.exists({
+        _id: taskId,
+        ...salesTaskAccess.taskFilter,
+      }));
     }
 
     if (!hasAccess) {

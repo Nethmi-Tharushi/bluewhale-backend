@@ -1,5 +1,29 @@
 const mongoose = require("mongoose");
 
+const whatsAppConversationNoteSchema = new mongoose.Schema(
+  {
+    text: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    authorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AdminUser",
+      default: null,
+    },
+    authorName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+  },
+  {
+    _id: true,
+    timestamps: { createdAt: true, updatedAt: false },
+  }
+);
+
 const whatsAppConversationSchema = new mongoose.Schema(
   {
     contactId: {
@@ -11,6 +35,12 @@ const whatsAppConversationSchema = new mongoose.Schema(
     agentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AdminUser",
+      default: null,
+      index: true,
+    },
+    linkedLeadId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Lead",
       default: null,
       index: true,
     },
@@ -50,6 +80,18 @@ const whatsAppConversationSchema = new mongoose.Schema(
       enum: ["round_robin", "manual", "unassigned"],
       default: "unassigned",
     },
+    workflowStatus: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    tags: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+    notes: [whatsAppConversationNoteSchema],
     assignmentHistory: [
       {
         agentId: {
