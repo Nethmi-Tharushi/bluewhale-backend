@@ -15,24 +15,21 @@ const escapeRegex = (value = "") => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 const getAllowedInternalAdminFilter = (admin) => {
   const role = String(admin?.role || "");
   if (role === "MainAdmin") {
-    return { _id: { $ne: admin._id } };
+    return { _id: null };
   }
   if (role === "SalesAdmin") {
     return {
-      $or: [
-        { role: "MainAdmin" },
-        { role: "SalesStaff", reportsTo: admin._id },
-      ],
+      role: "SalesStaff",
+      reportsTo: admin._id,
     };
   }
   if (role === "SalesStaff") {
-    const filters = [{ role: "MainAdmin" }];
     if (admin?.reportsTo) {
-      filters.push({ _id: admin.reportsTo, role: "SalesAdmin" });
+      return { _id: admin.reportsTo, role: "SalesAdmin" };
     }
-    return { $or: filters };
+    return { _id: null };
   }
-  return { _id: { $ne: admin._id } };
+  return { _id: null };
 };
 
 const canAccessInternalAdminContact = async (admin, targetAdminId) => {

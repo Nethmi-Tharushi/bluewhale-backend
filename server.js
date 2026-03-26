@@ -31,7 +31,57 @@ const AdminUser = require("./models/AdminUser");
 const app = express();
 const server = http.createServer(app);
 
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5174",
+  "http://31.220.91.65",
+  "http://31.220.91.65:5173",
+  "http://31.220.91.65:5174",
+].filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+};
+
+const isLocalDevRequest = (req) => {
+  const origin = String(req.headers.origin || "");
+  const host = String(req.headers.host || "");
+  const forwardedFor = String(req.headers["x-forwarded-for"] || "");
+  const ip = String(req.ip || "");
+
+  return (
+    origin.includes("localhost") ||
+    origin.includes("127.0.0.1") ||
+    host.includes("localhost") ||
+    host.includes("127.0.0.1") ||
+    forwardedFor.includes("127.0.0.1") ||
+    ip.includes("127.0.0.1") ||
+    ip.includes("::1")
+  );
+};
+
+const apiRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => isLocalDevRequest(req),
+});
+
 // --- Middleware ---
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(helmet());
 app.use(compression());
 app.use(express.json({
@@ -40,10 +90,7 @@ app.use(express.json({
     req.rawBody = Buffer.from(buf);
   },
 }));
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 }));
-
-// allow all origins (dev). You already do this:
-app.use(cors({ origin: (_origin, callback) => callback(null, true), credentials: true }));
+app.use(apiRateLimit);
 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/backups", express.static(path.join(__dirname, "backups")));
@@ -57,15 +104,7 @@ mongoose
 // --- Socket.IO Setup ---
 const io = new Server(server, {
   cors: {
-    origin: [
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "http://127.0.0.1:5174",
-      "http://127.0.0.1:5173",
-      "http://31.220.91.65",
-      "http://31.220.91.65:5173",
-      "http://31.220.91.65:5174",
-    ],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
