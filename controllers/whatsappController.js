@@ -23,7 +23,7 @@ const {
   upsertContact,
 } = require("../services/whatsappCRMService");
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
-const { listTemplates } = require("../services/whatsappTemplateService");
+const { listTemplates, createTemplate } = require("../services/whatsappTemplateService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
 const { SALES_ROLES, buildOwnedFilter } = require("../utils/salesScope");
 
@@ -40,6 +40,7 @@ const isSalesAdmin = (admin) => String(admin?.role || "") === "SalesAdmin";
 const isSalesStaff = (admin) => String(admin?.role || "") === "SalesStaff";
 
 const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
+const canManageTemplates = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
 const isValidObjectId = (value) => Types.ObjectId.isValid(String(value || ""));
 
 const canSendConversationMessage = ({ admin, conversation }) => {
@@ -322,6 +323,32 @@ const getTemplates = async (req, res) => {
   } catch (error) {
     console.error("Failed to fetch WhatsApp templates:", error);
     return res.status(500).json({ message: error.message || "Failed to fetch WhatsApp templates" });
+  }
+};
+
+const createWhatsAppTemplate = async (req, res) => {
+  try {
+    if (!canManageTemplates(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only SalesAdmin or MainAdmin can create templates" });
+    }
+
+    const template = await createTemplate({
+      name: req.body?.name,
+      category: req.body?.category,
+      language: req.body?.language,
+      bodyText: req.body?.bodyText,
+      bodyExamples: Array.isArray(req.body?.bodyExamples) ? req.body.bodyExamples : [],
+      headerText: req.body?.headerText,
+      headerExamples: Array.isArray(req.body?.headerExamples) ? req.body.headerExamples : [],
+      footerText: req.body?.footerText,
+      buttons: Array.isArray(req.body?.buttons) ? req.body.buttons : [],
+      allowCategoryChange: req.body?.allowCategoryChange !== false,
+    });
+
+    return res.status(201).json({ success: true, data: template });
+  } catch (error) {
+    console.error("Failed to create WhatsApp template:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to create WhatsApp template" });
   }
 };
 
@@ -622,6 +649,7 @@ module.exports = {
   getMessageMedia,
   getAgents,
   getTemplates,
+  createWhatsAppTemplate,
   assignAgent,
   setConversationStatus,
   addConversationNote,

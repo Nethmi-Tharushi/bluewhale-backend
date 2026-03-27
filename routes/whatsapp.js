@@ -9,6 +9,7 @@ const {
   getMessageMedia,
   getAgents,
   getTemplates,
+  createWhatsAppTemplate,
   assignAgent,
   setConversationStatus,
   addConversationNote,
@@ -28,6 +29,7 @@ router.get("/messages/:messageId/media", protectAdmin, authorizeAdmin(), getMess
 
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
 router.get("/templates", protectAdmin, authorizeAdmin(), getTemplates);
+router.post("/templates", protectAdmin, authorizeAdmin(), createWhatsAppTemplate);
 
 router.post("/assign-agent", protectAdmin, authorizeAdmin(), assignAgent);
 router.post("/send-message", protectAdmin, authorizeAdmin(), whatsappUpload.single("attachment"), sendOutgoingMessage);
