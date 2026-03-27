@@ -43,7 +43,6 @@ const whatsAppMessageSchema = new mongoose.Schema(
     externalMessageId: {
       type: String,
       default: "",
-      index: true,
     },
     timestamp: {
       type: Date,

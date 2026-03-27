@@ -9,6 +9,25 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const normalizePhone = (phone) => String(phone || "").replace(/[^\d+]/g, "").replace(/^00/, "+");
 
+const buildMetaErrorMessage = (data, fallbackMessage) => {
+  const message = String(
+    data?.error?.error_user_msg ||
+      data?.error?.error_user_title ||
+      data?.error?.error_data?.details ||
+      data?.error?.message ||
+      fallbackMessage ||
+      ""
+  ).trim();
+  const lowerMessage = message.toLowerCase();
+  const errorCode = Number(data?.error?.code || 0);
+
+  if (errorCode === 190 || lowerMessage.includes("access token") || lowerMessage.includes("session has expired")) {
+    return "WhatsApp access token is invalid or expired";
+  }
+
+  return message || fallbackMessage || "WhatsApp API request failed";
+};
+
 const buildSendPayload = ({ to, type = "text", text, template, media }) => {
   const payload = {
     messaging_product: "whatsapp",
@@ -69,7 +88,7 @@ const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries =
 
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const error = new Error(data?.error?.message || "WhatsApp API request failed");
+        const error = new Error(buildMetaErrorMessage(data, "WhatsApp API request failed"));
         error.status = response.status;
         error.payload = data;
         throw error;
@@ -97,7 +116,7 @@ const getMediaMetadata = async ({ mediaId, accessToken }) => {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(data?.error?.message || "Failed to fetch WhatsApp media metadata");
+    const error = new Error(buildMetaErrorMessage(data, "Failed to fetch WhatsApp media metadata"));
     error.status = response.status;
     error.payload = data;
     throw error;
@@ -117,7 +136,7 @@ const downloadMedia = async ({ mediaId, accessToken }) => {
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    const error = new Error(data?.error?.message || "Failed to download WhatsApp media");
+    const error = new Error(buildMetaErrorMessage(data, "Failed to download WhatsApp media"));
     error.status = response.status;
     error.payload = data;
     throw error;

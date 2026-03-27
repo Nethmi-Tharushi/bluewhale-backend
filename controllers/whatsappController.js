@@ -25,11 +25,17 @@ const {
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
 const {
   listTemplates,
+  syncTemplatesFromMeta,
   createTemplate,
+  updateTemplate,
+  deleteTemplate,
+  getTemplateById,
+  getTemplateHistory,
   uploadTemplateHeaderMedia,
   saveTemplateDefaultMedia,
   removeTemplateDefaultMedia,
   uploadDefaultHeaderMedia,
+  prepareTemplateMessage,
 } = require("../services/whatsappTemplateService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
 const { SALES_ROLES, buildOwnedFilter } = require("../utils/salesScope");
@@ -82,6 +88,39 @@ const parseOptionalJson = (value) => {
   } catch {
     return null;
   }
+};
+
+const parseArrayInput = (value) => {
+  if (Array.isArray(value)) return value;
+  const parsed = parseOptionalJson(value);
+  return Array.isArray(parsed) ? parsed : [];
+};
+
+const pickTemplateComponent = (template, type) =>
+  Array.isArray(template?.components)
+    ? template.components.find((component) => String(component?.type || "").toUpperCase() === type)
+    : null;
+
+const extractTemplateDraft = (template) => {
+  const header = pickTemplateComponent(template, "HEADER");
+  const body = pickTemplateComponent(template, "BODY");
+  const footer = pickTemplateComponent(template, "FOOTER");
+  const buttons = pickTemplateComponent(template, "BUTTONS");
+
+  return {
+    name: template?.name || "",
+    category: template?.category || "",
+    language: template?.language || "en_US",
+    headerType: header?.format || "NONE",
+    headerText: header?.format === "TEXT" ? header?.text || "" : "",
+    headerExamples: Array.isArray(header?.example?.header_text) ? header.example.header_text : [],
+    headerMediaHandle: Array.isArray(header?.example?.header_handle) ? header.example.header_handle[0] || "" : "",
+    defaultHeaderMedia: template?.defaultHeaderMedia || null,
+    bodyText: body?.text || "",
+    bodyExamples: Array.isArray(body?.example?.body_text) ? body.example.body_text : [],
+    footerText: footer?.text || "",
+    buttons: Array.isArray(buttons?.buttons) ? buttons.buttons : [],
+  };
 };
 
 const findAccessibleLead = async (req, leadId) => {
@@ -338,7 +377,7 @@ const getTemplates = async (req, res) => {
       search: req.query.search || "",
       status: req.query.status || "",
     });
-    return res.json({ success: true, data: templates });
+    return res.json({ data: templates });
   } catch (error) {
     console.error("Failed to fetch WhatsApp templates:", error);
     return res.status(500).json({ message: error.message || "Failed to fetch WhatsApp templates" });
@@ -357,14 +396,15 @@ const createWhatsAppTemplate = async (req, res) => {
       category: req.body?.category,
       language: req.body?.language,
       bodyText: req.body?.bodyText,
-      bodyExamples: Array.isArray(req.body?.bodyExamples) ? req.body.bodyExamples : [],
+      bodyExamples: parseArrayInput(req.body?.bodyExamples),
       headerType: req.body?.headerType,
       headerText: req.body?.headerText,
-      headerExamples: Array.isArray(req.body?.headerExamples) ? req.body.headerExamples : [],
+      headerExamples: parseArrayInput(req.body?.headerExamples),
       headerMediaHandle: req.body?.headerMediaHandle,
       footerText: req.body?.footerText,
-      buttons: Array.isArray(req.body?.buttons) ? req.body.buttons : [],
+      buttons: parseArrayInput(req.body?.buttons),
       allowCategoryChange: req.body?.allowCategoryChange !== false,
+      adminId: req.admin?._id || null,
     });
 
     const normalizedHeaderFormat = String(req.body?.headerType || "").toUpperCase();
@@ -377,11 +417,10 @@ const createWhatsAppTemplate = async (req, res) => {
         adminId: req.admin?._id || null,
       });
 
-      template.hasDefaultHeaderMedia = Boolean(savedDefaultHeaderMedia?.url);
       template.defaultHeaderMedia = savedDefaultHeaderMedia;
     }
 
-    return res.status(201).json({ success: true, data: template });
+    return res.status(201).json({ data: { id: template.id } });
   } catch (error) {
     console.error("Failed to create WhatsApp template:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to create WhatsApp template" });
@@ -405,7 +444,7 @@ const uploadWhatsAppTemplateMedia = async (req, res) => {
       mimeType: uploadedFile.mimetype,
     });
 
-    return res.status(201).json({ success: true, data: media });
+    return res.status(201).json({ data: media });
   } catch (error) {
     console.error("Failed to upload WhatsApp template media:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to upload WhatsApp template media" });
@@ -447,11 +486,7 @@ const setWhatsAppTemplateDefaultMedia = async (req, res) => {
     });
 
     return res.status(201).json({
-      success: true,
       data: {
-        templateId,
-        templateName,
-        headerFormat,
         defaultHeaderMedia: savedDefaultHeaderMedia,
       },
     });
@@ -473,11 +508,126 @@ const deleteWhatsAppTemplateDefaultMedia = async (req, res) => {
     }
 
     await removeTemplateDefaultMedia({ templateId });
-    return res.json({ success: true, data: { templateId } });
+    return res.json({ message: "Default media removed" });
   } catch (error) {
     console.error("Failed to remove WhatsApp template default media:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to remove default template media" });
   }
+};
+
+const syncWhatsAppTemplates = async (req, res) => {
+  try {
+    if (!canManageTemplates(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only sales team users can sync templates" });
+    }
+
+    const templates = await syncTemplatesFromMeta({
+      search: req.query.search || "",
+      status: req.query.status || "",
+      adminId: req.admin?._id || null,
+    });
+
+    return res.json({ data: templates });
+  } catch (error) {
+    console.error("Failed to sync WhatsApp templates:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to sync WhatsApp templates" });
+  }
+};
+
+const resubmitWhatsAppTemplate = async (req, res) => {
+  try {
+    if (!canManageTemplates(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only sales team users can resubmit templates" });
+    }
+
+    const templateId = String(req.params?.templateId || "").trim();
+    if (!templateId) {
+      return res.status(400).json({ message: "Template id is required" });
+    }
+
+    const existingTemplate = await getTemplateById(templateId);
+    if (!existingTemplate) {
+      return res.status(404).json({ message: "Template not found" });
+    }
+
+    const fallbackDraft = extractTemplateDraft(existingTemplate);
+    const template = await updateTemplate({
+      templateId,
+      name: req.body?.name || fallbackDraft.name,
+      category: req.body?.category || fallbackDraft.category,
+      language: req.body?.language || fallbackDraft.language,
+      bodyText: req.body?.bodyText || fallbackDraft.bodyText,
+      bodyExamples: parseArrayInput(req.body?.bodyExamples).length
+        ? parseArrayInput(req.body?.bodyExamples)
+        : fallbackDraft.bodyExamples,
+      headerType: req.body?.headerType || fallbackDraft.headerType,
+      headerText: req.body?.headerText || fallbackDraft.headerText,
+      headerExamples: parseArrayInput(req.body?.headerExamples).length
+        ? parseArrayInput(req.body?.headerExamples)
+        : fallbackDraft.headerExamples,
+      headerMediaHandle: req.body?.headerMediaHandle || fallbackDraft.headerMediaHandle,
+      footerText: req.body?.footerText ?? fallbackDraft.footerText,
+      buttons: parseArrayInput(req.body?.buttons).length ? parseArrayInput(req.body?.buttons) : fallbackDraft.buttons,
+      allowCategoryChange: req.body?.allowCategoryChange !== false,
+      adminId: req.admin?._id || null,
+    });
+
+    return res.status(201).json({ data: { id: template.id } });
+  } catch (error) {
+    console.error("Failed to resubmit WhatsApp template:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to resubmit WhatsApp template" });
+  }
+};
+
+const removeWhatsAppTemplate = async (req, res) => {
+  try {
+    if (!canManageTemplates(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only sales team users can delete templates" });
+    }
+
+    const templateId = String(req.params?.templateId || "").trim();
+    if (!templateId) {
+      return res.status(400).json({ message: "Template id is required" });
+    }
+
+    await deleteTemplate({
+      templateId,
+      adminId: req.admin?._id || null,
+    });
+
+    return res.json({ message: "Template deleted" });
+  } catch (error) {
+    console.error("Failed to delete WhatsApp template:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to delete WhatsApp template" });
+  }
+};
+
+const getWhatsAppTemplateHistory = async (req, res) => {
+  try {
+    const templateId = String(req.params?.templateId || "").trim();
+    if (!templateId) {
+      return res.status(400).json({ message: "Template id is required" });
+    }
+
+    const history = await getTemplateHistory({ templateId });
+    return res.json({ data: history });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp template history:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch template history" });
+  }
+};
+
+const testSendWhatsAppTemplate = async (req, res) => {
+  req.body = {
+    ...(req.body || {}),
+    type: "template",
+    template: {
+      ...(parseOptionalJson(req.body?.template) || {}),
+      id: String(req.params?.templateId || "").trim(),
+    },
+  };
+
+  return sendOutgoingMessage(req, res);
 };
 
 const assignAgent = async (req, res) => {
@@ -711,8 +861,8 @@ const sendOutgoingMessage = async (req, res) => {
       return res.status(400).json({ message: "text is required for text messages" });
     }
 
-    if (type === "template" && !template?.name) {
-      return res.status(400).json({ message: "template.name is required for template messages" });
+    if (type === "template" && !template?.name && !template?.id && !template?.templateId) {
+      return res.status(400).json({ message: "template.name or template.id is required for template messages" });
     }
 
     if (!["text", "template", ...SUPPORTED_MEDIA_TYPES].includes(type)) {
@@ -731,48 +881,10 @@ const sendOutgoingMessage = async (req, res) => {
       : null;
 
     if (type === "template") {
-      const headerFormat = String(template?.headerFormat || "").toUpperCase();
-      if (["IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat)) {
-        const defaultHeaderMedia = template?.defaultHeaderMedia?.url
-          ? {
-              url: String(template.defaultHeaderMedia.url || "").trim(),
-              mimeType: String(template.defaultHeaderMedia.mimeType || "").trim(),
-              filename: String(template.defaultHeaderMedia.fileName || template.defaultHeaderMedia.filename || "").trim(),
-              size: Number(template.defaultHeaderMedia.bytes || 0),
-              publicId: String(template.defaultHeaderMedia.publicId || "").trim(),
-            }
-          : null;
-        const resolvedHeaderMedia = media?.url ? media : defaultHeaderMedia;
-
-        if (!resolvedHeaderMedia?.url) {
-          return res.status(400).json({ message: `attachment is required for ${headerFormat.toLowerCase()} header templates` });
-        }
-
-        const mediaKey = headerFormat.toLowerCase();
-        const existingComponents = Array.isArray(template?.components) ? template.components : [];
-        const nonHeaderComponents = existingComponents.filter(
-          (component) => String(component?.type || "").toLowerCase() !== "header"
-        );
-
-        template = {
-          ...template,
-          components: [
-            {
-              type: "header",
-              parameters: [
-                {
-                  type: mediaKey,
-                  [mediaKey]: {
-                    link: resolvedHeaderMedia.url,
-                    ...(mediaKey === "document" && resolvedHeaderMedia.filename ? { filename: resolvedHeaderMedia.filename } : {}),
-                  },
-                },
-              ],
-            },
-            ...nonHeaderComponents,
-          ],
-        };
-      }
+      template = await prepareTemplateMessage({
+        template,
+        media,
+      });
     }
 
     if (SUPPORTED_MEDIA_TYPES.includes(type) && !media?.url) {
@@ -819,7 +931,7 @@ const sendOutgoingMessage = async (req, res) => {
     });
   } catch (error) {
     console.error("Failed to send WhatsApp message:", error);
-    return res.status(500).json({ message: error.message || "Failed to send WhatsApp message" });
+    return res.status(error.status || 500).json({ message: error.message || "Failed to send WhatsApp message" });
   }
 };
 
@@ -831,10 +943,15 @@ module.exports = {
   getMessageMedia,
   getAgents,
   getTemplates,
+  syncWhatsAppTemplates,
   createWhatsAppTemplate,
   uploadWhatsAppTemplateMedia,
   setWhatsAppTemplateDefaultMedia,
   deleteWhatsAppTemplateDefaultMedia,
+  resubmitWhatsAppTemplate,
+  removeWhatsAppTemplate,
+  getWhatsAppTemplateHistory,
+  testSendWhatsAppTemplate,
   assignAgent,
   setConversationStatus,
   addConversationNote,
