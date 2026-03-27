@@ -2,6 +2,7 @@ const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 
 const SUPPORTED_TEMPLATE_CATEGORIES = ["MARKETING", "UTILITY", "AUTHENTICATION"];
 const SUPPORTED_TEMPLATE_BUTTONS = ["QUICK_REPLY", "URL", "PHONE_NUMBER"];
+const SUPPORTED_TEMPLATE_HEADER_FORMATS = ["NONE", "TEXT", "IMAGE", "VIDEO", "DOCUMENT"];
 
 const getWhatsAppConfig = () => {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
@@ -159,8 +160,10 @@ const createTemplate = async ({
   language,
   bodyText,
   bodyExamples = [],
+  headerType = "TEXT",
   headerText = "",
   headerExamples = [],
+  headerMediaHandle = "",
   footerText = "",
   buttons = [],
   allowCategoryChange = true,
@@ -183,7 +186,13 @@ const createTemplate = async ({
     throw new Error("Template body text is required");
   }
 
+  const normalizedHeaderType = trimString(headerType || "TEXT").toUpperCase();
+  if (!SUPPORTED_TEMPLATE_HEADER_FORMATS.includes(normalizedHeaderType)) {
+    throw new Error("Unsupported template header type");
+  }
+
   const normalizedHeaderText = trimString(headerText);
+  const normalizedHeaderMediaHandle = trimString(headerMediaHandle);
   const normalizedFooterText = trimString(footerText);
   const normalizedButtons = Array.isArray(buttons)
     ? buttons.filter((button) => trimString(button?.text || button?.url || button?.phoneNumber || button?.phone_number || ""))
@@ -195,12 +204,28 @@ const createTemplate = async ({
 
   const components = [];
 
-  if (normalizedHeaderText) {
+  if (normalizedHeaderType === "TEXT") {
+    if (!normalizedHeaderText) {
+      throw new Error("Header text is required when header type is Text");
+    }
+
     components.push({
       type: "HEADER",
       format: "TEXT",
       text: normalizedHeaderText,
       ...(buildTextExamples(normalizedHeaderText, headerExamples, "header") || {}),
+    });
+  } else if (normalizedHeaderType !== "NONE") {
+    if (!normalizedHeaderMediaHandle) {
+      throw new Error("A Meta media handle is required for image, video, or document headers");
+    }
+
+    components.push({
+      type: "HEADER",
+      format: normalizedHeaderType,
+      example: {
+        header_handle: [normalizedHeaderMediaHandle],
+      },
     });
   }
 
