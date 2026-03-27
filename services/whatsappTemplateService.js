@@ -1,3 +1,7 @@
+const streamifier = require("streamifier");
+const cloudinary = require("../config/cloudinary");
+const WhatsAppTemplateDefaultMedia = require("../models/WhatsAppTemplateDefaultMedia");
+
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 
 const SUPPORTED_TEMPLATE_CATEGORIES = ["MARKETING", "UTILITY", "AUTHENTICATION"];
@@ -111,6 +115,70 @@ const normalizeTemplateForClient = (template) => ({
   components: Array.isArray(template?.components) ? template.components : [],
 });
 
+const normalizeDefaultHeaderMedia = (record) => {
+  if (!record?.mediaUrl) return null;
+
+  return {
+    url: trimString(record.mediaUrl),
+    fileName: trimString(record.fileName),
+    mimeType: trimString(record.mimeType),
+    resourceType: trimString(record.resourceType),
+    publicId: trimString(record.cloudinaryPublicId),
+    bytes: Number(record.bytes || 0),
+    headerFormat: trimString(record.headerFormat || "").toUpperCase(),
+  };
+};
+
+const uploadBufferToCloudinary = ({ buffer, resourceType, publicId, filename }) =>
+  new Promise((resolve, reject) => {
+    const upload = cloudinary.uploader.upload_stream(
+      {
+        folder: "bluewhale/whatsapp/template-defaults",
+        resource_type: resourceType,
+        public_id: publicId,
+        use_filename: !publicId,
+        filename_override: filename || undefined,
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(result);
+      }
+    );
+
+    streamifier.createReadStream(buffer).pipe(upload);
+  });
+
+const getCloudinaryResourceType = (mimeType = "") => {
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  return "raw";
+};
+
+const uploadDefaultHeaderMedia = async ({ buffer, filename = "", mimeType = "", publicId = "" } = {}) => {
+  if (!buffer || !Buffer.isBuffer(buffer) || !buffer.length) {
+    throw new Error("Template media file is required");
+  }
+
+  const uploadResult = await uploadBufferToCloudinary({
+    buffer,
+    resourceType: getCloudinaryResourceType(trimString(mimeType || "application/octet-stream")),
+    publicId: trimString(publicId),
+    filename: trimString(filename || "template-media"),
+  });
+
+  return {
+    url: trimString(uploadResult?.secure_url),
+    fileName: trimString(uploadResult?.original_filename || filename),
+    mimeType: trimString(mimeType),
+    resourceType: trimString(uploadResult?.resource_type),
+    publicId: trimString(uploadResult?.public_id),
+    bytes: Number(uploadResult?.bytes || 0),
+  };
+};
+
 const fetchAllTemplates = async () => {
   const { businessAccountId } = getWhatsAppConfig();
   const items = [];
@@ -207,21 +275,45 @@ const uploadTemplateHeaderMedia = async ({ buffer, filename = "", mimeType = "" 
     throw new Error("Meta did not return a template media handle");
   }
 
+  const defaultMedia = await uploadDefaultHeaderMedia({
+    buffer,
+    filename: normalizedFilename,
+    mimeType: normalizedMimeType,
+    publicId: `wa_template_default_${Date.now()}_${Math.round(Math.random() * 1e9)}`,
+  });
+
   return {
     id: handle,
     filename: normalizedFilename,
     mimeType: normalizedMimeType,
+    defaultMedia,
   };
 };
 
 const listTemplates = async ({ search = "", status = "" } = {}) => {
   const templates = await fetchAllTemplates();
+  const defaultMediaRecords = await WhatsAppTemplateDefaultMedia.find({
+    templateId: {
+      $in: templates.map((template) => trimString(template.id)).filter(Boolean),
+    },
+  }).lean();
+  const defaultMediaByTemplateId = new Map(
+    defaultMediaRecords.map((record) => [trimString(record.templateId), normalizeDefaultHeaderMedia(record)])
+  );
+
   return templates.filter((template) => {
     const matchesSearch = !search
       || String(template.name || "").toLowerCase().includes(String(search).toLowerCase());
     const matchesStatus = !status
       || String(template.status || "").toUpperCase() === String(status).toUpperCase();
     return matchesSearch && matchesStatus;
+  }).map((template) => {
+    const defaultHeaderMedia = defaultMediaByTemplateId.get(trimString(template.id)) || null;
+    return {
+      ...template,
+      hasDefaultHeaderMedia: Boolean(defaultHeaderMedia?.url),
+      defaultHeaderMedia,
+    };
   });
 };
 
@@ -353,8 +445,83 @@ const createTemplate = async ({
   });
 };
 
+const saveTemplateDefaultMedia = async ({
+  templateId,
+  templateName = "",
+  headerFormat = "",
+  defaultMedia = null,
+  adminId = null,
+} = {}) => {
+  const normalizedTemplateId = trimString(templateId);
+  const normalizedHeaderFormat = trimString(headerFormat).toUpperCase();
+
+  if (!normalizedTemplateId) {
+    throw new Error("Template id is required");
+  }
+
+  if (!["IMAGE", "VIDEO", "DOCUMENT"].includes(normalizedHeaderFormat)) {
+    throw new Error("Default media can only be stored for image, video, or document headers");
+  }
+
+  if (!defaultMedia?.url) {
+    throw new Error("Default media url is required");
+  }
+
+  const update = {
+    templateName: trimString(templateName),
+    headerFormat: normalizedHeaderFormat,
+    mediaUrl: trimString(defaultMedia.url),
+    fileName: trimString(defaultMedia.fileName || defaultMedia.filename),
+    mimeType: trimString(defaultMedia.mimeType),
+    resourceType: trimString(defaultMedia.resourceType),
+    cloudinaryPublicId: trimString(defaultMedia.publicId),
+    bytes: Number(defaultMedia.bytes || 0),
+    updatedBy: adminId || null,
+  };
+
+  const record = await WhatsAppTemplateDefaultMedia.findOneAndUpdate(
+    { templateId: normalizedTemplateId },
+    {
+      $set: update,
+      $setOnInsert: {
+        createdBy: adminId || null,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+    }
+  ).lean();
+
+  return normalizeDefaultHeaderMedia(record);
+};
+
+const removeTemplateDefaultMedia = async ({ templateId } = {}) => {
+  const normalizedTemplateId = trimString(templateId);
+  if (!normalizedTemplateId) {
+    throw new Error("Template id is required");
+  }
+
+  const record = await WhatsAppTemplateDefaultMedia.findOneAndDelete({ templateId: normalizedTemplateId }).lean();
+
+  if (record?.cloudinaryPublicId) {
+    try {
+      await cloudinary.uploader.destroy(record.cloudinaryPublicId, {
+        resource_type: record.resourceType || "raw",
+      });
+    } catch (error) {
+      console.error("Failed to delete template default media from Cloudinary:", error);
+    }
+  }
+
+  return Boolean(record);
+};
+
 module.exports = {
   listTemplates,
   createTemplate,
   uploadTemplateHeaderMedia,
+  saveTemplateDefaultMedia,
+  removeTemplateDefaultMedia,
+  uploadDefaultHeaderMedia,
 };

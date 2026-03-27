@@ -23,7 +23,14 @@ const {
   upsertContact,
 } = require("../services/whatsappCRMService");
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
-const { listTemplates, createTemplate, uploadTemplateHeaderMedia } = require("../services/whatsappTemplateService");
+const {
+  listTemplates,
+  createTemplate,
+  uploadTemplateHeaderMedia,
+  saveTemplateDefaultMedia,
+  removeTemplateDefaultMedia,
+  uploadDefaultHeaderMedia,
+} = require("../services/whatsappTemplateService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
 const { SALES_ROLES, buildOwnedFilter } = require("../utils/salesScope");
 
@@ -64,6 +71,18 @@ const canUpdateConversationStatus = ({ admin, conversation }) => {
 };
 
 const getAuthenticatedActor = (req) => req.admin || req.user || null;
+
+const parseOptionalJson = (value) => {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
 
 const findAccessibleLead = async (req, leadId) => {
   const query =
@@ -332,6 +351,7 @@ const createWhatsAppTemplate = async (req, res) => {
       return res.status(403).json({ message: "Access denied: only sales team users can create templates" });
     }
 
+    const defaultHeaderMedia = parseOptionalJson(req.body?.defaultHeaderMedia);
     const template = await createTemplate({
       name: req.body?.name,
       category: req.body?.category,
@@ -346,6 +366,20 @@ const createWhatsAppTemplate = async (req, res) => {
       buttons: Array.isArray(req.body?.buttons) ? req.body.buttons : [],
       allowCategoryChange: req.body?.allowCategoryChange !== false,
     });
+
+    const normalizedHeaderFormat = String(req.body?.headerType || "").toUpperCase();
+    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(normalizedHeaderFormat) && defaultHeaderMedia?.url) {
+      const savedDefaultHeaderMedia = await saveTemplateDefaultMedia({
+        templateId: template.id,
+        templateName: template.name,
+        headerFormat: normalizedHeaderFormat,
+        defaultMedia: defaultHeaderMedia,
+        adminId: req.admin?._id || null,
+      });
+
+      template.hasDefaultHeaderMedia = Boolean(savedDefaultHeaderMedia?.url);
+      template.defaultHeaderMedia = savedDefaultHeaderMedia;
+    }
 
     return res.status(201).json({ success: true, data: template });
   } catch (error) {
@@ -375,6 +409,74 @@ const uploadWhatsAppTemplateMedia = async (req, res) => {
   } catch (error) {
     console.error("Failed to upload WhatsApp template media:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to upload WhatsApp template media" });
+  }
+};
+
+const setWhatsAppTemplateDefaultMedia = async (req, res) => {
+  try {
+    if (!canManageTemplates(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only sales team users can update default template media" });
+    }
+
+    const uploadedFile = req.file;
+    if (!uploadedFile?.buffer?.length) {
+      return res.status(400).json({ message: "Please choose a media file to upload" });
+    }
+
+    const templateId = String(req.params?.templateId || "").trim();
+    const templateName = String(req.body?.templateName || "").trim();
+    const headerFormat = String(req.body?.headerFormat || "").trim().toUpperCase();
+
+    if (!templateId) {
+      return res.status(400).json({ message: "Template id is required" });
+    }
+
+    const defaultMedia = await uploadDefaultHeaderMedia({
+      buffer: uploadedFile.buffer,
+      filename: uploadedFile.originalname,
+      mimeType: uploadedFile.mimetype,
+      publicId: `wa_template_default_${templateId}_${Date.now()}`,
+    });
+
+    const savedDefaultHeaderMedia = await saveTemplateDefaultMedia({
+      templateId,
+      templateName,
+      headerFormat,
+      defaultMedia,
+      adminId: req.admin?._id || null,
+    });
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        templateId,
+        templateName,
+        headerFormat,
+        defaultHeaderMedia: savedDefaultHeaderMedia,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to save WhatsApp template default media:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to save default template media" });
+  }
+};
+
+const deleteWhatsAppTemplateDefaultMedia = async (req, res) => {
+  try {
+    if (!canManageTemplates(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only sales team users can remove default template media" });
+    }
+
+    const templateId = String(req.params?.templateId || "").trim();
+    if (!templateId) {
+      return res.status(400).json({ message: "Template id is required" });
+    }
+
+    await removeTemplateDefaultMedia({ templateId });
+    return res.json({ success: true, data: { templateId } });
+  } catch (error) {
+    console.error("Failed to remove WhatsApp template default media:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to remove default template media" });
   }
 };
 
@@ -631,7 +733,18 @@ const sendOutgoingMessage = async (req, res) => {
     if (type === "template") {
       const headerFormat = String(template?.headerFormat || "").toUpperCase();
       if (["IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat)) {
-        if (!media?.url) {
+        const defaultHeaderMedia = template?.defaultHeaderMedia?.url
+          ? {
+              url: String(template.defaultHeaderMedia.url || "").trim(),
+              mimeType: String(template.defaultHeaderMedia.mimeType || "").trim(),
+              filename: String(template.defaultHeaderMedia.fileName || template.defaultHeaderMedia.filename || "").trim(),
+              size: Number(template.defaultHeaderMedia.bytes || 0),
+              publicId: String(template.defaultHeaderMedia.publicId || "").trim(),
+            }
+          : null;
+        const resolvedHeaderMedia = media?.url ? media : defaultHeaderMedia;
+
+        if (!resolvedHeaderMedia?.url) {
           return res.status(400).json({ message: `attachment is required for ${headerFormat.toLowerCase()} header templates` });
         }
 
@@ -650,8 +763,8 @@ const sendOutgoingMessage = async (req, res) => {
                 {
                   type: mediaKey,
                   [mediaKey]: {
-                    link: media.url,
-                    ...(mediaKey === "document" && media.filename ? { filename: media.filename } : {}),
+                    link: resolvedHeaderMedia.url,
+                    ...(mediaKey === "document" && resolvedHeaderMedia.filename ? { filename: resolvedHeaderMedia.filename } : {}),
                   },
                 },
               ],
@@ -720,6 +833,8 @@ module.exports = {
   getTemplates,
   createWhatsAppTemplate,
   uploadWhatsAppTemplateMedia,
+  setWhatsAppTemplateDefaultMedia,
+  deleteWhatsAppTemplateDefaultMedia,
   assignAgent,
   setConversationStatus,
   addConversationNote,

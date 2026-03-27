@@ -11,6 +11,8 @@ const {
   getTemplates,
   createWhatsAppTemplate,
   uploadWhatsAppTemplateMedia,
+  setWhatsAppTemplateDefaultMedia,
+  deleteWhatsAppTemplateDefaultMedia,
   assignAgent,
   setConversationStatus,
   addConversationNote,
@@ -33,6 +35,8 @@ router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
 router.get("/templates", protectAdmin, authorizeAdmin(), getTemplates);
 router.post("/templates", protectAdmin, authorizeAdmin(), createWhatsAppTemplate);
 router.post("/templates/media", protectAdmin, authorizeAdmin(), whatsappTemplateMediaUpload.single("file"), uploadWhatsAppTemplateMedia);
+router.post("/templates/:templateId/default-media", protectAdmin, authorizeAdmin(), whatsappTemplateMediaUpload.single("file"), setWhatsAppTemplateDefaultMedia);
+router.delete("/templates/:templateId/default-media", protectAdmin, authorizeAdmin(), deleteWhatsAppTemplateDefaultMedia);
 
 router.post("/assign-agent", protectAdmin, authorizeAdmin(), assignAgent);
 router.post("/send-message", protectAdmin, authorizeAdmin(), whatsappUpload.single("attachment"), sendOutgoingMessage);
