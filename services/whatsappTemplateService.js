@@ -145,10 +145,10 @@ const fetchAllTemplates = async () => {
 
 const uploadTemplateHeaderMedia = async ({ buffer, filename = "", mimeType = "" } = {}) => {
   const { accessToken } = getWhatsAppConfig();
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const appId = trimString(process.env.WHATSAPP_APP_ID || process.env.META_APP_ID || "");
 
-  if (!phoneNumberId) {
-    throw new Error("Missing WhatsApp phone number id in environment variables");
+  if (!appId) {
+    throw new Error("Missing WhatsApp app id in environment variables");
   }
 
   if (!buffer || !Buffer.isBuffer(buffer) || !buffer.length) {
@@ -158,30 +158,57 @@ const uploadTemplateHeaderMedia = async ({ buffer, filename = "", mimeType = "" 
   const normalizedMimeType = trimString(mimeType || "application/octet-stream");
   const normalizedFilename = trimString(filename || "template-media");
 
-  const formData = new FormData();
-  formData.append("messaging_product", "whatsapp");
-  formData.append("type", normalizedMimeType);
-  formData.append("file", new Blob([buffer], { type: normalizedMimeType }), normalizedFilename);
-
-  const response = await fetch(buildGraphUrl(`${phoneNumberId}/media`), {
+  const sessionResponse = await fetch(buildGraphUrl(`${appId}/uploads`, {
+    file_name: normalizedFilename,
+    file_length: String(buffer.length),
+    file_type: normalizedMimeType,
+  }), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
-    body: formData,
   });
 
-  const data = await response.json().catch(() => ({}));
+  const sessionData = await sessionResponse.json().catch(() => ({}));
 
-  if (!response.ok) {
-    const error = new Error(data?.error?.message || "Failed to upload WhatsApp template media");
-    error.status = response.status;
-    error.payload = data;
+  if (!sessionResponse.ok) {
+    const error = new Error(sessionData?.error?.message || "Failed to start WhatsApp template media upload");
+    error.status = sessionResponse.status;
+    error.payload = sessionData;
     throw error;
   }
 
+  const uploadSessionId = trimString(sessionData?.id);
+  if (!uploadSessionId) {
+    throw new Error("Meta did not return an upload session id");
+  }
+
+  const uploadResponse = await fetch(buildGraphUrl(uploadSessionId), {
+    method: "POST",
+    headers: {
+      Authorization: `OAuth ${accessToken}`,
+      file_offset: "0",
+      "Content-Type": normalizedMimeType,
+    },
+    body: buffer,
+  });
+
+  const uploadData = await uploadResponse.json().catch(() => ({}));
+
+  if (!uploadResponse.ok) {
+    const error = new Error(uploadData?.error?.message || "Failed to upload WhatsApp template media file");
+    error.status = uploadResponse.status;
+    error.payload = uploadData;
+    throw error;
+  }
+
+  const handle = trimString(uploadData?.h || uploadData?.handle);
+  if (!handle) {
+    throw new Error("Meta did not return a template media handle");
+  }
+
   return {
-    id: trimString(data?.id),
+    id: handle,
     filename: normalizedFilename,
     mimeType: normalizedMimeType,
   };
@@ -204,7 +231,7 @@ const createTemplate = async ({
   language,
   bodyText,
   bodyExamples = [],
-  headerType = "TEXT",
+  headerType = "NONE",
   headerText = "",
   headerExamples = [],
   headerMediaHandle = "",
@@ -230,7 +257,7 @@ const createTemplate = async ({
     throw new Error("Template body text is required");
   }
 
-  const normalizedHeaderType = trimString(headerType || "TEXT").toUpperCase();
+  const normalizedHeaderType = trimString(headerType || "NONE").toUpperCase();
   if (!SUPPORTED_TEMPLATE_HEADER_FORMATS.includes(normalizedHeaderType)) {
     throw new Error("Unsupported template header type");
   }

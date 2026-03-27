@@ -542,11 +542,20 @@ const sendOutgoingMessage = async (req, res) => {
       phone,
       text,
       type: requestedType = "text",
-      template,
+      template: rawTemplate,
     } = req.body || {};
     const uploadedFile = req.file || null;
     const inferredType = uploadedFile ? inferMediaMessageType(uploadedFile) : null;
-    const type = inferredType || requestedType;
+    const type = requestedType === "template" ? "template" : inferredType || requestedType;
+    let template = rawTemplate;
+
+    if (typeof template === "string") {
+      try {
+        template = JSON.parse(template);
+      } catch (_error) {
+        return res.status(400).json({ message: "Invalid template payload" });
+      }
+    }
 
     let conversation = null;
     let contact = null;
@@ -618,6 +627,40 @@ const sendOutgoingMessage = async (req, res) => {
           caption: String(text || "").trim(),
         }
       : null;
+
+    if (type === "template") {
+      const headerFormat = String(template?.headerFormat || "").toUpperCase();
+      if (["IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat)) {
+        if (!media?.url) {
+          return res.status(400).json({ message: `attachment is required for ${headerFormat.toLowerCase()} header templates` });
+        }
+
+        const mediaKey = headerFormat.toLowerCase();
+        const existingComponents = Array.isArray(template?.components) ? template.components : [];
+        const nonHeaderComponents = existingComponents.filter(
+          (component) => String(component?.type || "").toLowerCase() !== "header"
+        );
+
+        template = {
+          ...template,
+          components: [
+            {
+              type: "header",
+              parameters: [
+                {
+                  type: mediaKey,
+                  [mediaKey]: {
+                    link: media.url,
+                    ...(mediaKey === "document" && media.filename ? { filename: media.filename } : {}),
+                  },
+                },
+              ],
+            },
+            ...nonHeaderComponents,
+          ],
+        };
+      }
+    }
 
     if (SUPPORTED_MEDIA_TYPES.includes(type) && !media?.url) {
       return res.status(400).json({ message: `attachment is required for ${type} messages` });
