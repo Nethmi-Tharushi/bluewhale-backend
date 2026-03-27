@@ -143,6 +143,50 @@ const fetchAllTemplates = async () => {
   return items.map(normalizeTemplateForClient);
 };
 
+const uploadTemplateHeaderMedia = async ({ buffer, filename = "", mimeType = "" } = {}) => {
+  const { accessToken } = getWhatsAppConfig();
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+  if (!phoneNumberId) {
+    throw new Error("Missing WhatsApp phone number id in environment variables");
+  }
+
+  if (!buffer || !Buffer.isBuffer(buffer) || !buffer.length) {
+    throw new Error("Template media file is required");
+  }
+
+  const normalizedMimeType = trimString(mimeType || "application/octet-stream");
+  const normalizedFilename = trimString(filename || "template-media");
+
+  const formData = new FormData();
+  formData.append("messaging_product", "whatsapp");
+  formData.append("type", normalizedMimeType);
+  formData.append("file", new Blob([buffer], { type: normalizedMimeType }), normalizedFilename);
+
+  const response = await fetch(buildGraphUrl(`${phoneNumberId}/media`), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: formData,
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error = new Error(data?.error?.message || "Failed to upload WhatsApp template media");
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+
+  return {
+    id: trimString(data?.id),
+    filename: normalizedFilename,
+    mimeType: normalizedMimeType,
+  };
+};
+
 const listTemplates = async ({ search = "", status = "" } = {}) => {
   const templates = await fetchAllTemplates();
   return templates.filter((template) => {
@@ -285,4 +329,5 @@ const createTemplate = async ({
 module.exports = {
   listTemplates,
   createTemplate,
+  uploadTemplateHeaderMedia,
 };

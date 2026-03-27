@@ -10,6 +10,7 @@ const {
   getAgents,
   getTemplates,
   createWhatsAppTemplate,
+  uploadWhatsAppTemplateMedia,
   assignAgent,
   setConversationStatus,
   addConversationNote,
@@ -19,6 +20,7 @@ const {
 } = require("../controllers/whatsappController");
 const { protectAdmin, authorizeAdmin } = require("../middlewares/AdminAuth");
 const whatsappUpload = require("../middlewares/whatsappUpload");
+const whatsappTemplateMediaUpload = require("../middlewares/whatsappTemplateMediaUpload");
 
 router.get("/webhook", getWebhookChallenge);
 router.post("/webhook", receiveWebhook);
@@ -30,6 +32,7 @@ router.get("/messages/:messageId/media", protectAdmin, authorizeAdmin(), getMess
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
 router.get("/templates", protectAdmin, authorizeAdmin(), getTemplates);
 router.post("/templates", protectAdmin, authorizeAdmin(), createWhatsAppTemplate);
+router.post("/templates/media", protectAdmin, authorizeAdmin(), whatsappTemplateMediaUpload.single("file"), uploadWhatsAppTemplateMedia);
 
 router.post("/assign-agent", protectAdmin, authorizeAdmin(), assignAgent);
 router.post("/send-message", protectAdmin, authorizeAdmin(), whatsappUpload.single("attachment"), sendOutgoingMessage);

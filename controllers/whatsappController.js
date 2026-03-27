@@ -23,7 +23,7 @@ const {
   upsertContact,
 } = require("../services/whatsappCRMService");
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
-const { listTemplates, createTemplate } = require("../services/whatsappTemplateService");
+const { listTemplates, createTemplate, uploadTemplateHeaderMedia } = require("../services/whatsappTemplateService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
 const { SALES_ROLES, buildOwnedFilter } = require("../utils/salesScope");
 
@@ -40,7 +40,7 @@ const isSalesAdmin = (admin) => String(admin?.role || "") === "SalesAdmin";
 const isSalesStaff = (admin) => String(admin?.role || "") === "SalesStaff";
 
 const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
-const canManageTemplates = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
+const canManageTemplates = (admin) => isMainAdmin(admin) || isSalesAdmin(admin) || isSalesStaff(admin);
 const isValidObjectId = (value) => Types.ObjectId.isValid(String(value || ""));
 
 const canSendConversationMessage = ({ admin, conversation }) => {
@@ -329,7 +329,7 @@ const getTemplates = async (req, res) => {
 const createWhatsAppTemplate = async (req, res) => {
   try {
     if (!canManageTemplates(req.admin)) {
-      return res.status(403).json({ message: "Access denied: only SalesAdmin or MainAdmin can create templates" });
+      return res.status(403).json({ message: "Access denied: only sales team users can create templates" });
     }
 
     const template = await createTemplate({
@@ -351,6 +351,30 @@ const createWhatsAppTemplate = async (req, res) => {
   } catch (error) {
     console.error("Failed to create WhatsApp template:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to create WhatsApp template" });
+  }
+};
+
+const uploadWhatsAppTemplateMedia = async (req, res) => {
+  try {
+    if (!canManageTemplates(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only sales team users can upload template media" });
+    }
+
+    const uploadedFile = req.file;
+    if (!uploadedFile?.buffer?.length) {
+      return res.status(400).json({ message: "Please choose a media file to upload" });
+    }
+
+    const media = await uploadTemplateHeaderMedia({
+      buffer: uploadedFile.buffer,
+      filename: uploadedFile.originalname,
+      mimeType: uploadedFile.mimetype,
+    });
+
+    return res.status(201).json({ success: true, data: media });
+  } catch (error) {
+    console.error("Failed to upload WhatsApp template media:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to upload WhatsApp template media" });
   }
 };
 
@@ -652,6 +676,7 @@ module.exports = {
   getAgents,
   getTemplates,
   createWhatsAppTemplate,
+  uploadWhatsAppTemplateMedia,
   assignAgent,
   setConversationStatus,
   addConversationNote,
