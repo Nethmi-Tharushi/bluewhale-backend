@@ -28,7 +28,7 @@ const buildMetaErrorMessage = (data, fallbackMessage) => {
   return message || fallbackMessage || "WhatsApp API request failed";
 };
 
-const buildSendPayload = ({ to, type = "text", text, template, media }) => {
+const buildSendPayload = ({ to, type = "text", text, template, media, interactive }) => {
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -46,6 +46,11 @@ const buildSendPayload = ({ to, type = "text", text, template, media }) => {
       },
       components: Array.isArray(template?.components) ? template.components : [],
     };
+  } else if (type === "interactive") {
+    if (!interactive || typeof interactive !== "object") {
+      throw new Error("interactive payload is required for interactive messages");
+    }
+    payload.interactive = interactive;
   } else if (SUPPORTED_MEDIA_TYPES.includes(type)) {
     const mediaLink = media?.link || media?.url;
 
@@ -203,7 +208,7 @@ const cacheInboundMedia = async ({ mediaId, mimeType = "", filename = "" }) => {
   };
 };
 
-const sendMessage = async ({ to, type = "text", text, template, media, context = {} }) => {
+const sendMessage = async ({ to, type = "text", text, template, media, interactive, context = {} }) => {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
@@ -211,7 +216,7 @@ const sendMessage = async ({ to, type = "text", text, template, media, context =
     throw new Error("Missing WhatsApp Cloud API credentials in environment variables");
   }
 
-  const payload = buildSendPayload({ to, type, text, template, media });
+  const payload = buildSendPayload({ to, type, text, template, media, interactive });
 
   const eventLog = await WhatsAppEventLog.create({
     direction: "outgoing",
