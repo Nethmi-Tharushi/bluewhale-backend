@@ -8,6 +8,8 @@ const {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getRoundRobinSettings,
+  saveRoundRobinSettings,
   getTemplates,
   syncWhatsAppTemplates,
   createWhatsAppTemplate,
@@ -37,6 +39,8 @@ router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConve
 router.get("/messages/:messageId/media", protectAdmin, authorizeAdmin(), getMessageMedia);
 
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
+router.get("/assignment-settings", protectAdmin, authorizeAdmin(), getRoundRobinSettings);
+router.put("/assignment-settings", protectAdmin, authorizeAdmin(), saveRoundRobinSettings);
 router.get("/templates", protectAdmin, authorizeAdmin(), getTemplates);
 router.post("/templates/sync", protectAdmin, authorizeAdmin(), syncWhatsAppTemplates);
 router.post("/templates", protectAdmin, authorizeAdmin(), createWhatsAppTemplate);

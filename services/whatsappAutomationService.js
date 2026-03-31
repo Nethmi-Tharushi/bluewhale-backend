@@ -190,6 +190,7 @@ const sanitizeAutomationPayload = (payload = {}, adminId = null) => {
     triggerType,
     triggerConfig: {
       keywords: normalizeStringArray(payload?.triggerConfig?.keywords),
+      keywordMatchMode: String(payload?.triggerConfig?.keywordMatchMode || "contains").trim().toLowerCase() === "exact" ? "exact" : "contains",
       businessHoursOnly: Boolean(payload?.triggerConfig?.businessHoursOnly),
       startHour: Number(payload?.triggerConfig?.startHour ?? 9),
       endHour: Number(payload?.triggerConfig?.endHour ?? 18),
@@ -229,6 +230,11 @@ const resolveKeywordMatch = (messageText = "", triggerConfig = {}) => {
 
   const normalizedMessage = String(messageText || "").trim().toLowerCase();
   if (!normalizedMessage) return false;
+
+  const keywordMatchMode = String(triggerConfig.keywordMatchMode || "contains").trim().toLowerCase();
+  if (keywordMatchMode === "exact") {
+    return keywords.some((keyword) => normalizedMessage === keyword);
+  }
 
   return keywords.some((keyword) => normalizedMessage.includes(keyword));
 };

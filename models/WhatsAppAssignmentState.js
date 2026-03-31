@@ -12,6 +12,21 @@ const whatsAppAssignmentStateSchema = new mongoose.Schema(
       ref: "AdminUser",
       default: null,
     },
+    selectionMode: {
+      type: String,
+      enum: ["all", "preferred"],
+      default: "all",
+    },
+    preferredAgentIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "AdminUser",
+      },
+    ],
+    autoAssignmentEnabled: {
+      type: Boolean,
+      default: true,
+    },
   },
   { timestamps: true }
 );
