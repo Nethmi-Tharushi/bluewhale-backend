@@ -36,6 +36,11 @@ const extractMessageContent = (message) => {
           "[interactive]",
         type: "interactive",
         media: null,
+        interactiveReply: {
+          id: message.interactive?.button_reply?.id || message.interactive?.list_reply?.id || "",
+          title: message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || "",
+          description: message.interactive?.list_reply?.description || "",
+        },
       };
     case "button":
       return { content: message.button?.text || "[button]", type: "interactive", media: null };
@@ -72,7 +77,7 @@ const parseWebhookPayload = (payload) => {
 
       for (const message of messages) {
         const contact = contacts.find((item) => item.wa_id === message.from) || contacts[0] || {};
-        const { content, type, media } = extractMessageContent(message);
+        const { content, type, media, interactiveReply = null } = extractMessageContent(message);
 
         inboundMessages.push({
           phone: normalizePhone(message.from || contact.wa_id),
@@ -81,6 +86,7 @@ const parseWebhookPayload = (payload) => {
           text: content,
           type,
           media,
+          interactiveReply,
           messageId: message.id || "",
           timestamp: message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date(),
           phoneNumberId: value.metadata?.phone_number_id || "",

@@ -176,6 +176,10 @@ const whatsAppConversationSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    workflowContext: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
     tags: [
       {
         type: String,

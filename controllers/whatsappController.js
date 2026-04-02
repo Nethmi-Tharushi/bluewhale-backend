@@ -5,7 +5,7 @@ const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
-const { getAvailableAgents } = require("../services/whatsappAssignmentService");
+const { getAvailableAgents, getAssignmentSettings, updateAssignmentSettings } = require("../services/whatsappAssignmentService");
 const { sendBasicAutomationTestMessage } = require("../services/whatsappBasicAutomationRuntimeService");
 const {
   saveInboundMessage,
@@ -387,6 +387,7 @@ const getMessageMedia = async (req, res) => {
 const getAgents = async (_req, res) => {
   try {
     const autoAssignableAgents = await getAvailableAgents();
+    const assignmentSettings = await getAssignmentSettings();
     const allAgents = await AdminUser.find({ role: "SalesStaff" })
       .select("_id name email role whatsappInbox createdAt")
       .sort({ createdAt: 1 })
@@ -397,11 +398,44 @@ const getAgents = async (_req, res) => {
       data: allAgents.map((agent) => ({
         ...agent,
         canAutoAssign: autoAssignableAgents.some((item) => String(item._id) === String(agent._id)),
+        selectedForRoundRobin: assignmentSettings.selectionMode === "preferred"
+          ? assignmentSettings.preferredAgentIds.includes(String(agent._id))
+          : true,
       })),
     });
   } catch (error) {
     console.error("Failed to fetch WhatsApp agents:", error);
     return res.status(500).json({ message: "Failed to fetch agents" });
+  }
+};
+
+const getRoundRobinSettings = async (_req, res) => {
+  try {
+    if (!canManageAssignments(_req.admin)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    const settings = await getAssignmentSettings();
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp assignment settings:", error);
+    return res.status(500).json({ message: "Failed to fetch assignment settings" });
+  }
+};
+
+const saveRoundRobinSettings = async (req, res) => {
+  try {
+    if (!canManageAssignments(req.admin)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    const settings = await updateAssignmentSettings({
+      selectionMode: req.body?.selectionMode,
+      preferredAgentIds: req.body?.preferredAgentIds,
+      autoAssignmentEnabled: typeof req.body?.autoAssignmentEnabled === "boolean" ? req.body.autoAssignmentEnabled : undefined,
+    });
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("Failed to update WhatsApp assignment settings:", error);
+    return res.status(500).json({ message: "Failed to update assignment settings" });
   }
 };
 
@@ -1340,6 +1374,8 @@ module.exports = {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getRoundRobinSettings,
+  saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
   getWhatsAppBasicAutomationForms,
   getWhatsAppBasicAutomationTemplates,

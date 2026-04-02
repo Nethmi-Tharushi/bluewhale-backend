@@ -8,6 +8,8 @@ const {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getRoundRobinSettings,
+  saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
   getWhatsAppBasicAutomationForms,
   getWhatsAppBasicAutomationTemplates,
@@ -63,6 +65,8 @@ router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConve
 router.get("/messages/:messageId/media", protectAdmin, authorizeAdmin(), getMessageMedia);
 
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
+router.get("/assignment-settings", protectAdmin, authorizeAdmin(), getRoundRobinSettings);
+router.put("/assignment-settings", protectAdmin, authorizeAdmin(), saveRoundRobinSettings);
 router.get("/basic-automations", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomations);
 router.get("/basic-automations/forms", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationForms);
 router.get("/basic-automations/templates", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationTemplates);

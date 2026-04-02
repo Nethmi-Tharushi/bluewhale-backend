@@ -21,7 +21,6 @@ const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const { Server } = require("socket.io");
 require("./jobs/meetingReminderJob");
-require("./jobs/whatsappDelayedResponseJob");
 
 const Message = require("./models/Message");
 const User = require("./models/User");
@@ -260,7 +259,6 @@ app.use("/api/meetings", require("./routes/meetings"));
 app.use("/api/activity-logs", require("./routes/activityLogs"));
 app.use("/api/reports", require("./routes/reports"));
 app.use("/api/whatsapp", require("./routes/whatsapp"));
-app.use("/whatsapp", require("./routes/whatsapp"));
 app.use("/", require("./routes/whatsapp"));
 
 // --- Serve frontend in production ---
@@ -275,6 +273,7 @@ if (process.env.NODE_ENV === "production") {
 // --- Start server ---
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
+  startWhatsAppAutomationWorker(app);
   console.log(`🚀 Server running on port ${PORT}`.blue.bold);
   console.log(`📡 Socket.IO enabled for real-time chat`.cyan);
 });

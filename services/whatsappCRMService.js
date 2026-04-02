@@ -5,6 +5,7 @@ const WhatsAppMessage = require("../models/WhatsAppMessage");
 const { pickNextAgentRoundRobin } = require("./whatsappAssignmentService");
 const { normalizePhone } = require("./whatsappWebhookService");
 const { cacheInboundMedia, sendMessage } = require("./whatsappService");
+const { processInboundAutomationEvent } = require("./whatsappAutomationService");
 const { handleInboundAutomationEvent } = require("./whatsappBasicAutomationRuntimeService");
 
 const conversationPopulate = [
@@ -361,10 +362,12 @@ const saveInboundMessage = async ({ app, message }) => {
     profile: { name: message.name },
   });
 
+  const existingConversation = await WhatsAppConversation.findOne({ contactId: contact._id, channel: "whatsapp" }).select("_id");
   const {
     conversation,
     isNewConversation,
   } = await ensureConversation({ contactId: contact._id, autoAssign: true, returnMeta: true });
+  const isNewConversation = !existingConversation;
   const previousConversationStatus = String(conversation.status || "open");
   const previousAutomationState = toPlainState(conversation.automationState);
 
@@ -386,6 +389,7 @@ const saveInboundMessage = async ({ app, message }) => {
         metadata: {
           phoneNumberId: message.phoneNumberId || "",
           media: inboundMedia,
+          interactiveReply: message.interactiveReply || null,
         },
         rawPayload: {
           message: message.rawMessage || {},
@@ -425,6 +429,17 @@ const saveInboundMessage = async ({ app, message }) => {
   await conversation.save();
   emitMessageEvent(app, savedMessage.toObject ? savedMessage.toObject() : savedMessage);
   await emitConversationEvents(app, conversation._id);
+  try {
+    await processInboundAutomationEvent({
+      app,
+      conversation,
+      contact,
+      inboundMessage: savedMessage,
+      isNewConversation,
+    });
+  } catch (error) {
+    console.error("Failed to process WhatsApp automations:", error);
+  }
 
   try {
     await handleInboundAutomationEvent({
