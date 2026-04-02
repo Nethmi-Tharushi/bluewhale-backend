@@ -8,6 +8,32 @@ const {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getWhatsAppBasicAutomations,
+  getWhatsAppBasicAutomationForms,
+  getWhatsAppBasicAutomationTemplates,
+  getWhatsAppBasicAutomationHistory,
+  testWhatsAppBasicAutomation,
+  testSendWhatsAppBasicAutomation,
+  getWhatsAppForms,
+  getWhatsAppForm,
+  createWhatsAppFormDefinition,
+  updateWhatsAppFormDefinition,
+  deleteWhatsAppFormDefinition,
+  toggleWhatsAppFormDefinition,
+  updateWhatsAppWorkingHours,
+  updateWhatsAppOutOfOffice,
+  updateWhatsAppWelcomeAutomation,
+  updateWhatsAppDelayedResponseAutomation,
+  getWhatsAppQuickReplies,
+  getWhatsAppQuickReplyFolders,
+  getWhatsAppQuickReplySuggestions,
+  getWhatsAppQuickReply,
+  createWhatsAppQuickReply,
+  updateWhatsAppQuickReply,
+  deleteWhatsAppQuickReply,
+  toggleWhatsAppQuickReply,
+  pinWhatsAppQuickReply,
+  useWhatsAppQuickReply,
   getTemplates,
   syncWhatsAppTemplates,
   createWhatsAppTemplate,
@@ -37,6 +63,32 @@ router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConve
 router.get("/messages/:messageId/media", protectAdmin, authorizeAdmin(), getMessageMedia);
 
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
+router.get("/basic-automations", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomations);
+router.get("/basic-automations/forms", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationForms);
+router.get("/basic-automations/templates", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationTemplates);
+router.get("/basic-automations/history", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationHistory);
+router.post("/basic-automations/test", protectAdmin, authorizeAdmin(), testWhatsAppBasicAutomation);
+router.post("/basic-automations/test-send", protectAdmin, authorizeAdmin(), testSendWhatsAppBasicAutomation);
+router.get("/forms", protectAdmin, authorizeAdmin(), getWhatsAppForms);
+router.get("/forms/:id", protectAdmin, authorizeAdmin(), getWhatsAppForm);
+router.post("/forms", protectAdmin, authorizeAdmin(), createWhatsAppFormDefinition);
+router.put("/forms/:id", protectAdmin, authorizeAdmin(), updateWhatsAppFormDefinition);
+router.delete("/forms/:id", protectAdmin, authorizeAdmin(), deleteWhatsAppFormDefinition);
+router.patch("/forms/:id/toggle", protectAdmin, authorizeAdmin(), toggleWhatsAppFormDefinition);
+router.put("/basic-automations/working-hours", protectAdmin, authorizeAdmin(), updateWhatsAppWorkingHours);
+router.put("/basic-automations/out-of-office", protectAdmin, authorizeAdmin(), updateWhatsAppOutOfOffice);
+router.put("/basic-automations/welcome", protectAdmin, authorizeAdmin(), updateWhatsAppWelcomeAutomation);
+router.put("/basic-automations/delayed-response", protectAdmin, authorizeAdmin(), updateWhatsAppDelayedResponseAutomation);
+router.get("/quick-replies/folders", protectAdmin, authorizeAdmin(), getWhatsAppQuickReplyFolders);
+router.get("/quick-replies/suggestions", protectAdmin, authorizeAdmin(), getWhatsAppQuickReplySuggestions);
+router.get("/quick-replies", protectAdmin, authorizeAdmin(), getWhatsAppQuickReplies);
+router.get("/quick-replies/:id", protectAdmin, authorizeAdmin(), getWhatsAppQuickReply);
+router.post("/quick-replies", protectAdmin, authorizeAdmin(), createWhatsAppQuickReply);
+router.put("/quick-replies/:id", protectAdmin, authorizeAdmin(), updateWhatsAppQuickReply);
+router.delete("/quick-replies/:id", protectAdmin, authorizeAdmin(), deleteWhatsAppQuickReply);
+router.patch("/quick-replies/:id/toggle", protectAdmin, authorizeAdmin(), toggleWhatsAppQuickReply);
+router.patch("/quick-replies/:id/pin", protectAdmin, authorizeAdmin(), pinWhatsAppQuickReply);
+router.post("/quick-replies/:id/use", protectAdmin, authorizeAdmin(), useWhatsAppQuickReply);
 router.get("/templates", protectAdmin, authorizeAdmin(), getTemplates);
 router.post("/templates/sync", protectAdmin, authorizeAdmin(), syncWhatsAppTemplates);
 router.post("/templates", protectAdmin, authorizeAdmin(), createWhatsAppTemplate);

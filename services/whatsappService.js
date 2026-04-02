@@ -4,6 +4,7 @@ const streamifier = require("streamifier");
 
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 const SUPPORTED_MEDIA_TYPES = ["image", "document", "audio", "video"];
+const SUPPORTED_INTERACTIVE_TYPES = ["flow"];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -28,7 +29,84 @@ const buildMetaErrorMessage = (data, fallbackMessage) => {
   return message || fallbackMessage || "WhatsApp API request failed";
 };
 
-const buildSendPayload = ({ to, type = "text", text, template, media }) => {
+const buildInteractivePayload = (interactive = {}) => {
+  const interactiveType = String(interactive?.type || "").trim().toLowerCase();
+  if (!SUPPORTED_INTERACTIVE_TYPES.includes(interactiveType)) {
+    throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType || "unknown"}`);
+  }
+
+  if (interactiveType === "flow") {
+    const ctaText = String(interactive?.action?.parameters?.flow_cta || "").trim();
+    const flowToken = String(interactive?.action?.parameters?.flow_token || "").trim();
+    const flowAction = String(interactive?.action?.parameters?.flow_action || "navigate").trim().toLowerCase();
+    const flowMode = String(interactive?.action?.parameters?.mode || "published").trim().toLowerCase();
+    const flowId = String(interactive?.action?.parameters?.flow_id || "").trim();
+    const flowName = String(interactive?.action?.parameters?.flow_name || "").trim();
+    const flowMessageVersion = String(interactive?.action?.parameters?.flow_message_version || "3").trim() || "3";
+    const bodyText = String(interactive?.body?.text || "").trim();
+
+    if (!ctaText) {
+      throw new Error("WhatsApp flow interactive messages require action.parameters.flow_cta");
+    }
+
+    if (!flowToken) {
+      throw new Error("WhatsApp flow interactive messages require action.parameters.flow_token");
+    }
+
+    if (flowMode === "draft" && !flowName) {
+      throw new Error("WhatsApp draft flow messages require action.parameters.flow_name");
+    }
+
+    if (flowMode !== "draft" && !flowId) {
+      throw new Error("WhatsApp published flow messages require action.parameters.flow_id");
+    }
+
+    const payload = {
+      type: "flow",
+      body: bodyText ? { text: bodyText } : undefined,
+      action: {
+        name: "flow",
+        parameters: {
+          flow_message_version: flowMessageVersion,
+          flow_token: flowToken,
+          flow_cta: ctaText,
+          flow_action: flowAction || "navigate",
+          mode: flowMode || "published",
+          ...(flowMode === "draft"
+            ? { flow_name: flowName }
+            : { flow_id: flowId }),
+        },
+      },
+    };
+
+    const screen = String(interactive?.action?.parameters?.flow_action_payload?.screen || "").trim();
+    const data = interactive?.action?.parameters?.flow_action_payload?.data;
+
+    if (flowAction === "navigate" && (screen || (data && typeof data === "object" && Object.keys(data).length))) {
+      payload.action.parameters.flow_action_payload = {
+        ...(screen ? { screen } : {}),
+        ...(data && typeof data === "object" && Object.keys(data).length ? { data } : {}),
+      };
+    }
+
+    if (interactive?.footer?.text) {
+      payload.footer = { text: String(interactive.footer.text).trim() };
+    }
+
+    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
+      payload.header = {
+        type: "text",
+        text: String(interactive.header.text).trim(),
+      };
+    }
+
+    return payload;
+  }
+
+  throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType}`);
+};
+
+const buildSendPayload = ({ to, type = "text", text, template, media, interactive }) => {
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -46,6 +124,8 @@ const buildSendPayload = ({ to, type = "text", text, template, media }) => {
       },
       components: Array.isArray(template?.components) ? template.components : [],
     };
+  } else if (type === "interactive") {
+    payload.interactive = buildInteractivePayload(interactive);
   } else if (SUPPORTED_MEDIA_TYPES.includes(type)) {
     const mediaLink = media?.link || media?.url;
 
@@ -203,7 +283,7 @@ const cacheInboundMedia = async ({ mediaId, mimeType = "", filename = "" }) => {
   };
 };
 
-const sendMessage = async ({ to, type = "text", text, template, media, context = {} }) => {
+const sendMessage = async ({ to, type = "text", text, template, media, interactive, context = {} }) => {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
@@ -211,7 +291,7 @@ const sendMessage = async ({ to, type = "text", text, template, media, context =
     throw new Error("Missing WhatsApp Cloud API credentials in environment variables");
   }
 
-  const payload = buildSendPayload({ to, type, text, template, media });
+  const payload = buildSendPayload({ to, type, text, template, media, interactive });
 
   const eventLog = await WhatsAppEventLog.create({
     direction: "outgoing",
@@ -245,4 +325,5 @@ module.exports = {
   cacheInboundMedia,
   getMediaMetadata,
   SUPPORTED_MEDIA_TYPES,
+  SUPPORTED_INTERACTIVE_TYPES,
 };

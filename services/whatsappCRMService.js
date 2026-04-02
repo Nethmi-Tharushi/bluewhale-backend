@@ -4,7 +4,8 @@ const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
 const { pickNextAgentRoundRobin } = require("./whatsappAssignmentService");
 const { normalizePhone } = require("./whatsappWebhookService");
-const { cacheInboundMedia } = require("./whatsappService");
+const { cacheInboundMedia, sendMessage } = require("./whatsappService");
+const { handleInboundAutomationEvent } = require("./whatsappBasicAutomationRuntimeService");
 
 const conversationPopulate = [
   { path: "contactId", select: "name phone waId profile lastActivityAt" },
@@ -237,10 +238,12 @@ const upsertContact = async ({ phone, waId, name, profile = {} }) => {
   );
 };
 
-const ensureConversation = async ({ contactId, autoAssign = true }) => {
+const ensureConversation = async ({ contactId, autoAssign = true, returnMeta = false }) => {
   let conversation = await WhatsAppConversation.findOne({ contactId, channel: "whatsapp" });
 
-  if (conversation) return conversation;
+  if (conversation) {
+    return returnMeta ? { conversation, isNewConversation: false } : conversation;
+  }
 
   conversation = await WhatsAppConversation.create({
     contactId,
@@ -263,7 +266,72 @@ const ensureConversation = async ({ contactId, autoAssign = true }) => {
     }
   }
 
-  return conversation;
+  return returnMeta ? { conversation, isNewConversation: true } : conversation;
+};
+
+const toPlainState = (value) => {
+  if (!value) return {};
+  if (typeof value.toObject === "function") return value.toObject();
+  return value;
+};
+
+const dispatchAutomationMessage = async ({
+  app,
+  conversation,
+  contact,
+  automationKey,
+  messageType = "text",
+  text,
+  template = null,
+  interactive = null,
+  content = "",
+  deliveryMeta = {},
+}) => {
+  const normalizedType = ["template", "interactive"].includes(messageType) ? messageType : "text";
+  const trimmedText = String(text || "").trim();
+  const normalizedContent =
+    normalizedType === "template"
+      ? String(content || `Template: ${template?.name || deliveryMeta?.templateName || automationKey}`).trim()
+      : normalizedType === "interactive"
+        ? String(content || trimmedText || `[interactive:${deliveryMeta?.replyActionType || "flow"}]`).trim()
+        : trimmedText;
+
+  if (!normalizedContent) {
+    return null;
+  }
+
+  const { payload, response } = await sendMessage({
+    to: contact.phone,
+    type: normalizedType,
+    text: normalizedType === "text" ? trimmedText : undefined,
+    template: normalizedType === "template" ? template : undefined,
+    interactive: normalizedType === "interactive" ? interactive : undefined,
+    context: {
+      conversationId: conversation._id,
+      contactId: contact._id,
+      agentId: conversation.agentId || null,
+      automationKey,
+      source: "basic_automation",
+    },
+  });
+
+  return saveOutgoingMessage({
+    app,
+    conversation,
+    contact,
+    agentId: conversation.agentId || null,
+    messageType: normalizedType,
+    content: normalizedContent,
+    response,
+    requestPayload: payload,
+    sender: "system",
+    additionalMetadata: {
+      automation: {
+        key: automationKey,
+        ...(deliveryMeta || {}),
+      },
+    },
+  });
 };
 
 const saveInboundMessage = async ({ app, message }) => {
@@ -293,7 +361,12 @@ const saveInboundMessage = async ({ app, message }) => {
     profile: { name: message.name },
   });
 
-  const conversation = await ensureConversation({ contactId: contact._id, autoAssign: true });
+  const {
+    conversation,
+    isNewConversation,
+  } = await ensureConversation({ contactId: contact._id, autoAssign: true, returnMeta: true });
+  const previousConversationStatus = String(conversation.status || "open");
+  const previousAutomationState = toPlainState(conversation.automationState);
 
   const externalMessageId = message.messageId || `inbound:${contact.phone}:${message.timestamp.toISOString()}`;
   const savedMessage = await WhatsAppMessage.findOneAndUpdate(
@@ -327,6 +400,11 @@ const saveInboundMessage = async ({ app, message }) => {
   conversation.lastIncomingAt = savedMessage.timestamp || new Date();
   conversation.lastMessagePreview = savedMessage.content || `[${savedMessage.type}]`;
   conversation.unreadCount = Number(conversation.unreadCount || 0) + 1;
+  conversation.automationState = {
+    ...toPlainState(conversation.automationState),
+    lastCustomerMessageAt: savedMessage.timestamp || new Date(),
+    lastCustomerMessageId: savedMessage._id,
+  };
 
   if (!conversation.agentId) {
     const agent = await pickNextAgentRoundRobin();
@@ -348,6 +426,21 @@ const saveInboundMessage = async ({ app, message }) => {
   emitMessageEvent(app, savedMessage.toObject ? savedMessage.toObject() : savedMessage);
   await emitConversationEvents(app, conversation._id);
 
+  try {
+    await handleInboundAutomationEvent({
+      app,
+      conversation,
+      contact,
+      inboundMessage: savedMessage,
+      isNewConversation,
+      previousConversationStatus,
+      previousAutomationState,
+      dispatchAutomationMessage,
+    });
+  } catch (error) {
+    console.error("Failed to process inbound WhatsApp automations:", error);
+  }
+
   return { contact, conversation, message: savedMessage };
 };
 
@@ -361,22 +454,26 @@ const saveOutgoingMessage = async ({
   response,
   requestPayload,
   media = null,
+  sender = "agent",
+  additionalMetadata = null,
 }) => {
   const externalMessageId = response?.messages?.[0]?.id || "";
+  const messageTimestamp = new Date();
   const savedMessage = await WhatsAppMessage.create({
     conversationId: conversation._id,
     contactId: contact._id,
     agentId: agentId || null,
-    sender: "agent",
+    sender,
     direction: "outbound",
     content,
     type: messageType,
     externalMessageId,
-    timestamp: new Date(),
+    timestamp: messageTimestamp,
     status: "sent",
     metadata: {
       contacts: response?.contacts || [],
       media: media || null,
+      ...(additionalMetadata || {}),
     },
     rawPayload: {
       requestPayload,
@@ -387,18 +484,32 @@ const saveOutgoingMessage = async ({
   conversation.lastMessageAt = savedMessage.timestamp;
   conversation.lastOutgoingAt = savedMessage.timestamp;
   conversation.lastMessagePreview = savedMessage.content || `[${savedMessage.type}]`;
-  conversation.unreadCount = 0;
-  if (agentId && !conversation.agentId) {
-    conversation.agentId = agentId;
-    conversation.assignmentMethod = "manual";
-    conversation.assignmentHistory.push({
-      agentId,
-      assignedBy: agentId,
-      method: "manual",
-    });
-  }
-  if (conversation.agentId) {
-    conversation.status = "assigned";
+  if (sender !== "system") {
+    conversation.unreadCount = 0;
+    conversation.automationState = {
+      ...toPlainState(conversation.automationState),
+      lastTeamReplyAt: messageTimestamp,
+      delayedResponse: {
+        ...toPlainState(conversation.automationState?.delayedResponse),
+        waitingForTeamReply: false,
+        pendingSince: null,
+        dueAt: null,
+        pendingMessageId: null,
+        resolvedAt: messageTimestamp,
+      },
+    };
+    if (agentId && !conversation.agentId) {
+      conversation.agentId = agentId;
+      conversation.assignmentMethod = "manual";
+      conversation.assignmentHistory.push({
+        agentId,
+        assignedBy: agentId,
+        method: "manual",
+      });
+    }
+    if (conversation.agentId) {
+      conversation.status = "assigned";
+    }
   }
   await conversation.save();
 
@@ -567,6 +678,7 @@ const linkConversationLead = async ({ conversationId, leadId }) => {
 module.exports = {
   upsertContact,
   ensureConversation,
+  dispatchAutomationMessage,
   saveInboundMessage,
   saveOutgoingMessage,
   updateMessageStatusFromWebhook,

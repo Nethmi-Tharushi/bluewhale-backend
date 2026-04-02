@@ -6,6 +6,7 @@ const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
 const { getAvailableAgents } = require("../services/whatsappAssignmentService");
+const { sendBasicAutomationTestMessage } = require("../services/whatsappBasicAutomationRuntimeService");
 const {
   saveInboundMessage,
   saveOutgoingMessage,
@@ -23,6 +24,37 @@ const {
   upsertContact,
 } = require("../services/whatsappCRMService");
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
+const {
+  listQuickReplies,
+  listQuickReplyFolders,
+  listQuickReplySuggestions,
+  getQuickReplyById,
+  createQuickReply,
+  updateQuickReply,
+  deleteQuickReply,
+  toggleQuickReply,
+  toggleQuickReplyPin,
+  markQuickReplyUsed,
+} = require("../services/whatsappQuickReplyService");
+const {
+  listWhatsAppForms,
+  getWhatsAppFormById,
+  createWhatsAppForm,
+  updateWhatsAppForm,
+  deleteWhatsAppForm,
+  toggleWhatsAppForm,
+} = require("../services/whatsappFormService");
+const {
+  getBasicAutomationSettings,
+  updateWorkingHours,
+  updateOutOfOfficeAutomation,
+  updateWelcomeAutomation,
+  updateDelayedResponseAutomation,
+  listAvailableBasicAutomationForms,
+  listAvailableBasicAutomationTemplates,
+  listBasicAutomationHistory,
+  previewBasicAutomation,
+} = require("../services/whatsappBasicAutomationService");
 const {
   listTemplates,
   syncTemplatesFromMeta,
@@ -51,6 +83,8 @@ const inferMediaMessageType = (file) => {
 const isMainAdmin = (admin) => String(admin?.role || "") === "MainAdmin";
 const isSalesAdmin = (admin) => String(admin?.role || "") === "SalesAdmin";
 const isSalesStaff = (admin) => String(admin?.role || "") === "SalesStaff";
+const isDuplicateShortcutError = (error) => error?.code === 11000 && Object.prototype.hasOwnProperty.call(error?.keyPattern || {}, "shortcut");
+const isDuplicateWhatsAppFormSlugError = (error) => error?.code === 11000 && Object.prototype.hasOwnProperty.call(error?.keyPattern || {}, "slug");
 
 const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
 const canManageTemplates = (admin) => isMainAdmin(admin) || isSalesAdmin(admin) || isSalesStaff(admin);
@@ -368,6 +402,370 @@ const getAgents = async (_req, res) => {
   } catch (error) {
     console.error("Failed to fetch WhatsApp agents:", error);
     return res.status(500).json({ message: "Failed to fetch agents" });
+  }
+};
+
+const getWhatsAppQuickReplies = async (req, res) => {
+  try {
+    const result = await listQuickReplies(req.query || {});
+    return res.json({
+      success: true,
+      data: result.items,
+      items: result.items,
+      pagination: result.pagination,
+      filters: result.filters,
+      page: result.pagination.page,
+      limit: result.pagination.limit,
+      total: result.pagination.total,
+      totalPages: result.pagination.totalPages,
+      hasNextPage: result.pagination.hasNextPage,
+      hasPrevPage: result.pagination.hasPrevPage,
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp quick replies:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch quick replies" });
+  }
+};
+
+const getWhatsAppBasicAutomations = async (_req, res) => {
+  try {
+    const settings = await getBasicAutomationSettings();
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp basic automations:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch basic automations" });
+  }
+};
+
+const getWhatsAppBasicAutomationForms = async (_req, res) => {
+  try {
+    const forms = await listAvailableBasicAutomationForms();
+    return res.json({ success: true, data: forms });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp automation forms:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch automation forms" });
+  }
+};
+
+const getWhatsAppBasicAutomationTemplates = async (_req, res) => {
+  try {
+    const templates = await listAvailableBasicAutomationTemplates();
+    return res.json({ success: true, data: templates });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp automation templates:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch automation templates" });
+  }
+};
+
+const getWhatsAppBasicAutomationHistory = async (req, res) => {
+  try {
+    const history = await listBasicAutomationHistory(req.query || {});
+    return res.json({ success: true, data: history });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp automation history:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch automation history" });
+  }
+};
+
+const testWhatsAppBasicAutomation = async (req, res) => {
+  try {
+    const preview = await previewBasicAutomation(req.body || {});
+    return res.json({ success: true, data: preview });
+  } catch (error) {
+    console.error("Failed to preview WhatsApp automation:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to preview automation" });
+  }
+};
+
+const testSendWhatsAppBasicAutomation = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const result = await sendBasicAutomationTestMessage({
+      ...(req.body || {}),
+      actorId: actor?._id || null,
+    });
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    console.error("Failed to send WhatsApp automation test message:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to send automation test message" });
+  }
+};
+
+const getWhatsAppForms = async (req, res) => {
+  try {
+    const result = await listWhatsAppForms(req.query || {});
+    return res.json({
+      success: true,
+      data: result.items,
+      items: result.items,
+      pagination: result.pagination,
+      filters: result.filters,
+      page: result.pagination.page,
+      limit: result.pagination.limit,
+      total: result.pagination.total,
+      totalPages: result.pagination.totalPages,
+      hasNextPage: result.pagination.hasNextPage,
+      hasPrevPage: result.pagination.hasPrevPage,
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp forms:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp forms" });
+  }
+};
+
+const getWhatsAppForm = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp form id" });
+    }
+
+    const form = await getWhatsAppFormById(req.params.id);
+    if (!form) {
+      return res.status(404).json({ message: "WhatsApp form not found" });
+    }
+
+    return res.json({ success: true, data: form });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp form:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp form" });
+  }
+};
+
+const createWhatsAppFormDefinition = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const form = await createWhatsAppForm(req.body || {}, actor?._id || null);
+    return res.status(201).json({ success: true, data: form });
+  } catch (error) {
+    console.error("Failed to create WhatsApp form:", error);
+
+    if (isDuplicateWhatsAppFormSlugError(error)) {
+      return res.status(400).json({ message: "A WhatsApp form with this slug already exists" });
+    }
+
+    return res.status(error.status || 400).json({ message: error.message || "Failed to create WhatsApp form" });
+  }
+};
+
+const updateWhatsAppFormDefinition = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp form id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const form = await updateWhatsAppForm(req.params.id, req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: form });
+  } catch (error) {
+    console.error("Failed to update WhatsApp form:", error);
+
+    if (isDuplicateWhatsAppFormSlugError(error)) {
+      return res.status(400).json({ message: "A WhatsApp form with this slug already exists" });
+    }
+
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update WhatsApp form" });
+  }
+};
+
+const deleteWhatsAppFormDefinition = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp form id" });
+    }
+
+    await deleteWhatsAppForm(req.params.id);
+    return res.json({ success: true, message: "WhatsApp form deleted successfully" });
+  } catch (error) {
+    console.error("Failed to delete WhatsApp form:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to delete WhatsApp form" });
+  }
+};
+
+const toggleWhatsAppFormDefinition = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp form id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const form = await toggleWhatsAppForm(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: form });
+  } catch (error) {
+    console.error("Failed to toggle WhatsApp form:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to toggle WhatsApp form" });
+  }
+};
+
+const updateWhatsAppWorkingHours = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const settings = await updateWorkingHours(req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("Failed to update WhatsApp working hours:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update working hours" });
+  }
+};
+
+const updateWhatsAppOutOfOffice = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const settings = await updateOutOfOfficeAutomation(req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("Failed to update WhatsApp out of office automation:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update out of office automation" });
+  }
+};
+
+const updateWhatsAppWelcomeAutomation = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const settings = await updateWelcomeAutomation(req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("Failed to update WhatsApp welcome automation:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update welcome automation" });
+  }
+};
+
+const updateWhatsAppDelayedResponseAutomation = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const settings = await updateDelayedResponseAutomation(req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("Failed to update WhatsApp delayed response automation:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update delayed response automation" });
+  }
+};
+
+const getWhatsAppQuickReplyFolders = async (_req, res) => {
+  try {
+    const folders = await listQuickReplyFolders();
+    return res.json({ success: true, data: folders });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp quick reply folders:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch quick reply folders" });
+  }
+};
+
+const getWhatsAppQuickReplySuggestions = async (req, res) => {
+  try {
+    const suggestions = await listQuickReplySuggestions(req.query || {});
+    return res.json({ success: true, data: suggestions, items: suggestions });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp quick reply suggestions:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch quick reply suggestions" });
+  }
+};
+
+const getWhatsAppQuickReply = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid quick reply id" });
+    }
+
+    const quickReply = await getQuickReplyById(req.params.id);
+    if (!quickReply) {
+      return res.status(404).json({ message: "Quick reply not found" });
+    }
+
+    return res.json({ success: true, data: quickReply });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp quick reply:", error);
+    return res.status(500).json({ message: "Failed to fetch quick reply" });
+  }
+};
+
+const createWhatsAppQuickReply = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const quickReply = await createQuickReply(req.body || {}, actor?._id || null);
+    return res.status(201).json({ success: true, data: quickReply });
+  } catch (error) {
+    console.error("Failed to create WhatsApp quick reply:", error);
+    if (isDuplicateShortcutError(error)) {
+      return res.status(400).json({ message: "shortcut must be unique" });
+    }
+    return res.status(error.status || 400).json({ message: error.message || "Failed to create quick reply" });
+  }
+};
+
+const updateWhatsAppQuickReply = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid quick reply id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const quickReply = await updateQuickReply(req.params.id, req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: quickReply });
+  } catch (error) {
+    console.error("Failed to update WhatsApp quick reply:", error);
+    if (isDuplicateShortcutError(error)) {
+      return res.status(400).json({ message: "shortcut must be unique" });
+    }
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update quick reply" });
+  }
+};
+
+const deleteWhatsAppQuickReply = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid quick reply id" });
+    }
+
+    await deleteQuickReply(req.params.id);
+    return res.json({ success: true, message: "Quick reply deleted successfully" });
+  } catch (error) {
+    console.error("Failed to delete WhatsApp quick reply:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to delete quick reply" });
+  }
+};
+
+const toggleWhatsAppQuickReply = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid quick reply id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const quickReply = await toggleQuickReply(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: quickReply });
+  } catch (error) {
+    console.error("Failed to toggle WhatsApp quick reply:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to toggle quick reply" });
+  }
+};
+
+const pinWhatsAppQuickReply = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid quick reply id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const quickReply = await toggleQuickReplyPin(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: quickReply });
+  } catch (error) {
+    console.error("Failed to pin WhatsApp quick reply:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to pin quick reply" });
+  }
+};
+
+const useWhatsAppQuickReply = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid quick reply id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const quickReply = await markQuickReplyUsed(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: quickReply });
+  } catch (error) {
+    console.error("Failed to mark WhatsApp quick reply as used:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update quick reply usage" });
   }
 };
 
@@ -942,6 +1340,32 @@ module.exports = {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getWhatsAppBasicAutomations,
+  getWhatsAppBasicAutomationForms,
+  getWhatsAppBasicAutomationTemplates,
+  getWhatsAppBasicAutomationHistory,
+  testWhatsAppBasicAutomation,
+  testSendWhatsAppBasicAutomation,
+  getWhatsAppForms,
+  getWhatsAppForm,
+  createWhatsAppFormDefinition,
+  updateWhatsAppFormDefinition,
+  deleteWhatsAppFormDefinition,
+  toggleWhatsAppFormDefinition,
+  updateWhatsAppWorkingHours,
+  updateWhatsAppOutOfOffice,
+  updateWhatsAppWelcomeAutomation,
+  updateWhatsAppDelayedResponseAutomation,
+  getWhatsAppQuickReplies,
+  getWhatsAppQuickReplyFolders,
+  getWhatsAppQuickReplySuggestions,
+  getWhatsAppQuickReply,
+  createWhatsAppQuickReply,
+  updateWhatsAppQuickReply,
+  deleteWhatsAppQuickReply,
+  toggleWhatsAppQuickReply,
+  pinWhatsAppQuickReply,
+  useWhatsAppQuickReply,
   getTemplates,
   syncWhatsAppTemplates,
   createWhatsAppTemplate,
