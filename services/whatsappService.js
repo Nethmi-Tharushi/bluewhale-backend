@@ -4,7 +4,7 @@ const streamifier = require("streamifier");
 
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 const SUPPORTED_MEDIA_TYPES = ["image", "document", "audio", "video"];
-const SUPPORTED_INTERACTIVE_TYPES = ["flow"];
+const SUPPORTED_INTERACTIVE_TYPES = ["button", "list", "flow"];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -33,6 +33,78 @@ const buildInteractivePayload = (interactive = {}) => {
   const interactiveType = String(interactive?.type || "").trim().toLowerCase();
   if (!SUPPORTED_INTERACTIVE_TYPES.includes(interactiveType)) {
     throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType || "unknown"}`);
+  }
+
+  if (interactiveType === "button") {
+    const bodyText = String(interactive?.body?.text || "").trim();
+    const buttons = Array.isArray(interactive?.action?.buttons) ? interactive.action.buttons : [];
+
+    if (!bodyText) {
+      throw new Error("WhatsApp button interactive messages require body.text");
+    }
+
+    if (!buttons.length) {
+      throw new Error("WhatsApp button interactive messages require action.buttons");
+    }
+
+    const payload = {
+      type: "button",
+      body: { text: bodyText },
+      action: { buttons },
+    };
+
+    if (interactive?.footer?.text) {
+      payload.footer = { text: String(interactive.footer.text).trim() };
+    }
+
+    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
+      payload.header = {
+        type: "text",
+        text: String(interactive.header.text).trim(),
+      };
+    }
+
+    return payload;
+  }
+
+  if (interactiveType === "list") {
+    const bodyText = String(interactive?.body?.text || "").trim();
+    const buttonText = String(interactive?.action?.button || "").trim();
+    const sections = Array.isArray(interactive?.action?.sections) ? interactive.action.sections : [];
+
+    if (!bodyText) {
+      throw new Error("WhatsApp list interactive messages require body.text");
+    }
+
+    if (!buttonText) {
+      throw new Error("WhatsApp list interactive messages require action.button");
+    }
+
+    if (!sections.length) {
+      throw new Error("WhatsApp list interactive messages require action.sections");
+    }
+
+    const payload = {
+      type: "list",
+      body: { text: bodyText },
+      action: {
+        button: buttonText,
+        sections,
+      },
+    };
+
+    if (interactive?.footer?.text) {
+      payload.footer = { text: String(interactive.footer.text).trim() };
+    }
+
+    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
+      payload.header = {
+        type: "text",
+        text: String(interactive.header.text).trim(),
+      };
+    }
+
+    return payload;
   }
 
   if (interactiveType === "flow") {

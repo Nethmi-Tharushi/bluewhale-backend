@@ -61,8 +61,8 @@ router.get("/webhook", getWebhookChallenge);
 router.post("/webhook", receiveWebhook);
 
 router.get("/conversations", protectAdmin, authorizeAdmin(), getConversations);
-router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConversationMessages);
 router.get("/messages/:messageId/media", protectAdmin, authorizeAdmin(), getMessageMedia);
+router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConversationMessages);
 
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
 router.get("/assignment-settings", protectAdmin, authorizeAdmin(), getRoundRobinSettings);
