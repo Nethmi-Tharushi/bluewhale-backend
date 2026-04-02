@@ -106,7 +106,7 @@ const buildInteractivePayload = (interactive = {}) => {
   throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType}`);
 };
 
-const buildSendPayload = ({ to, type = "text", text, template, media, interactive, interactive }) => {
+const buildSendPayload = ({ to, type = "text", text, template, media, interactive }) => {
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -124,11 +124,6 @@ const buildSendPayload = ({ to, type = "text", text, template, media, interactiv
       },
       components: Array.isArray(template?.components) ? template.components : [],
     };
-  } else if (type === "interactive") {
-    if (!interactive || typeof interactive !== "object") {
-      throw new Error("interactive payload is required for interactive messages");
-    }
-    payload.interactive = interactive;
   } else if (type === "interactive") {
     payload.interactive = buildInteractivePayload(interactive);
   } else if (SUPPORTED_MEDIA_TYPES.includes(type)) {

@@ -21,6 +21,7 @@ const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const { Server } = require("socket.io");
 require("./jobs/meetingReminderJob");
+const { startWhatsAppAutomationWorker } = require("./services/whatsappAutomationService");
 
 const Message = require("./models/Message");
 const User = require("./models/User");
@@ -259,6 +260,7 @@ app.use("/api/meetings", require("./routes/meetings"));
 app.use("/api/activity-logs", require("./routes/activityLogs"));
 app.use("/api/reports", require("./routes/reports"));
 app.use("/api/whatsapp", require("./routes/whatsapp"));
+app.use("/api/whatsapp-automations", require("./routes/whatsappAutomation"));
 app.use("/", require("./routes/whatsapp"));
 
 // --- Serve frontend in production ---

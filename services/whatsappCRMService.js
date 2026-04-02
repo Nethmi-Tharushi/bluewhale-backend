@@ -367,7 +367,6 @@ const saveInboundMessage = async ({ app, message }) => {
     conversation,
     isNewConversation,
   } = await ensureConversation({ contactId: contact._id, autoAssign: true, returnMeta: true });
-  const isNewConversation = !existingConversation;
   const previousConversationStatus = String(conversation.status || "open");
   const previousAutomationState = toPlainState(conversation.automationState);
 
