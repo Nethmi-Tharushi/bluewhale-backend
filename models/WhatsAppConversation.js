@@ -24,6 +24,97 @@ const whatsAppConversationNoteSchema = new mongoose.Schema(
   }
 );
 
+const whatsAppAutomationStatusSchema = new mongoose.Schema(
+  {
+    lastSentAt: {
+      type: Date,
+      default: null,
+    },
+    lastSentMessageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WhatsAppMessage",
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const whatsAppDelayedResponseStateSchema = new mongoose.Schema(
+  {
+    pendingSince: {
+      type: Date,
+      default: null,
+    },
+    dueAt: {
+      type: Date,
+      default: null,
+    },
+    pendingMessageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WhatsAppMessage",
+      default: null,
+    },
+    waitingForTeamReply: {
+      type: Boolean,
+      default: false,
+    },
+    lastSentAt: {
+      type: Date,
+      default: null,
+    },
+    lastSentMessageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WhatsAppMessage",
+      default: null,
+    },
+    lastSentForPendingMessageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WhatsAppMessage",
+      default: null,
+    },
+    cancelledAt: {
+      type: Date,
+      default: null,
+    },
+    resolvedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const whatsAppAutomationStateSchema = new mongoose.Schema(
+  {
+    lastCustomerMessageAt: {
+      type: Date,
+      default: null,
+    },
+    lastCustomerMessageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WhatsAppMessage",
+      default: null,
+    },
+    lastTeamReplyAt: {
+      type: Date,
+      default: null,
+    },
+    outOfOffice: {
+      type: whatsAppAutomationStatusSchema,
+      default: () => ({}),
+    },
+    welcome: {
+      type: whatsAppAutomationStatusSchema,
+      default: () => ({}),
+    },
+    delayedResponse: {
+      type: whatsAppDelayedResponseStateSchema,
+      default: () => ({}),
+    },
+  },
+  { _id: false }
+);
+
 const whatsAppConversationSchema = new mongoose.Schema(
   {
     contactId: {
@@ -119,10 +210,18 @@ const whatsAppConversationSchema = new mongoose.Schema(
         },
       },
     ],
+    automationState: {
+      type: whatsAppAutomationStateSchema,
+      default: () => ({}),
+    },
   },
   { timestamps: true }
 );
 
 whatsAppConversationSchema.index({ contactId: 1, channel: 1 }, { unique: true });
+whatsAppConversationSchema.index({
+  "automationState.delayedResponse.waitingForTeamReply": 1,
+  "automationState.delayedResponse.dueAt": 1,
+});
 
 module.exports = mongoose.model("WhatsAppConversation", whatsAppConversationSchema);

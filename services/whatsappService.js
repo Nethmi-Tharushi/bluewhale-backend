@@ -4,6 +4,7 @@ const streamifier = require("streamifier");
 
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 const SUPPORTED_MEDIA_TYPES = ["image", "document", "audio", "video"];
+const SUPPORTED_INTERACTIVE_TYPES = ["button", "list", "flow"];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -28,6 +29,155 @@ const buildMetaErrorMessage = (data, fallbackMessage) => {
   return message || fallbackMessage || "WhatsApp API request failed";
 };
 
+const buildInteractivePayload = (interactive = {}) => {
+  const interactiveType = String(interactive?.type || "").trim().toLowerCase();
+  if (!SUPPORTED_INTERACTIVE_TYPES.includes(interactiveType)) {
+    throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType || "unknown"}`);
+  }
+
+  if (interactiveType === "button") {
+    const bodyText = String(interactive?.body?.text || "").trim();
+    const buttons = Array.isArray(interactive?.action?.buttons) ? interactive.action.buttons : [];
+
+    if (!bodyText) {
+      throw new Error("WhatsApp button interactive messages require body.text");
+    }
+
+    if (!buttons.length) {
+      throw new Error("WhatsApp button interactive messages require action.buttons");
+    }
+
+    const payload = {
+      type: "button",
+      body: { text: bodyText },
+      action: { buttons },
+    };
+
+    if (interactive?.footer?.text) {
+      payload.footer = { text: String(interactive.footer.text).trim() };
+    }
+
+    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
+      payload.header = {
+        type: "text",
+        text: String(interactive.header.text).trim(),
+      };
+    }
+
+    return payload;
+  }
+
+  if (interactiveType === "list") {
+    const bodyText = String(interactive?.body?.text || "").trim();
+    const buttonText = String(interactive?.action?.button || "").trim();
+    const sections = Array.isArray(interactive?.action?.sections) ? interactive.action.sections : [];
+
+    if (!bodyText) {
+      throw new Error("WhatsApp list interactive messages require body.text");
+    }
+
+    if (!buttonText) {
+      throw new Error("WhatsApp list interactive messages require action.button");
+    }
+
+    if (!sections.length) {
+      throw new Error("WhatsApp list interactive messages require action.sections");
+    }
+
+    const payload = {
+      type: "list",
+      body: { text: bodyText },
+      action: {
+        button: buttonText,
+        sections,
+      },
+    };
+
+    if (interactive?.footer?.text) {
+      payload.footer = { text: String(interactive.footer.text).trim() };
+    }
+
+    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
+      payload.header = {
+        type: "text",
+        text: String(interactive.header.text).trim(),
+      };
+    }
+
+    return payload;
+  }
+
+  if (interactiveType === "flow") {
+    const ctaText = String(interactive?.action?.parameters?.flow_cta || "").trim();
+    const flowToken = String(interactive?.action?.parameters?.flow_token || "").trim();
+    const flowAction = String(interactive?.action?.parameters?.flow_action || "navigate").trim().toLowerCase();
+    const flowMode = String(interactive?.action?.parameters?.mode || "published").trim().toLowerCase();
+    const flowId = String(interactive?.action?.parameters?.flow_id || "").trim();
+    const flowName = String(interactive?.action?.parameters?.flow_name || "").trim();
+    const flowMessageVersion = String(interactive?.action?.parameters?.flow_message_version || "3").trim() || "3";
+    const bodyText = String(interactive?.body?.text || "").trim();
+
+    if (!ctaText) {
+      throw new Error("WhatsApp flow interactive messages require action.parameters.flow_cta");
+    }
+
+    if (!flowToken) {
+      throw new Error("WhatsApp flow interactive messages require action.parameters.flow_token");
+    }
+
+    if (flowMode === "draft" && !flowName) {
+      throw new Error("WhatsApp draft flow messages require action.parameters.flow_name");
+    }
+
+    if (flowMode !== "draft" && !flowId) {
+      throw new Error("WhatsApp published flow messages require action.parameters.flow_id");
+    }
+
+    const payload = {
+      type: "flow",
+      body: bodyText ? { text: bodyText } : undefined,
+      action: {
+        name: "flow",
+        parameters: {
+          flow_message_version: flowMessageVersion,
+          flow_token: flowToken,
+          flow_cta: ctaText,
+          flow_action: flowAction || "navigate",
+          mode: flowMode || "published",
+          ...(flowMode === "draft"
+            ? { flow_name: flowName }
+            : { flow_id: flowId }),
+        },
+      },
+    };
+
+    const screen = String(interactive?.action?.parameters?.flow_action_payload?.screen || "").trim();
+    const data = interactive?.action?.parameters?.flow_action_payload?.data;
+
+    if (flowAction === "navigate" && (screen || (data && typeof data === "object" && Object.keys(data).length))) {
+      payload.action.parameters.flow_action_payload = {
+        ...(screen ? { screen } : {}),
+        ...(data && typeof data === "object" && Object.keys(data).length ? { data } : {}),
+      };
+    }
+
+    if (interactive?.footer?.text) {
+      payload.footer = { text: String(interactive.footer.text).trim() };
+    }
+
+    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
+      payload.header = {
+        type: "text",
+        text: String(interactive.header.text).trim(),
+      };
+    }
+
+    return payload;
+  }
+
+  throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType}`);
+};
+
 const buildSendPayload = ({ to, type = "text", text, template, media, interactive }) => {
   const payload = {
     messaging_product: "whatsapp",
@@ -47,10 +197,7 @@ const buildSendPayload = ({ to, type = "text", text, template, media, interactiv
       components: Array.isArray(template?.components) ? template.components : [],
     };
   } else if (type === "interactive") {
-    if (!interactive || typeof interactive !== "object") {
-      throw new Error("interactive payload is required for interactive messages");
-    }
-    payload.interactive = interactive;
+    payload.interactive = buildInteractivePayload(interactive);
   } else if (SUPPORTED_MEDIA_TYPES.includes(type)) {
     const mediaLink = media?.link || media?.url;
 
@@ -250,4 +397,5 @@ module.exports = {
   cacheInboundMedia,
   getMediaMetadata,
   SUPPORTED_MEDIA_TYPES,
+  SUPPORTED_INTERACTIVE_TYPES,
 };
