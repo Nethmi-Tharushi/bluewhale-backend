@@ -31,6 +31,50 @@ const normalizeStringArray = (value) => {
   );
 };
 
+const normalizeTimeValue = (value, fallback = "09:00") => {
+  const normalizedValue = String(value || "").trim();
+  if (/^\d{2}:\d{2}$/.test(normalizedValue)) return normalizedValue;
+
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue)) {
+    const clampedHour = Math.min(23, Math.max(0, Math.floor(numericValue)));
+    return `${String(clampedHour).padStart(2, "0")}:00`;
+  }
+
+  return fallback;
+};
+
+const timeValueToMinutes = (value, fallback = 540) => {
+  const normalizedValue = normalizeTimeValue(value, "");
+  if (!normalizedValue) return fallback;
+  const [hoursText, minutesText] = normalizedValue.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return fallback;
+  return hours * 60 + minutes;
+};
+
+const getCurrentTimeMinutesInTimezone = (timezone = "Asia/Colombo") => {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: timezone,
+  });
+
+  const parts = formatter.formatToParts(new Date());
+  const hourText = parts.find((part) => part.type === "hour")?.value || "00";
+  const minuteText = parts.find((part) => part.type === "minute")?.value || "00";
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return 0;
+  }
+
+  return hour * 60 + minute;
+};
+
 const sanitizeWorkflowNode = (node = {}) => {
   const nodeId = String(node?.nodeId || "").trim();
   const kind = String(node?.kind || "").trim().toLowerCase();
@@ -192,6 +236,8 @@ const sanitizeAutomationPayload = (payload = {}, adminId = null) => {
       keywords: normalizeStringArray(payload?.triggerConfig?.keywords),
       keywordMatchMode: String(payload?.triggerConfig?.keywordMatchMode || "contains").trim().toLowerCase() === "exact" ? "exact" : "contains",
       businessHoursOnly: Boolean(payload?.triggerConfig?.businessHoursOnly),
+      startTime: normalizeTimeValue(payload?.triggerConfig?.startTime ?? payload?.triggerConfig?.startHour, "09:00"),
+      endTime: normalizeTimeValue(payload?.triggerConfig?.endTime ?? payload?.triggerConfig?.endHour, "18:00"),
       startHour: Number(payload?.triggerConfig?.startHour ?? 9),
       endHour: Number(payload?.triggerConfig?.endHour ?? 18),
       timezone: String(payload?.triggerConfig?.timezone || "Asia/Colombo").trim(),
@@ -211,17 +257,23 @@ const resolveBusinessHoursMatch = (triggerConfig = {}) => {
   if (!triggerConfig.businessHoursOnly) return true;
 
   const timezone = String(triggerConfig.timezone || "Asia/Colombo");
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    hour12: false,
-    timeZone: timezone,
-  });
+  const startMinutes = timeValueToMinutes(triggerConfig.startTime ?? triggerConfig.startHour, 9 * 60);
+  const endMinutes = timeValueToMinutes(triggerConfig.endTime ?? triggerConfig.endHour, 18 * 60);
+  let currentMinutes = 0;
 
-  const currentHour = Number(formatter.format(new Date()));
-  const startHour = Number(triggerConfig.startHour ?? 9);
-  const endHour = Number(triggerConfig.endHour ?? 18);
+  try {
+    currentMinutes = getCurrentTimeMinutesInTimezone(timezone);
+  } catch (error) {
+    console.error("Failed to resolve automation business-hours timezone:", error);
+    currentMinutes = getCurrentTimeMinutesInTimezone("Asia/Colombo");
+  }
 
-  return currentHour >= startHour && currentHour < endHour;
+  if (startMinutes === endMinutes) return true;
+  if (startMinutes < endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  }
+
+  return currentMinutes >= startMinutes || currentMinutes < endMinutes;
 };
 
 const resolveKeywordMatch = (messageText = "", triggerConfig = {}) => {
