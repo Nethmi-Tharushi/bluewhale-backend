@@ -51,10 +51,14 @@ const {
   updateWelcomeAutomation,
   updateDelayedResponseAutomation,
   listAvailableBasicAutomationForms,
+  listAvailableBasicAutomationInteractiveLists,
+  listAvailableBasicAutomationProductCollections,
   listAvailableBasicAutomationTemplates,
   listBasicAutomationHistory,
   previewBasicAutomation,
 } = require("../services/whatsappBasicAutomationService");
+const { listInteractiveLists } = require("../services/whatsappInteractiveListService");
+const { listProductCollections } = require("../services/whatsappProductCollectionService");
 const {
   listTemplates,
   syncTemplatesFromMeta,
@@ -111,6 +115,64 @@ const canUpdateConversationStatus = ({ admin, conversation }) => {
 };
 
 const getAuthenticatedActor = (req) => req.admin || req.user || null;
+const trimString = (value) => String(value || "").trim();
+const toIsoStringOrNull = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+const toApiId = (value) => trimString(value?._id || value?.id || value);
+const buildLegacyCompatibleResponse = (data, contract = data) => ({
+  success: true,
+  data,
+  ...(contract && typeof contract === "object" && !Array.isArray(contract) ? contract : {}),
+});
+const buildPreviewContract = (preview = {}) => ({
+  mode: trimString(preview.mode || "custom") || "custom",
+  phoneNumber: trimString(preview.phoneNumber),
+  message: trimString(preview.message),
+  template: preview.template || null,
+  replyAction:
+    preview.replyAction && trimString(preview.replyAction.type) && trimString(preview.replyAction.type) !== "none"
+      ? preview.replyAction
+      : null,
+  runtimeNotes: Array.isArray(preview.runtimeNotes)
+    ? preview.runtimeNotes.map((note) => trimString(note)).filter(Boolean)
+    : [],
+});
+const buildTestSendContract = (result = {}) => ({
+  sent: Boolean(result.sent),
+  type: trimString(result.type),
+  phoneNumber: trimString(result.phoneNumber),
+  modeUsed: trimString(result.modeUsed),
+  fallbackUsed: Boolean(result.fallbackUsed),
+  replyActionUsed: trimString(result.replyActionUsed || "none") || "none",
+  replyActionDelivered: Boolean(result.replyActionDelivered),
+  replyActionFallbackUsed: Boolean(result.replyActionFallbackUsed),
+  messageId: trimString(result.messageId),
+  template: result.template || null,
+  notes: Array.isArray(result.notes) ? result.notes.map((note) => trimString(note)).filter(Boolean) : [],
+});
+const buildHistoryContract = (history = {}) => ({
+  items: Array.isArray(history.items)
+    ? history.items.map((item) => ({
+        id: toApiId(item.id),
+        type: trimString(item.type),
+        triggeredAt: toIsoStringOrNull(item.triggeredAt),
+        conversationId: toApiId(item.conversationId),
+        recipient: trimString(item.recipient?.phone || item.recipient),
+        outcome: trimString(item.outcome || "sent") || "sent",
+        fallbackUsed: Boolean(item.fallbackUsed),
+        sentCountSnapshot: Number(item.sentCountSnapshot || 0),
+      }))
+    : [],
+  summary: {
+    lastTriggeredAt: toIsoStringOrNull(history.summary?.lastTriggeredAt),
+    lastSentCount: Number(history.summary?.lastSentCount || 0),
+    lastUpdatedAt: toIsoStringOrNull(history.summary?.lastUpdatedAt),
+    lastUpdatedBy: history.summary?.lastUpdatedBy || null,
+  },
+});
 
 const parseOptionalJson = (value) => {
   if (!value) return null;
@@ -464,7 +526,7 @@ const getWhatsAppQuickReplies = async (req, res) => {
 const getWhatsAppBasicAutomations = async (_req, res) => {
   try {
     const settings = await getBasicAutomationSettings();
-    return res.json({ success: true, data: settings });
+    return res.json(buildLegacyCompatibleResponse(settings));
   } catch (error) {
     console.error("Failed to fetch WhatsApp basic automations:", error);
     return res.status(error.status || 500).json({ message: error.message || "Failed to fetch basic automations" });
@@ -491,10 +553,92 @@ const getWhatsAppBasicAutomationTemplates = async (_req, res) => {
   }
 };
 
+const getWhatsAppBasicAutomationInteractiveLists = async (_req, res) => {
+  try {
+    const lists = await listAvailableBasicAutomationInteractiveLists();
+    return res.json({
+      success: true,
+      data: lists,
+      items: lists,
+      pagination: {
+        page: 1,
+        limit: lists.length,
+        total: lists.length,
+        totalPages: lists.length ? 1 : 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      },
+      filters: {
+        activeOnly: true,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp automation interactive lists:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch automation interactive lists" });
+  }
+};
+
+const getWhatsAppBasicAutomationProductCollections = async (_req, res) => {
+  try {
+    const collections = await listAvailableBasicAutomationProductCollections();
+    return res.json({
+      success: true,
+      data: collections,
+      items: collections,
+      pagination: {
+        page: 1,
+        limit: collections.length,
+        total: collections.length,
+        totalPages: collections.length ? 1 : 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      },
+      filters: {
+        activeOnly: true,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp automation product collections:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch automation product collections" });
+  }
+};
+
+const getWhatsAppInteractiveLists = async (req, res) => {
+  try {
+    const result = await listInteractiveLists(req.query || {});
+    return res.json({
+      success: true,
+      data: result.items,
+      items: result.items,
+      pagination: result.pagination,
+      filters: result.filters,
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp interactive lists:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch interactive lists" });
+  }
+};
+
+const getWhatsAppProductCollections = async (req, res) => {
+  try {
+    const result = await listProductCollections(req.query || {});
+    return res.json({
+      success: true,
+      data: result.items,
+      items: result.items,
+      pagination: result.pagination,
+      filters: result.filters,
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp product collections:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch product collections" });
+  }
+};
+
 const getWhatsAppBasicAutomationHistory = async (req, res) => {
   try {
     const history = await listBasicAutomationHistory(req.query || {});
-    return res.json({ success: true, data: history });
+    return res.json(buildLegacyCompatibleResponse(history, buildHistoryContract(history)));
   } catch (error) {
     console.error("Failed to fetch WhatsApp automation history:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to fetch automation history" });
@@ -504,7 +648,7 @@ const getWhatsAppBasicAutomationHistory = async (req, res) => {
 const testWhatsAppBasicAutomation = async (req, res) => {
   try {
     const preview = await previewBasicAutomation(req.body || {});
-    return res.json({ success: true, data: preview });
+    return res.json(buildLegacyCompatibleResponse(preview, buildPreviewContract(preview)));
   } catch (error) {
     console.error("Failed to preview WhatsApp automation:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to preview automation" });
@@ -518,7 +662,7 @@ const testSendWhatsAppBasicAutomation = async (req, res) => {
       ...(req.body || {}),
       actorId: actor?._id || null,
     });
-    return res.json({ success: true, data: result });
+    return res.json(buildLegacyCompatibleResponse(result, buildTestSendContract(result)));
   } catch (error) {
     console.error("Failed to send WhatsApp automation test message:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to send automation test message" });
@@ -656,7 +800,7 @@ const updateWhatsAppWelcomeAutomation = async (req, res) => {
   try {
     const actor = getAuthenticatedActor(req);
     const settings = await updateWelcomeAutomation(req.body || {}, actor?._id || null);
-    return res.json({ success: true, data: settings });
+    return res.json(buildLegacyCompatibleResponse(settings));
   } catch (error) {
     console.error("Failed to update WhatsApp welcome automation:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to update welcome automation" });
@@ -1378,10 +1522,14 @@ module.exports = {
   saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
   getWhatsAppBasicAutomationForms,
+  getWhatsAppBasicAutomationInteractiveLists,
+  getWhatsAppBasicAutomationProductCollections,
   getWhatsAppBasicAutomationTemplates,
   getWhatsAppBasicAutomationHistory,
   testWhatsAppBasicAutomation,
   testSendWhatsAppBasicAutomation,
+  getWhatsAppInteractiveLists,
+  getWhatsAppProductCollections,
   getWhatsAppForms,
   getWhatsAppForm,
   createWhatsAppFormDefinition,

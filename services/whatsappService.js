@@ -1,10 +1,12 @@
+const axios = require("axios");
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 const cloudinary = require("../config/cloudinary");
 const streamifier = require("streamifier");
 
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
+const FLOW_GRAPH_API_VERSION = "v19.0";
 const SUPPORTED_MEDIA_TYPES = ["image", "document", "audio", "video"];
-const SUPPORTED_INTERACTIVE_TYPES = ["button", "list", "flow"];
+const SUPPORTED_INTERACTIVE_TYPES = ["button", "flow", "list", "product_list"];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -29,8 +31,17 @@ const buildMetaErrorMessage = (data, fallbackMessage) => {
   return message || fallbackMessage || "WhatsApp API request failed";
 };
 
+const trimString = (value) => String(value || "").trim();
+
+const isFlowInteractivePayload = (payload = {}) =>
+  payload?.type === "interactive" && payload?.interactive?.type === "flow";
+const isListInteractivePayload = (payload = {}) =>
+  payload?.type === "interactive" && payload?.interactive?.type === "list";
+const isProductListInteractivePayload = (payload = {}) =>
+  payload?.type === "interactive" && payload?.interactive?.type === "product_list";
+
 const buildInteractivePayload = (interactive = {}) => {
-  const interactiveType = String(interactive?.type || "").trim().toLowerCase();
+  const interactiveType = trimString(interactive?.type).toLowerCase();
   if (!SUPPORTED_INTERACTIVE_TYPES.includes(interactiveType)) {
     throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType || "unknown"}`);
   }
@@ -67,70 +78,38 @@ const buildInteractivePayload = (interactive = {}) => {
     return payload;
   }
 
-  if (interactiveType === "list") {
-    const bodyText = String(interactive?.body?.text || "").trim();
-    const buttonText = String(interactive?.action?.button || "").trim();
-    const sections = Array.isArray(interactive?.action?.sections) ? interactive.action.sections : [];
-
-    if (!bodyText) {
-      throw new Error("WhatsApp list interactive messages require body.text");
-    }
-
-    if (!buttonText) {
-      throw new Error("WhatsApp list interactive messages require action.button");
-    }
-
-    if (!sections.length) {
-      throw new Error("WhatsApp list interactive messages require action.sections");
-    }
-
-    const payload = {
-      type: "list",
-      body: { text: bodyText },
-      action: {
-        button: buttonText,
-        sections,
-      },
-    };
-
-    if (interactive?.footer?.text) {
-      payload.footer = { text: String(interactive.footer.text).trim() };
-    }
-
-    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
-      payload.header = {
-        type: "text",
-        text: String(interactive.header.text).trim(),
-      };
-    }
-
-    return payload;
-  }
-
   if (interactiveType === "flow") {
-    const ctaText = String(interactive?.action?.parameters?.flow_cta || "").trim();
-    const flowToken = String(interactive?.action?.parameters?.flow_token || "").trim();
-    const flowAction = String(interactive?.action?.parameters?.flow_action || "navigate").trim().toLowerCase();
-    const flowMode = String(interactive?.action?.parameters?.mode || "published").trim().toLowerCase();
-    const flowId = String(interactive?.action?.parameters?.flow_id || "").trim();
-    const flowName = String(interactive?.action?.parameters?.flow_name || "").trim();
-    const flowMessageVersion = String(interactive?.action?.parameters?.flow_message_version || "3").trim() || "3";
-    const bodyText = String(interactive?.body?.text || "").trim();
+    const flowConfig = interactive?.flow && typeof interactive.flow === "object" ? interactive.flow : {};
+    const actionParameters = interactive?.action?.parameters || {};
+    const ctaText = trimString(interactive?.ctaText || flowConfig.ctaText || actionParameters.flow_cta);
+    const flowToken = trimString(interactive?.flowToken || actionParameters.flow_token);
+    const flowAction = trimString(interactive?.flowAction || actionParameters.flow_action || "navigate").toLowerCase();
+    const flowMode = trimString(
+      flowConfig.mode
+      || interactive?.mode
+      || actionParameters.mode
+      || (flowConfig.name || actionParameters.flow_name ? "draft" : "published")
+    ).toLowerCase() || "published";
+    const flowName = trimString(flowConfig.name || actionParameters.flow_name);
+    const flowId = trimString(flowConfig.id || actionParameters.flow_id);
+    const flowMessageVersion = trimString(interactive?.flowMessageVersion || actionParameters.flow_message_version || "3") || "3";
+    const bodyText = trimString(interactive?.body?.text);
+    const flowActionPayload = interactive?.flowActionPayload || actionParameters.flow_action_payload;
 
     if (!ctaText) {
-      throw new Error("WhatsApp flow interactive messages require action.parameters.flow_cta");
+      throw new Error("WhatsApp flow interactive messages require flow_cta");
     }
 
     if (!flowToken) {
-      throw new Error("WhatsApp flow interactive messages require action.parameters.flow_token");
+      throw new Error("WhatsApp flow interactive messages require flow_token");
     }
 
     if (flowMode === "draft" && !flowName) {
-      throw new Error("WhatsApp draft flow messages require action.parameters.flow_name");
+      throw new Error("WhatsApp draft flow messages require flow.name");
     }
 
     if (flowMode !== "draft" && !flowId) {
-      throw new Error("WhatsApp published flow messages require action.parameters.flow_id");
+      throw new Error("WhatsApp published flow messages require flow.id");
     }
 
     const payload = {
@@ -143,7 +122,7 @@ const buildInteractivePayload = (interactive = {}) => {
           flow_token: flowToken,
           flow_cta: ctaText,
           flow_action: flowAction || "navigate",
-          mode: flowMode || "published",
+          mode: flowMode,
           ...(flowMode === "draft"
             ? { flow_name: flowName }
             : { flow_id: flowId }),
@@ -151,34 +130,153 @@ const buildInteractivePayload = (interactive = {}) => {
       },
     };
 
-    const screen = String(interactive?.action?.parameters?.flow_action_payload?.screen || "").trim();
-    const data = interactive?.action?.parameters?.flow_action_payload?.data;
-
-    if (flowAction === "navigate" && (screen || (data && typeof data === "object" && Object.keys(data).length))) {
-      payload.action.parameters.flow_action_payload = {
-        ...(screen ? { screen } : {}),
-        ...(data && typeof data === "object" && Object.keys(data).length ? { data } : {}),
-      };
-    }
-
-    if (interactive?.footer?.text) {
-      payload.footer = { text: String(interactive.footer.text).trim() };
-    }
-
-    if (interactive?.header?.type === "text" && String(interactive?.header?.text || "").trim()) {
-      payload.header = {
-        type: "text",
-        text: String(interactive.header.text).trim(),
-      };
+    if (flowAction === "navigate" && flowActionPayload && typeof flowActionPayload === "object" && Object.keys(flowActionPayload).length) {
+      payload.action.parameters.flow_action_payload = flowActionPayload;
     }
 
     return payload;
+  }
+
+  if (interactiveType === "list") {
+    const bodyText = trimString(interactive?.body?.text || interactive?.bodyText);
+    const buttonText = trimString(interactive?.action?.button || interactive?.buttonText);
+    const sections = Array.isArray(interactive?.action?.sections)
+      ? interactive.action.sections
+      : Array.isArray(interactive?.sections)
+        ? interactive.sections
+        : [];
+    const headerText = trimString(interactive?.header?.text || interactive?.headerText);
+    const footerText = trimString(interactive?.footer?.text || interactive?.footerText);
+    const normalizedSections = sections
+      .map((section) => ({
+        title: trimString(section?.title),
+        rows: (Array.isArray(section?.rows) ? section.rows : [])
+          .map((row) => ({
+            id: trimString(row?.id),
+            title: trimString(row?.title),
+            ...(trimString(row?.description) ? { description: trimString(row.description) } : {}),
+          }))
+          .filter((row) => row.id && row.title),
+      }))
+      .filter((section) => section.rows.length > 0);
+
+    if (!bodyText) {
+      throw new Error("WhatsApp interactive list messages require body.text");
+    }
+
+    if (!buttonText) {
+      throw new Error("WhatsApp interactive list messages require action.button");
+    }
+
+    if (buttonText.length > 20) {
+      throw new Error("WhatsApp interactive list button text must be 20 characters or fewer");
+    }
+
+    if (normalizedSections.length < 1) {
+      throw new Error("WhatsApp interactive list messages require at least one section");
+    }
+
+    if (normalizedSections.length > 10) {
+      throw new Error("WhatsApp interactive list messages support at most 10 sections");
+    }
+
+    const totalRows = normalizedSections.reduce((total, section) => total + section.rows.length, 0);
+    if (totalRows < 1) {
+      throw new Error("WhatsApp interactive list messages require at least one row");
+    }
+
+    return {
+      type: "list",
+      ...(headerText ? { header: { type: "text", text: headerText } } : {}),
+      body: { text: bodyText },
+      ...(footerText ? { footer: { text: footerText } } : {}),
+      action: {
+        button: buttonText,
+        sections: normalizedSections,
+      },
+    };
+  }
+
+  if (interactiveType === "product_list") {
+    const bodyText = trimString(interactive?.body?.text || interactive?.bodyText);
+    const headerText = trimString(interactive?.header?.text || interactive?.headerText);
+    const footerText = trimString(interactive?.footer?.text || interactive?.footerText);
+    const catalogId = trimString(interactive?.action?.catalog_id || interactive?.catalogId);
+    const sections = Array.isArray(interactive?.action?.sections)
+      ? interactive.action.sections
+      : Array.isArray(interactive?.sections)
+        ? interactive.sections
+        : [];
+    const normalizedSections = sections
+      .map((section) => ({
+        title: trimString(section?.title),
+        product_items: (Array.isArray(section?.product_items) ? section.product_items : Array.isArray(section?.items) ? section.items : [])
+          .map((item) => ({
+            product_retailer_id: trimString(item?.product_retailer_id || item?.id || item?.productRetailerId),
+          }))
+          .filter((item) => item.product_retailer_id),
+      }))
+      .filter((section) => section.title && section.product_items.length > 0);
+
+    if (!headerText) {
+      throw new Error("WhatsApp product collection messages require header.text");
+    }
+
+    if (!bodyText) {
+      throw new Error("WhatsApp product collection messages require body.text");
+    }
+
+    if (!catalogId) {
+      throw new Error("WhatsApp product collection messages require action.catalog_id");
+    }
+
+    if (normalizedSections.length < 1) {
+      throw new Error("WhatsApp product collection messages require at least one section");
+    }
+
+    if (normalizedSections.length > 10) {
+      throw new Error("WhatsApp product collection messages support at most 10 sections");
+    }
+
+    const totalProducts = normalizedSections.reduce(
+      (total, section) => total + section.product_items.length,
+      0
+    );
+
+    if (totalProducts < 1) {
+      throw new Error("WhatsApp product collection messages require at least one product");
+    }
+
+    if (totalProducts > 30) {
+      throw new Error("WhatsApp product collection messages support at most 30 products");
+    }
+
+    return {
+      type: "product_list",
+      header: { type: "text", text: headerText },
+      body: { text: bodyText },
+      ...(footerText ? { footer: { text: footerText } } : {}),
+      action: {
+        catalog_id: catalogId,
+        sections: normalizedSections,
+      },
+    };
   }
 
   throw new Error(`Unsupported WhatsApp interactive type: ${interactiveType}`);
 };
 
 const buildSendPayload = ({ to, type = "text", text, template, media, interactive }) => {
+  if (type === "interactive") {
+    const interactivePayload = buildInteractivePayload(interactive);
+    return {
+      messaging_product: "whatsapp",
+      to: normalizePhone(to).replace(/^\+/, ""),
+      type: "interactive",
+      interactive: interactivePayload,
+    };
+  }
+
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -196,8 +294,6 @@ const buildSendPayload = ({ to, type = "text", text, template, media, interactiv
       },
       components: Array.isArray(template?.components) ? template.components : [],
     };
-  } else if (type === "interactive") {
-    payload.interactive = buildInteractivePayload(interactive);
   } else if (SUPPORTED_MEDIA_TYPES.includes(type)) {
     const mediaLink = media?.link || media?.url;
 
@@ -223,9 +319,59 @@ const buildSendPayload = ({ to, type = "text", text, template, media, interactiv
   return payload;
 };
 
+const logFlowRequest = (message, details = {}) => {
+  console.info(`[WhatsAppFlow] ${message}`, JSON.parse(JSON.stringify(details)));
+};
+
+const summarizeInteractiveListPayload = (payload = {}) => {
+  const sections = Array.isArray(payload?.interactive?.action?.sections) ? payload.interactive.action.sections : [];
+  const rowCount = sections.reduce(
+    (total, section) => total + (Array.isArray(section?.rows) ? section.rows.length : 0),
+    0
+  );
+
+  return {
+    to: payload?.to || "",
+    buttonText: trimString(payload?.interactive?.action?.button),
+    sectionCount: sections.length,
+    rowCount,
+  };
+};
+
+const summarizeProductListPayload = (payload = {}) => {
+  const sections = Array.isArray(payload?.interactive?.action?.sections) ? payload.interactive.action.sections : [];
+  const productCount = sections.reduce(
+    (total, section) => total + (Array.isArray(section?.product_items) ? section.product_items.length : 0),
+    0
+  );
+
+  return {
+    to: payload?.to || "",
+    catalogId: trimString(payload?.interactive?.action?.catalog_id),
+    sectionCount: sections.length,
+    productCount,
+  };
+};
+
 const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries = 3 }) => {
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
   let lastError = null;
+  const isListPayload = isListInteractivePayload(payload);
+  const isProductListPayload = isProductListInteractivePayload(payload);
+
+  if (isListPayload) {
+    console.info("[WhatsAppInteractiveList] Sending interactive list", {
+      phoneNumberId,
+      ...summarizeInteractiveListPayload(payload),
+    });
+  }
+
+  if (isProductListPayload) {
+    console.info("[WhatsAppProductCollection] Sending product collection", {
+      phoneNumberId,
+      ...summarizeProductListPayload(payload),
+    });
+  }
 
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
@@ -246,8 +392,42 @@ const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries =
         throw error;
       }
 
+      if (isListPayload) {
+        console.info("[WhatsAppInteractiveList] Meta response received", {
+          phoneNumberId,
+          ...summarizeInteractiveListPayload(payload),
+          response: data,
+        });
+      }
+
+      if (isProductListPayload) {
+        console.info("[WhatsAppProductCollection] Meta response received", {
+          phoneNumberId,
+          ...summarizeProductListPayload(payload),
+          response: data,
+        });
+      }
+
       return data;
     } catch (error) {
+      if (isListPayload) {
+        console.error("[WhatsAppInteractiveList] Failed to send interactive list", {
+          phoneNumberId,
+          ...summarizeInteractiveListPayload(payload),
+          error: error.message,
+          response: error.payload || null,
+          attempt,
+        });
+      }
+      if (isProductListPayload) {
+        console.error("[WhatsAppProductCollection] Failed to send product collection", {
+          phoneNumberId,
+          ...summarizeProductListPayload(payload),
+          error: error.message,
+          response: error.payload || null,
+          attempt,
+        });
+      }
       lastError = error;
       const canRetry = attempt < retries && (!error.status || error.status >= 500);
       if (!canRetry) break;
@@ -256,6 +436,48 @@ const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries =
   }
 
   throw lastError;
+};
+
+const sendFlowGraphRequest = async ({ payload, accessToken, phoneNumberId }) => {
+  const url = `https://graph.facebook.com/${FLOW_GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+  const mode = trimString(payload?.interactive?.action?.parameters?.mode || "published") || "published";
+
+  logFlowRequest(`Sending ${mode} flow`, {
+    mode,
+    phoneNumberId,
+    to: payload?.to || "",
+    payload,
+  });
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    logFlowRequest("Meta response received", {
+      mode,
+      response: response.data,
+    });
+
+    return response.data;
+  } catch (error) {
+    const data = error.response?.data || error.payload || {};
+    const wrappedError = new Error(buildMetaErrorMessage(data, "WhatsApp Flow API request failed"));
+    wrappedError.status = error.response?.status || error.status;
+    wrappedError.payload = data;
+
+    console.error("[WhatsAppFlow] Failed to send flow", {
+      mode,
+      payload,
+      error: wrappedError.message,
+      response: data,
+    });
+
+    throw wrappedError;
+  }
 };
 
 const getMediaMetadata = async ({ mediaId, accessToken }) => {
@@ -376,7 +598,9 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
   });
 
   try {
-    const response = await sendGraphRequest({ payload, accessToken, phoneNumberId });
+    const response = isFlowInteractivePayload(payload)
+      ? await sendFlowGraphRequest({ payload, accessToken, phoneNumberId })
+      : await sendGraphRequest({ payload, accessToken, phoneNumberId });
     eventLog.status = "processed";
     eventLog.payload = { ...eventLog.payload, response };
     await eventLog.save();
@@ -392,6 +616,7 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
 
 module.exports = {
   sendMessage,
+  sendFlowGraphRequest,
   normalizePhone,
   downloadMedia,
   cacheInboundMedia,

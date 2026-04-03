@@ -4,6 +4,24 @@ const WhatsAppTemplate = require("../models/WhatsAppTemplate");
 const WhatsAppForm = require("../models/WhatsAppForm");
 const { listAvailableWhatsAppForms } = require("./whatsappFormService");
 const { getTemplateById } = require("./whatsappTemplateService");
+const {
+  normalizeInteractiveListSections,
+  countInteractiveListRows,
+  buildInteractiveListResourceFromConfig,
+  listAvailableInteractiveLists,
+  getInteractiveListById,
+  validateInteractiveListSnapshot,
+} = require("./whatsappInteractiveListService");
+const {
+  normalizeProductCollectionItems,
+  countProductCollectionItems,
+  buildProductCollectionResourceFromConfig,
+  listAvailableProductCollections,
+  getProductCollectionById,
+  validateProductCollectionSnapshot,
+  MAX_BUTTON_TEXT_LENGTH: PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH,
+  isProductCollectionProviderConfigured,
+} = require("./whatsappProductCollectionService");
 
 const DAY_OPTIONS = WhatsAppBasicAutomationSettings.DAY_OPTIONS || ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const TEMPLATE_MODE_OPTIONS = WhatsAppBasicAutomationSettings.TEMPLATE_MODE_OPTIONS || ["custom", "approved_template"];
@@ -42,8 +60,16 @@ const DEFAULT_REPLY_ACTION = Object.freeze({
   formOpenMode: "navigate_first_screen",
   interactiveListId: "",
   interactiveListName: "",
+  interactiveListDescription: "",
+  interactiveListSections: [],
+  interactiveListSectionCount: 0,
+  interactiveListRowCount: 0,
   productCollectionId: "",
   productCollectionName: "",
+  productCollectionDescription: "",
+  productCollectionCategory: "",
+  productCollectionItems: [],
+  productCollectionItemCount: 0,
 });
 const DEFAULT_SETTINGS = Object.freeze({
   workingHours: {
@@ -176,6 +202,95 @@ const normalizeTextField = (value, defaultValue = "") => {
   }
 
   return trimString(value);
+};
+
+const normalizeInteractiveListButtonText = (value, defaultValue = "") => {
+  const buttonText = normalizeTextField(value, defaultValue);
+  if (buttonText && buttonText.length > 20) {
+    throw createHttpError("actionButtonText must be 20 characters or fewer when replyActionType is interactive_list");
+  }
+  return buttonText;
+};
+
+const normalizeProductCollectionButtonText = (value, defaultValue = "") => {
+  const buttonText = normalizeTextField(value, defaultValue);
+  if (buttonText && buttonText.length > PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH) {
+    throw createHttpError(
+      `actionButtonText must be ${PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH} characters or fewer when replyActionType is product_collection`
+    );
+  }
+  return buttonText;
+};
+
+const normalizeInteractiveListSectionCount = (value, fallbackValue = 0) => {
+  if (value === undefined) {
+    return fallbackValue;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallbackValue;
+  }
+
+  return Math.trunc(parsed);
+};
+
+const normalizeInteractiveListSnapshot = (replyActionConfig = {}) => {
+  const sections = normalizeInteractiveListSections(replyActionConfig.interactiveListSections);
+  const validation = validateInteractiveListSnapshot({
+    sections,
+    buttonText: replyActionConfig.actionButtonText,
+  });
+  const sectionCount = normalizeInteractiveListSectionCount(replyActionConfig.interactiveListSectionCount, validation.sectionCount || sections.length);
+  const rowCount = normalizeInteractiveListSectionCount(replyActionConfig.interactiveListRowCount, validation.rowCount || countInteractiveListRows(sections));
+
+  return {
+    interactiveListDescription: normalizeTextField(
+      replyActionConfig.interactiveListDescription,
+      DEFAULT_REPLY_ACTION.interactiveListDescription
+    ),
+    interactiveListSections: validation.sections,
+    interactiveListSectionCount: sectionCount || sections.length,
+    interactiveListRowCount: rowCount || countInteractiveListRows(sections),
+  };
+};
+
+const normalizeProductCollectionItemCount = (value, fallbackValue = 0) => {
+  if (value === undefined) {
+    return fallbackValue;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallbackValue;
+  }
+
+  return Math.trunc(parsed);
+};
+
+const normalizeProductCollectionSnapshot = (replyActionConfig = {}) => {
+  const items = normalizeProductCollectionItems(replyActionConfig.productCollectionItems);
+  const validation = validateProductCollectionSnapshot({
+    items,
+    buttonText: replyActionConfig.actionButtonText,
+  });
+  const itemCount = normalizeProductCollectionItemCount(
+    replyActionConfig.productCollectionItemCount,
+    validation.itemCount || countProductCollectionItems(items)
+  );
+
+  return {
+    productCollectionDescription: normalizeTextField(
+      replyActionConfig.productCollectionDescription,
+      DEFAULT_REPLY_ACTION.productCollectionDescription
+    ),
+    productCollectionCategory: normalizeTextField(
+      replyActionConfig.productCollectionCategory,
+      DEFAULT_REPLY_ACTION.productCollectionCategory
+    ),
+    productCollectionItems: validation.items,
+    productCollectionItemCount: itemCount || countProductCollectionItems(items),
+  };
 };
 
 const normalizeTimezone = (value, defaultValue) => {
@@ -359,6 +474,8 @@ const applyReplyActionRules = (replyActionConfig = {}) => {
     interactiveListName: normalizeTextField(replyActionConfig.interactiveListName, DEFAULT_REPLY_ACTION.interactiveListName),
     productCollectionId: normalizeTextField(replyActionConfig.productCollectionId, DEFAULT_REPLY_ACTION.productCollectionId),
     productCollectionName: normalizeTextField(replyActionConfig.productCollectionName, DEFAULT_REPLY_ACTION.productCollectionName),
+    ...normalizeInteractiveListSnapshot(replyActionConfig),
+    ...normalizeProductCollectionSnapshot(replyActionConfig),
   };
 
   if (normalized.replyActionType === "none") {
@@ -388,11 +505,23 @@ const applyReplyActionRules = (replyActionConfig = {}) => {
   }
 
   if (normalized.replyActionType === "interactive_list") {
+    normalized.actionButtonText = normalizeInteractiveListButtonText(
+      normalized.actionButtonText,
+      DEFAULT_REPLY_ACTION.actionButtonText
+    );
+    const interactiveListValidation = validateInteractiveListSnapshot({
+      sections: normalized.interactiveListSections,
+      buttonText: normalized.actionButtonText,
+    });
+
     if (!normalized.actionButtonText) {
       throw createHttpError("actionButtonText is required when replyActionType is interactive_list");
     }
     if (!normalized.interactiveListId) {
       throw createHttpError("interactiveListId is required when replyActionType is interactive_list");
+    }
+    if (!interactiveListValidation.valid && normalized.interactiveListSections.length > 0) {
+      throw createHttpError(interactiveListValidation.reason);
     }
 
     return {
@@ -401,16 +530,32 @@ const applyReplyActionRules = (replyActionConfig = {}) => {
       actionButtonText: normalized.actionButtonText,
       interactiveListId: normalized.interactiveListId,
       interactiveListName: normalized.interactiveListName,
+      interactiveListDescription: normalized.interactiveListDescription,
+      interactiveListSections: normalized.interactiveListSections,
+      interactiveListSectionCount: normalized.interactiveListSectionCount,
+      interactiveListRowCount: normalized.interactiveListRowCount,
       formOpenMode: normalized.formOpenMode,
     };
   }
 
   if (normalized.replyActionType === "product_collection") {
+    normalized.actionButtonText = normalizeProductCollectionButtonText(
+      normalized.actionButtonText,
+      DEFAULT_REPLY_ACTION.actionButtonText
+    );
+    const productCollectionValidation = validateProductCollectionSnapshot({
+      items: normalized.productCollectionItems,
+      buttonText: normalized.actionButtonText,
+    });
+
     if (!normalized.actionButtonText) {
       throw createHttpError("actionButtonText is required when replyActionType is product_collection");
     }
     if (!normalized.productCollectionId) {
       throw createHttpError("productCollectionId is required when replyActionType is product_collection");
+    }
+    if (!productCollectionValidation.valid && normalized.productCollectionItems.length > 0) {
+      throw createHttpError(productCollectionValidation.reason);
     }
 
     return {
@@ -419,6 +564,10 @@ const applyReplyActionRules = (replyActionConfig = {}) => {
       actionButtonText: normalized.actionButtonText,
       productCollectionId: normalized.productCollectionId,
       productCollectionName: normalized.productCollectionName,
+      productCollectionDescription: normalized.productCollectionDescription,
+      productCollectionCategory: normalized.productCollectionCategory,
+      productCollectionItems: normalized.productCollectionItems,
+      productCollectionItemCount: normalized.productCollectionItemCount,
       formOpenMode: normalized.formOpenMode,
     };
   }
@@ -429,7 +578,23 @@ const applyReplyActionRules = (replyActionConfig = {}) => {
 const mergeReplyActionConfig = (payload = {}, current = {}) =>
   applyReplyActionRules({
     ...DEFAULT_REPLY_ACTION,
-    ...current,
+    replyActionType: current.replyActionType ?? DEFAULT_REPLY_ACTION.replyActionType,
+    actionButtonText: current.actionButtonText ?? DEFAULT_REPLY_ACTION.actionButtonText,
+    formId: current.formId ?? DEFAULT_REPLY_ACTION.formId,
+    formName: current.formName ?? DEFAULT_REPLY_ACTION.formName,
+    formOpenMode: current.formOpenMode ?? DEFAULT_REPLY_ACTION.formOpenMode,
+    interactiveListId: current.interactiveListId ?? DEFAULT_REPLY_ACTION.interactiveListId,
+    interactiveListName: current.interactiveListName ?? DEFAULT_REPLY_ACTION.interactiveListName,
+    interactiveListDescription: current.interactiveListDescription ?? DEFAULT_REPLY_ACTION.interactiveListDescription,
+    interactiveListSections: current.interactiveListSections ?? DEFAULT_REPLY_ACTION.interactiveListSections,
+    interactiveListSectionCount: current.interactiveListSectionCount ?? DEFAULT_REPLY_ACTION.interactiveListSectionCount,
+    interactiveListRowCount: current.interactiveListRowCount ?? DEFAULT_REPLY_ACTION.interactiveListRowCount,
+    productCollectionId: current.productCollectionId ?? DEFAULT_REPLY_ACTION.productCollectionId,
+    productCollectionName: current.productCollectionName ?? DEFAULT_REPLY_ACTION.productCollectionName,
+    productCollectionDescription: current.productCollectionDescription ?? DEFAULT_REPLY_ACTION.productCollectionDescription,
+    productCollectionCategory: current.productCollectionCategory ?? DEFAULT_REPLY_ACTION.productCollectionCategory,
+    productCollectionItems: current.productCollectionItems ?? DEFAULT_REPLY_ACTION.productCollectionItems,
+    productCollectionItemCount: current.productCollectionItemCount ?? DEFAULT_REPLY_ACTION.productCollectionItemCount,
     ...(hasOwnProperty(payload, "replyActionType") ? { replyActionType: payload.replyActionType } : {}),
     ...(hasOwnProperty(payload, "actionButtonText") ? { actionButtonText: payload.actionButtonText } : {}),
     ...(hasOwnProperty(payload, "formId") ? { formId: payload.formId } : {}),
@@ -437,15 +602,26 @@ const mergeReplyActionConfig = (payload = {}, current = {}) =>
     ...(hasOwnProperty(payload, "formOpenMode") ? { formOpenMode: payload.formOpenMode } : {}),
     ...(hasOwnProperty(payload, "interactiveListId") ? { interactiveListId: payload.interactiveListId } : {}),
     ...(hasOwnProperty(payload, "interactiveListName") ? { interactiveListName: payload.interactiveListName } : {}),
+    ...(hasOwnProperty(payload, "interactiveListDescription") ? { interactiveListDescription: payload.interactiveListDescription } : {}),
+    ...(hasOwnProperty(payload, "interactiveListSections") ? { interactiveListSections: payload.interactiveListSections } : {}),
+    ...(hasOwnProperty(payload, "interactiveListSectionCount") ? { interactiveListSectionCount: payload.interactiveListSectionCount } : {}),
+    ...(hasOwnProperty(payload, "interactiveListRowCount") ? { interactiveListRowCount: payload.interactiveListRowCount } : {}),
     ...(hasOwnProperty(payload, "productCollectionId") ? { productCollectionId: payload.productCollectionId } : {}),
     ...(hasOwnProperty(payload, "productCollectionName") ? { productCollectionName: payload.productCollectionName } : {}),
+    ...(hasOwnProperty(payload, "productCollectionDescription") ? { productCollectionDescription: payload.productCollectionDescription } : {}),
+    ...(hasOwnProperty(payload, "productCollectionCategory") ? { productCollectionCategory: payload.productCollectionCategory } : {}),
+    ...(hasOwnProperty(payload, "productCollectionItems") ? { productCollectionItems: payload.productCollectionItems } : {}),
+    ...(hasOwnProperty(payload, "productCollectionItemCount") ? { productCollectionItemCount: payload.productCollectionItemCount } : {}),
   });
 
 const mergeTemplateConfig = (payload = {}, current = {}, templateMode = "custom") =>
   applyTemplateRules(
     {
       ...DEFAULT_TEMPLATE_CONFIG,
-      ...current,
+      templateId: current.templateId,
+      templateName: current.templateName,
+      templateLanguage: current.templateLanguage,
+      templateCategory: current.templateCategory,
       ...(hasOwnProperty(payload, "templateId") ? { templateId: payload.templateId } : {}),
       ...(hasOwnProperty(payload, "templateName") ? { templateName: payload.templateName } : {}),
       ...(hasOwnProperty(payload, "templateLanguage") ? { templateLanguage: payload.templateLanguage } : {}),
@@ -457,7 +633,9 @@ const mergeTemplateConfig = (payload = {}, current = {}, templateMode = "custom"
 const mergeCooldownConfig = (payload = {}, current = {}) =>
   applyCooldownRules({
     ...DEFAULT_COOLDOWN_CONFIG,
-    ...current,
+    cooldownEnabled: current.cooldownEnabled,
+    cooldownValue: current.cooldownValue,
+    cooldownUnit: current.cooldownUnit,
     ...(hasOwnProperty(payload, "cooldownEnabled") ? { cooldownEnabled: payload.cooldownEnabled } : {}),
     ...(hasOwnProperty(payload, "cooldownValue") ? { cooldownValue: payload.cooldownValue } : {}),
     ...(hasOwnProperty(payload, "cooldownUnit") ? { cooldownUnit: payload.cooldownUnit } : {}),
@@ -602,6 +780,20 @@ const normalizeWelcomePayload = (payload = {}, options = {}) => {
   Object.assign(normalized, mergeCooldownConfig(payload, current));
   Object.assign(normalized, mergeReplyActionConfig(payload, current));
 
+  const effectiveTemplateMode = normalized.templateMode || current.templateMode || DEFAULT_SETTINGS.automations.welcome.templateMode;
+  const effectiveMessage = normalizeMessage(
+    hasOwnProperty(normalized, "message") ? normalized.message : current.message,
+    DEFAULT_SETTINGS.automations.welcome.message
+  );
+  const shouldValidateMessage =
+    !partial
+    || hasOwnProperty(payload, "message")
+    || hasOwnProperty(payload, "templateMode");
+
+  if (shouldValidateMessage && effectiveTemplateMode !== "approved_template" && !effectiveMessage) {
+    throw createHttpError("message is required when templateMode is custom");
+  }
+
   return normalized;
 };
 
@@ -732,6 +924,14 @@ const listAvailableBasicAutomationForms = async () => {
   return listAvailableWhatsAppForms({ activeOnly: true });
 };
 
+const listAvailableBasicAutomationInteractiveLists = async () => {
+  return listAvailableInteractiveLists();
+};
+
+const listAvailableBasicAutomationProductCollections = async () => {
+  return listAvailableProductCollections();
+};
+
 const getAutomationConfigNormalizer = (type) => {
   if (type === "outOfOffice") return normalizeOutOfOfficePayload;
   if (type === "welcome") return normalizeWelcomePayload;
@@ -780,6 +980,7 @@ const listBasicAutomationHistory = async (query = {}) => {
     const triggeredType = trimString(automationMeta.key);
 
     return {
+      id: trimString(message?._id),
       type: triggeredType,
       triggeredAt: message.timestamp || message.createdAt || null,
       conversationId: message.conversationId || null,
@@ -788,11 +989,57 @@ const listBasicAutomationHistory = async (query = {}) => {
         phone: trimString(message.contactId?.phone || message.contactId?.waId),
       },
       outcome: trimString(message.status || "sent") || "sent",
+      replyActionType: trimString(automationMeta.replyActionType || "none") || "none",
+      replyActionDelivered: Boolean(automationMeta.replyActionDelivered),
+      replyActionFallbackUsed: Boolean(automationMeta.replyActionFallbackUsed),
       fallbackUsed: Boolean(
         automationMeta.fallbackUsed
         || automationMeta.replyActionReason
         || (automationMeta.templateMode === "approved_template" && message.type !== "template")
       ),
+      interactiveList: automationMeta.replyActionType === "interactive_list"
+        ? {
+            id: trimString(
+              automationMeta.replyActionResource?.id
+              || automationMeta.replyActionResource?.interactiveListId
+              || ""
+            ),
+            name: trimString(
+              automationMeta.replyActionResource?.name
+              || automationMeta.replyActionResource?.interactiveListName
+              || ""
+            ),
+            sectionCount: Number(
+              automationMeta.replyActionResource?.sectionCount
+              || automationMeta.replyActionResource?.interactiveListSectionCount
+              || 0
+            ),
+            rowCount: Number(
+              automationMeta.replyActionResource?.rowCount
+              || automationMeta.replyActionResource?.interactiveListRowCount
+              || 0
+            ),
+          }
+        : null,
+      productCollection: automationMeta.replyActionType === "product_collection"
+        ? {
+            id: trimString(
+              automationMeta.replyActionResource?.id
+              || automationMeta.replyActionResource?.productCollectionId
+              || ""
+            ),
+            name: trimString(
+              automationMeta.replyActionResource?.name
+              || automationMeta.replyActionResource?.productCollectionName
+              || ""
+            ),
+            itemCount: Number(
+              automationMeta.replyActionResource?.itemCount
+              || automationMeta.replyActionResource?.productCollectionItemCount
+              || 0
+            ),
+          }
+        : null,
       sentCountSnapshot: Number(
         automationMeta.sentCountSnapshot
         || settings.automations?.[triggeredType]?.sentCount
@@ -880,28 +1127,130 @@ const previewBasicAutomation = async ({ type, phoneNumber = "", settingsOverride
       runtimeNotes.push("WhatsApp form action is expected to be delivered via Meta interactive flow message");
     }
   } else if (previewConfig.replyActionType === "interactive_list") {
-    runtimeNotes.push("Interactive list source/delivery is not available in the current backend");
     replyActionFallbackExpected = true;
+    const resolvedList = previewConfig.interactiveListId
+      ? await getInteractiveListById(previewConfig.interactiveListId)
+      : null;
+    const listSnapshot = resolvedList || buildInteractiveListResourceFromConfig(previewConfig);
+    const buttonText = trimString(previewConfig.actionButtonText || listSnapshot.buttonText);
+    const sectionCount = Number(listSnapshot.sectionCount || 0);
+    const rowCount = Number(listSnapshot.rowCount || 0);
+
+    if (!previewConfig.interactiveListId) {
+      runtimeNotes.push("interactiveListId is required for interactive list delivery");
+    } else if (!resolvedList) {
+      runtimeNotes.push("Selected interactive list was not found");
+    } else if (resolvedList.isActive === false) {
+      runtimeNotes.push("Selected interactive list is inactive");
+    } else if (!buttonText) {
+      runtimeNotes.push("Interactive list button text is required");
+    } else if (buttonText.length > 20) {
+      runtimeNotes.push("Interactive list button text must be 20 characters or fewer");
+    } else if (sectionCount < 1) {
+      runtimeNotes.push("Interactive list must include at least one section");
+    } else if (rowCount < 1) {
+      runtimeNotes.push("Interactive list must include at least one row");
+    } else if (sectionCount > 10) {
+      runtimeNotes.push("Interactive list supports at most 10 sections");
+    } else if (previewConfig.templateMode === "approved_template") {
+      runtimeNotes.push("Interactive lists cannot be attached to approved template sends in the current automation config");
+    } else {
+      replyActionDelivered = true;
+      replyActionFallbackExpected = false;
+      replyActionProviderMode = "interactive_list";
+      runtimeNotes.push("Interactive list is expected to be delivered via Meta interactive list message");
+    }
   } else if (previewConfig.replyActionType === "product_collection") {
-    runtimeNotes.push("Product collection source/delivery is not available in the current backend");
     replyActionFallbackExpected = true;
+    const resolvedCollection = previewConfig.productCollectionId
+      ? await getProductCollectionById(previewConfig.productCollectionId)
+      : null;
+    const collectionSnapshot = resolvedCollection || buildProductCollectionResourceFromConfig(previewConfig);
+    const buttonText = trimString(previewConfig.actionButtonText || collectionSnapshot.buttonText);
+    const itemCount = Number(collectionSnapshot.itemCount || 0);
+
+    if (!previewConfig.productCollectionId) {
+      runtimeNotes.push("productCollectionId is required for product collection delivery");
+    } else if (!resolvedCollection) {
+      runtimeNotes.push("Selected product collection was not found");
+    } else if (resolvedCollection.isActive === false) {
+      runtimeNotes.push("Selected product collection is inactive");
+    } else if (!buttonText) {
+      runtimeNotes.push("Product collection button text is required");
+    } else if (buttonText.length > PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH) {
+      runtimeNotes.push(`Product collection button text must be ${PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH} characters or fewer`);
+    } else if (itemCount < 1) {
+      runtimeNotes.push("Product collection must include at least one item");
+    } else if (previewConfig.templateMode === "approved_template") {
+      runtimeNotes.push("Product collections cannot be attached to approved template sends in the current automation config");
+    } else if (!isProductCollectionProviderConfigured()) {
+      runtimeNotes.push("Product collection preset is saved, but provider catalog delivery is not yet configured; plain text fallback will be used at runtime");
+    } else {
+      replyActionDelivered = true;
+      replyActionFallbackExpected = false;
+      replyActionProviderMode = "product_list";
+      runtimeNotes.push("Product collection is expected to be delivered via Meta catalog multi-product message");
+    }
   }
 
+  let resolvedInteractiveList = null;
+  let resolvedProductCollection = null;
+  if (previewConfig.replyActionType === "interactive_list") {
+    resolvedInteractiveList = previewConfig.interactiveListId
+      ? await getInteractiveListById(previewConfig.interactiveListId)
+      : null;
+  } else if (previewConfig.replyActionType === "product_collection") {
+    resolvedProductCollection = previewConfig.productCollectionId
+      ? await getProductCollectionById(previewConfig.productCollectionId)
+      : null;
+  }
+  const interactiveListSnapshot = resolvedInteractiveList || buildInteractiveListResourceFromConfig(previewConfig);
+  const productCollectionSnapshot = resolvedProductCollection || buildProductCollectionResourceFromConfig(previewConfig);
+  const previewButtonText = trimString(previewConfig.actionButtonText || interactiveListSnapshot.buttonText);
+  const previewProductButtonText = trimString(previewConfig.actionButtonText || productCollectionSnapshot.buttonText);
+
   return {
-    mode: "preview",
+    mode: previewConfig.templateMode || "custom",
     phoneNumber: trimString(phoneNumber),
     message,
     template,
     replyAction: {
       type: previewConfig.replyActionType,
+      label:
+        previewConfig.replyActionType === "interactive_list"
+          ? "Interactive list"
+          : previewConfig.replyActionType === "product_collection"
+            ? "Product collection"
+          : previewConfig.replyActionType === "whatsapp_form"
+            ? "WhatsApp form"
+            : previewConfig.replyActionType,
       actionButtonText: previewConfig.actionButtonText,
+      buttonText:
+        previewConfig.replyActionType === "product_collection"
+          ? previewProductButtonText
+          : previewButtonText,
+      mode:
+        previewConfig.replyActionType === "interactive_list"
+          ? "interactive_list"
+          : previewConfig.replyActionType === "product_collection"
+            ? "catalog_preset"
+            : replyActionProviderMode,
       formId: previewConfig.formId,
       formName: previewConfig.formName,
       formOpenMode: previewConfig.formOpenMode,
       interactiveListId: previewConfig.interactiveListId,
       interactiveListName: previewConfig.interactiveListName,
+      interactiveListDescription: interactiveListSnapshot.description,
+      interactiveListSections: interactiveListSnapshot.sections,
+      sectionCount: interactiveListSnapshot.sectionCount,
+      rowCount: interactiveListSnapshot.rowCount,
       productCollectionId: previewConfig.productCollectionId,
       productCollectionName: previewConfig.productCollectionName,
+      productCollectionDescription: productCollectionSnapshot.description,
+      productCollectionCategory: productCollectionSnapshot.category,
+      productCollectionItems: productCollectionSnapshot.items,
+      productCollectionItemCount: productCollectionSnapshot.itemCount,
+      itemCount: productCollectionSnapshot.itemCount,
     },
     replyActionDelivered,
     replyActionFallbackExpected,
@@ -925,7 +1274,18 @@ module.exports = {
   updateDelayedResponseAutomation,
   listAvailableBasicAutomationTemplates,
   listAvailableBasicAutomationForms,
+  listAvailableBasicAutomationInteractiveLists,
+  listAvailableBasicAutomationProductCollections,
   listBasicAutomationHistory,
   resolveBasicAutomationConfig,
   previewBasicAutomation,
+  __private: {
+    normalizeOutOfOfficePayload,
+    normalizeWelcomePayload,
+    normalizeDelayedResponsePayload,
+    applyReplyActionRules,
+    mergeReplyActionConfig,
+  },
 };
+
+

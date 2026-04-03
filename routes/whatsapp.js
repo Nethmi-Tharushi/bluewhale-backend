@@ -12,10 +12,14 @@ const {
   saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
   getWhatsAppBasicAutomationForms,
+  getWhatsAppBasicAutomationInteractiveLists,
+  getWhatsAppBasicAutomationProductCollections,
   getWhatsAppBasicAutomationTemplates,
   getWhatsAppBasicAutomationHistory,
   testWhatsAppBasicAutomation,
   testSendWhatsAppBasicAutomation,
+  getWhatsAppInteractiveLists,
+  getWhatsAppProductCollections,
   getWhatsAppForms,
   getWhatsAppForm,
   createWhatsAppFormDefinition,
@@ -69,10 +73,14 @@ router.get("/assignment-settings", protectAdmin, authorizeAdmin(), getRoundRobin
 router.put("/assignment-settings", protectAdmin, authorizeAdmin(), saveRoundRobinSettings);
 router.get("/basic-automations", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomations);
 router.get("/basic-automations/forms", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationForms);
+router.get("/basic-automations/interactive-lists", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationInteractiveLists);
+router.get("/basic-automations/product-collections", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationProductCollections);
 router.get("/basic-automations/templates", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationTemplates);
 router.get("/basic-automations/history", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationHistory);
 router.post("/basic-automations/test", protectAdmin, authorizeAdmin(), testWhatsAppBasicAutomation);
 router.post("/basic-automations/test-send", protectAdmin, authorizeAdmin(), testSendWhatsAppBasicAutomation);
+router.get("/interactive-lists", protectAdmin, authorizeAdmin(), getWhatsAppInteractiveLists);
+router.get("/product-collections", protectAdmin, authorizeAdmin(), getWhatsAppProductCollections);
 router.get("/forms", protectAdmin, authorizeAdmin(), getWhatsAppForms);
 router.get("/forms/:id", protectAdmin, authorizeAdmin(), getWhatsAppForm);
 router.post("/forms", protectAdmin, authorizeAdmin(), createWhatsAppFormDefinition);
