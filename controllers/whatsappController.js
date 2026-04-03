@@ -45,6 +45,20 @@ const {
   toggleWhatsAppForm,
 } = require("../services/whatsappFormService");
 const {
+  listWhatsAppCampaigns,
+  getWhatsAppCampaignById,
+  createWhatsAppCampaign,
+  updateWhatsAppCampaign,
+  listWhatsAppCampaignAudienceResources,
+  listWhatsAppCampaignAudienceContacts,
+  testSendWhatsAppCampaign,
+  launchWhatsAppCampaign,
+  pauseWhatsAppCampaign,
+  resumeWhatsAppCampaign,
+  cancelWhatsAppCampaign,
+  deleteWhatsAppCampaign,
+} = require("../services/whatsappCampaignService");
+const {
   getBasicAutomationSettings,
   updateWorkingHours,
   updateOutOfOfficeAutomation,
@@ -173,6 +187,44 @@ const buildHistoryContract = (history = {}) => ({
     lastUpdatedBy: history.summary?.lastUpdatedBy || null,
   },
 });
+const escapeCsvValue = (value) => {
+  const stringValue = String(value ?? "");
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+};
+const buildCampaignCsv = (campaigns = []) => {
+  const headers = [
+    "id",
+    "name",
+    "type",
+    "channel",
+    "status",
+    "audienceType",
+    "audienceSize",
+    "templateName",
+    "contentMode",
+    "scheduleType",
+    "scheduledAt",
+    "sent",
+    "delivered",
+    "read",
+    "clicked",
+    "failed",
+    "createdAt",
+    "updatedAt",
+  ];
+
+  const rows = campaigns.map((campaign) => headers.map((header) => {
+    if (["sent", "delivered", "read", "clicked", "failed"].includes(header)) {
+      return escapeCsvValue(campaign.stats?.[header] ?? 0);
+    }
+    return escapeCsvValue(campaign[header] ?? "");
+  }).join(","));
+
+  return [headers.join(","), ...rows].join("\n");
+};
 
 const parseOptionalJson = (value) => {
   if (!value) return null;
@@ -530,6 +582,177 @@ const getWhatsAppBasicAutomations = async (_req, res) => {
   } catch (error) {
     console.error("Failed to fetch WhatsApp basic automations:", error);
     return res.status(error.status || 500).json({ message: error.message || "Failed to fetch basic automations" });
+  }
+};
+
+const getWhatsAppCampaigns = async (req, res) => {
+  try {
+    const campaigns = await listWhatsAppCampaigns(req.query || {});
+    const exportFormat = trimString(req.query?.format || req.query?.export).toLowerCase();
+
+    if (exportFormat === "csv") {
+      const csv = buildCampaignCsv(campaigns);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", "attachment; filename=\"whatsapp-campaigns.csv\"");
+      return res.status(200).send(csv);
+    }
+
+    return res.json({ success: true, data: campaigns });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaigns:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch WhatsApp campaigns" });
+  }
+};
+
+const getWhatsAppCampaignAudienceResources = async (_req, res) => {
+  try {
+    const resources = await listWhatsAppCampaignAudienceResources();
+    return res.json({ success: true, data: resources });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaign audience resources:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp campaign audience resources" });
+  }
+};
+
+const getWhatsAppCampaignAudienceContacts = async (req, res) => {
+  try {
+    const contacts = await listWhatsAppCampaignAudienceContacts(req.query || {});
+    return res.json({ success: true, data: contacts });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaign audience contacts:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp campaign audience contacts" });
+  }
+};
+
+const getWhatsAppCampaign = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const campaign = await getWhatsAppCampaignById(req.params.id);
+    if (!campaign) {
+      return res.status(404).json({ message: "WhatsApp campaign not found" });
+    }
+
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch WhatsApp campaign" });
+  }
+};
+
+const createWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const campaign = await createWhatsAppCampaign(req.body || {}, actor?._id || null);
+    return res.status(201).json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to create WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to create WhatsApp campaign" });
+  }
+};
+
+const updateWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await updateWhatsAppCampaign(req.params.id, req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to update WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update WhatsApp campaign" });
+  }
+};
+
+const testSendWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const result = await testSendWhatsAppCampaign(req.params.id, req.body || {});
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    console.error("Failed to test send WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to test send WhatsApp campaign" });
+  }
+};
+
+const launchWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await launchWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to launch WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to launch WhatsApp campaign" });
+  }
+};
+
+const pauseWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await pauseWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to pause WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to pause WhatsApp campaign" });
+  }
+};
+
+const resumeWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await resumeWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to resume WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to resume WhatsApp campaign" });
+  }
+};
+
+const cancelWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await cancelWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to cancel WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to cancel WhatsApp campaign" });
+  }
+};
+
+const deleteWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    await deleteWhatsAppCampaign(req.params.id);
+    return res.json({ success: true, message: "WhatsApp campaign deleted successfully" });
+  } catch (error) {
+    console.error("Failed to delete WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to delete WhatsApp campaign" });
   }
 };
 
@@ -1521,6 +1744,18 @@ module.exports = {
   getRoundRobinSettings,
   saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
+  getWhatsAppCampaigns,
+  getWhatsAppCampaignAudienceResources,
+  getWhatsAppCampaignAudienceContacts,
+  getWhatsAppCampaign,
+  createWhatsAppCampaignRecord,
+  updateWhatsAppCampaignRecord,
+  testSendWhatsAppCampaignRecord,
+  launchWhatsAppCampaignRecord,
+  pauseWhatsAppCampaignRecord,
+  resumeWhatsAppCampaignRecord,
+  cancelWhatsAppCampaignRecord,
+  deleteWhatsAppCampaignRecord,
   getWhatsAppBasicAutomationForms,
   getWhatsAppBasicAutomationInteractiveLists,
   getWhatsAppBasicAutomationProductCollections,

@@ -8,6 +8,9 @@ const testFiles = [
   "./whatsapp-basic-automation-service.test.js",
   "./whatsapp-basic-automation-controller.test.js",
   "./whatsapp-basic-automation-runtime.test.js",
+  "./whatsapp-campaign-service.test.js",
+  "./whatsapp-campaign-controller.test.js",
+  "./whatsapp-campaign-runtime.test.js",
   "./whatsapp-product-collection.test.js",
   "./whatsapp-webhook-service.test.js",
 ];

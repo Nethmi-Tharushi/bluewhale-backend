@@ -552,6 +552,16 @@ const updateMessageStatusFromWebhook = async ({ externalMessageId, status, times
     rawStatus,
   };
   await message.save();
+
+  if (message.metadata?.campaign) {
+    try {
+      const { trackCampaignMessageStatus } = require("./whatsappCampaignRuntimeService");
+      await trackCampaignMessageStatus({ message });
+    } catch (error) {
+      console.error("Failed to update WhatsApp campaign status from webhook:", error);
+    }
+  }
+
   return message;
 };
 
