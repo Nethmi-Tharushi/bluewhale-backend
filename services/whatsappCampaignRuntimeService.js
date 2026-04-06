@@ -6,6 +6,7 @@ const {
   ensureConversation,
   saveOutgoingMessage,
 } = require("./whatsappCRMService");
+const { assertOpenCustomerCareWindow } = require("./whatsappCareWindowService");
 const { getTemplateById, prepareTemplateMessage } = require("./whatsappTemplateService");
 const { sendMessage } = require("./whatsappService");
 
@@ -404,6 +405,13 @@ const sendCampaignJobMessage = async ({ app, campaignDoc, jobDoc }) => {
     if (!trimString(text)) {
       throw createHttpError("This campaign does not have any sendable compose content");
     }
+
+    assertOpenCustomerCareWindow({
+      conversation: resolvedConversation,
+      contact,
+      createError: (message) => createHttpError(message),
+      contextLabel: "Compose campaign sends",
+    });
 
     sendResult = await sendMessage({
       to: contact.phone,

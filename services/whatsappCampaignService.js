@@ -1,8 +1,13 @@
 const WhatsAppCampaign = require("../models/WhatsAppCampaign");
 const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
+const WhatsAppCampaignJob = require("../models/WhatsAppCampaignJob");
 const { getTemplateById, prepareTemplateMessage } = require("./whatsappTemplateService");
 const { normalizePhone, sendMessage } = require("./whatsappService");
+const {
+  findContactConversationByPhone,
+  assertOpenCustomerCareWindow,
+} = require("./whatsappCareWindowService");
 const {
   launchCampaign,
   pauseCampaignJobs,
@@ -1079,6 +1084,19 @@ const testSendWhatsAppCampaign = async (id, payload = {}) => {
     throw createHttpError("This campaign does not have any sendable compose content");
   }
 
+  const { contact, conversation } = await findContactConversationByPhone({
+    phoneNumber,
+    ContactModel: WhatsAppContact,
+    ConversationModel: WhatsAppConversation,
+  });
+
+  assertOpenCustomerCareWindow({
+    conversation,
+    contact,
+    createError: (message) => createHttpError(message),
+    contextLabel: "Compose campaign test sends",
+  });
+
   const sendResult = await sendMessage({
     to: phoneNumber,
     type: "text",
@@ -1107,7 +1125,14 @@ const ensureLaunchAllowed = async (campaign) => {
   }
 
   if (campaign.status === "Running") {
-    throw createHttpError("Campaign is already running");
+    const jobCount = await WhatsAppCampaignJob.countDocuments({ campaignId: campaign._id });
+    if (jobCount > 0) {
+      throw createHttpError("Campaign is already running");
+    }
+
+    const fallbackStatus = defaultStatusForScheduleType(trimString(campaign.scheduleType || "draft"));
+    campaign.status = ["Draft", "Scheduled"].includes(fallbackStatus) ? fallbackStatus : "Draft";
+    await campaign.save();
   }
 
   if (campaign.contentMode === "template" && campaign.stopIfTemplateMissing) {
