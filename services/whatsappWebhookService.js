@@ -22,13 +22,40 @@ const verifyMetaSignature = ({ rawBody, signatureHeader, appSecret }) => {
 
 const extractMessageContent = (message) => {
   if (!message || typeof message !== "object") {
-    return { content: "", type: "unknown", media: null };
+    return { content: "", type: "unknown", media: null, interactiveReply: null };
   }
 
   switch (message.type) {
     case "text":
-      return { content: message.text?.body || "", type: "text", media: null };
+      return { content: message.text?.body || "", type: "text", media: null, interactiveReply: null };
     case "interactive":
+      if (message.interactive?.list_reply) {
+        return {
+          content: message.interactive.list_reply.title || "[interactive:list_reply]",
+          type: "interactive",
+          media: null,
+          interactiveReply: {
+            type: "list_reply",
+            id: String(message.interactive.list_reply.id || ""),
+            title: String(message.interactive.list_reply.title || ""),
+            description: String(message.interactive.list_reply.description || ""),
+          },
+        };
+      }
+
+      if (message.interactive?.button_reply) {
+        return {
+          content: message.interactive.button_reply.title || "[interactive:button_reply]",
+          type: "interactive",
+          media: null,
+          interactiveReply: {
+            type: "button_reply",
+            id: String(message.interactive.button_reply.id || ""),
+            title: String(message.interactive.button_reply.title || ""),
+          },
+        };
+      }
+
       return {
         content:
           message.interactive?.button_reply?.title ||
@@ -43,7 +70,7 @@ const extractMessageContent = (message) => {
         },
       };
     case "button":
-      return { content: message.button?.text || "[button]", type: "interactive", media: null };
+      return { content: message.button?.text || "[button]", type: "interactive", media: null, interactiveReply: null };
     case "image":
     case "audio":
     case "video":
@@ -58,9 +85,10 @@ const extractMessageContent = (message) => {
           caption: message[message.type]?.caption || "",
           filename: message[message.type]?.filename || "",
         },
+        interactiveReply: null,
       };
     default:
-      return { content: `[${message.type || "unknown"}]`, type: "unknown", media: null };
+      return { content: `[${message.type || "unknown"}]`, type: "unknown", media: null, interactiveReply: null };
   }
 };
 
@@ -77,7 +105,7 @@ const parseWebhookPayload = (payload) => {
 
       for (const message of messages) {
         const contact = contacts.find((item) => item.wa_id === message.from) || contacts[0] || {};
-        const { content, type, media, interactiveReply = null } = extractMessageContent(message);
+        const { content, type, media, interactiveReply } = extractMessageContent(message);
 
         inboundMessages.push({
           phone: normalizePhone(message.from || contact.wa_id),

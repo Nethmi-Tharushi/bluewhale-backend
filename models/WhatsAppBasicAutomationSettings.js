@@ -7,6 +7,63 @@ const REPLY_ACTION_TYPE_OPTIONS = Object.freeze(["none", "whatsapp_form", "inter
 const FORM_OPEN_MODE_OPTIONS = Object.freeze(["navigate_first_screen", "data_exchange"]);
 const COOLDOWN_UNIT_OPTIONS = Object.freeze(["minutes", "hours"]);
 
+const interactiveListRowSchema = new mongoose.Schema(
+  {
+    id: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    title: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    description: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
+const interactiveListSectionSchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    rows: {
+      type: [interactiveListRowSchema],
+      default: [],
+    },
+  },
+  { _id: false }
+);
+
+const productCollectionItemSchema = new mongoose.Schema(
+  {
+    id: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    title: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    description: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
 const templateConfigFields = {
   templateId: {
     type: String,
@@ -86,6 +143,25 @@ const replyActionFields = {
     default: "",
     trim: true,
   },
+  interactiveListDescription: {
+    type: String,
+    default: "",
+    trim: true,
+  },
+  interactiveListSections: {
+    type: [interactiveListSectionSchema],
+    default: [],
+  },
+  interactiveListSectionCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  interactiveListRowCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
   productCollectionId: {
     type: String,
     default: "",
@@ -95,6 +171,25 @@ const replyActionFields = {
     type: String,
     default: "",
     trim: true,
+  },
+  productCollectionDescription: {
+    type: String,
+    default: "",
+    trim: true,
+  },
+  productCollectionCategory: {
+    type: String,
+    default: "",
+    trim: true,
+  },
+  productCollectionItems: {
+    type: [productCollectionItemSchema],
+    default: [],
+  },
+  productCollectionItemCount: {
+    type: Number,
+    default: 0,
+    min: 0,
   },
 };
 

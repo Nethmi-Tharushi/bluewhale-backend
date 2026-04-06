@@ -22,6 +22,7 @@ const rateLimit = require("express-rate-limit");
 const { Server } = require("socket.io");
 require("./jobs/meetingReminderJob");
 const { startWhatsAppAutomationWorker } = require("./services/whatsappAutomationService");
+const { startWhatsAppCampaignWorker } = require("./services/whatsappCampaignRuntimeService");
 
 const Message = require("./models/Message");
 const User = require("./models/User");
@@ -276,6 +277,7 @@ if (process.env.NODE_ENV === "production") {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   startWhatsAppAutomationWorker(app);
+  startWhatsAppCampaignWorker(app);
   console.log(`🚀 Server running on port ${PORT}`.blue.bold);
   console.log(`📡 Socket.IO enabled for real-time chat`.cyan);
 });

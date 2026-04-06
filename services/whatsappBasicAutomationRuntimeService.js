@@ -6,6 +6,20 @@ const WhatsAppBasicAutomationSettings = require("../models/WhatsAppBasicAutomati
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
+const {
+  getInteractiveListById,
+  buildInteractiveListResourceFromConfig,
+  validateInteractiveListSnapshot,
+} = require("./whatsappInteractiveListService");
+const {
+  getProductCollectionById,
+  buildProductCollectionResourceFromConfig,
+  validateProductCollectionSnapshot,
+  isProductCollectionProviderConfigured,
+  getProductCollectionProviderConfig,
+  MAX_BUTTON_TEXT_LENGTH: PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH,
+  MAX_PRODUCT_ITEMS,
+} = require("./whatsappProductCollectionService");
 const { prepareTemplateMessage, getTemplateById } = require("./whatsappTemplateService");
 const { sendMessage, normalizePhone } = require("./whatsappService");
 const { getBasicAutomationSettings, resolveBasicAutomationConfig } = require("./whatsappBasicAutomationService");
@@ -39,6 +53,12 @@ const DEFAULT_AUTOMATION_STATE = Object.freeze({
 });
 
 const trimString = (value) => String(value || "").trim();
+const getReplyActionLabel = (replyActionType) => {
+  if (replyActionType === "whatsapp_form") return "Interactive form";
+  if (replyActionType === "interactive_list") return "Interactive list";
+  if (replyActionType === "product_collection") return "Product collection";
+  return "Interactive reply";
+};
 const toObject = (value) => {
   if (!value) return {};
   if (typeof value.toObject === "function") return value.toObject();
@@ -344,20 +364,239 @@ const validateReplyActionResource = async (automationKey, config) => {
   }
 
   if (config.replyActionType === "interactive_list") {
+    const cachedResource = buildInteractiveListResourceFromConfig(config);
+    const interactiveListId = trimString(config.interactiveListId);
+    const buttonText = trimString(config.actionButtonText || cachedResource.buttonText);
+
+    if (!interactiveListId) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: cachedResource,
+        reason: `interactiveListId is required for ${automationKey}`,
+      };
+    }
+
+    const interactiveList = await getInteractiveListById(interactiveListId);
+    if (!interactiveList) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: cachedResource,
+        reason: `Configured interactive list not found for ${automationKey}`,
+      };
+    }
+
+    if (interactiveList.isActive === false) {
+      return {
+        status: "inactive",
+        supported: false,
+        resource: interactiveList,
+        reason: `Configured interactive list is inactive for ${automationKey}`,
+      };
+    }
+
+    const sectionCount = Number(interactiveList.sectionCount || 0);
+    const rowCount = Number(interactiveList.rowCount || 0);
+    const validation = validateInteractiveListSnapshot({
+      sections: interactiveList.sections,
+      buttonText,
+      requireActive: true,
+      isActive: interactiveList.isActive,
+    });
+
+    if (!buttonText) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: interactiveList,
+        reason: `actionButtonText is required for interactive list delivery in ${automationKey}`,
+      };
+    }
+
+    if (buttonText.length > 20) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: interactiveList,
+        reason: "Interactive list button text must be 20 characters or fewer",
+      };
+    }
+
+    if (sectionCount < 1) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: interactiveList,
+        reason: "Configured interactive list must contain at least one section",
+      };
+    }
+
+    if (rowCount < 1) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: interactiveList,
+        reason: "Configured interactive list must contain at least one row",
+      };
+    }
+
+    if (sectionCount > 10) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: interactiveList,
+        reason: "Configured interactive list exceeds the 10 section WhatsApp limit",
+      };
+    }
+
+    if (!validation.valid) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: interactiveList,
+        reason: validation.reason,
+      };
+    }
+
     return {
-      status: "unsupported",
-      supported: false,
-      resource: null,
-      reason: "Interactive list actions are not backed by a live data source or send pipeline yet",
+      status: "validated",
+      supported: true,
+      resource: {
+        ...interactiveList,
+        provider: "meta_interactive_list",
+        buttonText,
+      },
+      reason: "",
     };
   }
 
   if (config.replyActionType === "product_collection") {
+    const cachedResource = buildProductCollectionResourceFromConfig(config);
+    const productCollectionId = trimString(config.productCollectionId);
+    const buttonText = trimString(config.actionButtonText || cachedResource.buttonText);
+
+    if (!productCollectionId) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: cachedResource,
+        reason: `productCollectionId is required for ${automationKey}`,
+      };
+    }
+
+    const productCollection = await getProductCollectionById(productCollectionId);
+    if (!productCollection) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: cachedResource,
+        reason: `Configured product collection not found for ${automationKey}`,
+      };
+    }
+
+    if (productCollection.isActive === false) {
+      return {
+        status: "inactive",
+        supported: false,
+        resource: productCollection,
+        reason: `Configured product collection is inactive for ${automationKey}`,
+      };
+    }
+
+    const itemCount = Number(productCollection.itemCount || 0);
+    const validation = validateProductCollectionSnapshot({
+      items: productCollection.items,
+      buttonText,
+      requireActive: true,
+      isActive: productCollection.isActive,
+    });
+
+    if (!buttonText) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: productCollection,
+        reason: `actionButtonText is required for product collection delivery in ${automationKey}`,
+      };
+    }
+
+    if (buttonText.length > PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: productCollection,
+        reason: `Product collection button text must be ${PRODUCT_COLLECTION_MAX_BUTTON_TEXT_LENGTH} characters or fewer`,
+      };
+    }
+
+    if (itemCount < 1) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: productCollection,
+        reason: "Configured product collection must contain at least one item",
+      };
+    }
+
+    if (itemCount > MAX_PRODUCT_ITEMS) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: productCollection,
+        reason: `Configured product collection exceeds the ${MAX_PRODUCT_ITEMS} product WhatsApp limit`,
+      };
+    }
+
+    if (!validation.valid) {
+      return {
+        status: "invalid",
+        supported: false,
+        resource: productCollection,
+        reason: validation.reason,
+      };
+    }
+
+    if (!isProductCollectionProviderConfigured()) {
+      return {
+        status: "provider_unavailable",
+        supported: false,
+        resource: {
+          ...productCollection,
+          provider: "meta_catalog",
+          buttonText,
+          providerAttempted: false,
+        },
+        reason: "Product collection preset is saved, but provider catalog delivery is not yet configured; plain text fallback will be used",
+      };
+    }
+
+    const providerConfig = getProductCollectionProviderConfig();
+    if (!providerConfig.catalogId) {
+      return {
+        status: "provider_invalid",
+        supported: false,
+        resource: {
+          ...productCollection,
+          provider: "meta_catalog",
+          buttonText,
+          providerAttempted: false,
+        },
+        reason: "Product collection provider catalog id is missing",
+      };
+    }
+
     return {
-      status: "unsupported",
-      supported: false,
-      resource: null,
-      reason: "Product collection actions are not backed by a live data source or send pipeline yet",
+      status: "validated",
+      supported: true,
+      resource: {
+        ...productCollection,
+        provider: "meta_catalog",
+        buttonText,
+        providerAttempted: true,
+        catalogId: providerConfig.catalogId,
+      },
+      reason: "",
     };
   }
 
@@ -482,25 +721,108 @@ const buildWhatsAppFormInteractivePayload = ({ automationKey, config, replyActio
 
   const resource = replyActionResult.resource || {};
   const flowActionPayload = {};
+  const providerFlowMode = trimString(resource.providerFlowMode || "published").toLowerCase() || "published";
 
   if (trimString(resource.providerFlowFirstScreenId)) {
     flowActionPayload.screen = trimString(resource.providerFlowFirstScreenId);
   }
 
+  const flowPayload = providerFlowMode === "draft"
+    ? {
+        name: trimString(resource.providerFlowName),
+        language: "en_US",
+        mode: "draft",
+      }
+    : {
+        id: trimString(resource.providerFlowId),
+        language: "en_US",
+        mode: "published",
+      };
+
+  console.info(`[WhatsAppAutomation] ${automationKey} prepared flow payload`, {
+    mode: providerFlowMode,
+    providerFlowId: trimString(resource.providerFlowId),
+    providerFlowName: trimString(resource.providerFlowName),
+    providerFlowFirstScreenId: trimString(resource.providerFlowFirstScreenId),
+  });
+
   return {
     type: "flow",
     body: trimString(text) ? { text: trimString(text) } : undefined,
+    flow: flowPayload,
+    ctaText: trimString(config?.actionButtonText),
+    flowToken: `bwcrm-${automationKey}-${randomUUID()}`,
+    flowMessageVersion: "3",
+    flowAction: "navigate",
+    ...(Object.keys(flowActionPayload).length ? { flowActionPayload } : {}),
+  };
+};
+
+const buildInteractiveListPayload = ({ automationKey, config, replyActionResult, text }) => {
+  if (config?.replyActionType !== "interactive_list" || !replyActionResult?.supported) {
+    return null;
+  }
+
+  const resource = replyActionResult.resource || {};
+  const bodyText = trimString(text || resource.description || "Please choose an option.");
+  const buttonText = trimString(config?.actionButtonText || resource.buttonText);
+  const sections = Array.isArray(resource.sections) ? resource.sections : [];
+  const sectionCount = Number(resource.sectionCount || sections.length || 0);
+  const rowCount = Number(resource.rowCount || 0);
+
+  console.info(`[WhatsAppAutomation] ${automationKey} prepared interactive list payload`, {
+    interactiveListId: trimString(resource.id),
+    interactiveListName: trimString(resource.name),
+    sectionCount,
+    rowCount,
+    phoneReplyActionType: "interactive_list",
+  });
+
+  return {
+    type: "list",
+    body: { text: bodyText },
+    ...(trimString(resource.headerText) ? { headerText: trimString(resource.headerText) } : {}),
+    ...(trimString(resource.footerText) ? { footerText: trimString(resource.footerText) } : {}),
+    buttonText,
+    sections,
+  };
+};
+
+const buildProductCollectionPayload = ({ automationKey, config, replyActionResult }) => {
+  if (config?.replyActionType !== "product_collection" || !replyActionResult?.supported) {
+    return null;
+  }
+
+  const resource = replyActionResult?.resource || buildProductCollectionResourceFromConfig(config);
+  const itemCount = Number(resource.itemCount || 0);
+  const sectionTitle = trimString(resource.category || resource.name || "Services");
+  const bodyText = trimString(config?.message || resource.description || "Please browse the available services.");
+  const footerText = "Blue Whale Migration";
+
+  console.info(`[WhatsAppAutomation] ${automationKey} prepared product collection preset`, {
+    productCollectionId: trimString(resource.id),
+    productCollectionName: trimString(resource.name),
+    itemCount,
+    catalogId: trimString(resource.catalogId),
+    providerDeliveryAttempted: true,
+    phoneReplyActionType: "product_collection",
+  });
+
+  return {
+    type: "product_list",
+    header: { type: "text", text: trimString(resource.name || "Blue Whale Services") },
+    body: { text: bodyText },
+    footer: { text: footerText },
     action: {
-      parameters: {
-        flow_message_version: "3",
-        flow_token: `bwcrm-${automationKey}-${randomUUID()}`,
-        ...(trimString(resource.providerFlowMode || "published") === "draft"
-          ? { flow_name: trimString(resource.providerFlowName), mode: "draft" }
-          : { flow_id: trimString(resource.providerFlowId), mode: "published" }),
-        flow_cta: trimString(config?.actionButtonText),
-        flow_action: "navigate",
-        ...(Object.keys(flowActionPayload).length ? { flow_action_payload: flowActionPayload } : {}),
-      },
+      catalog_id: trimString(resource.catalogId),
+      sections: [
+        {
+          title: sectionTitle,
+          product_items: (Array.isArray(resource.items) ? resource.items : []).map((item) => ({
+            product_retailer_id: trimString(item.id),
+          })),
+        },
+      ],
     },
   };
 };
@@ -509,21 +831,23 @@ const buildAutomationSendPlan = async ({ automationKey, config }) => {
   const text = trimString(config?.message || "");
   const replyActionResult = await validateReplyActionResource(automationKey, config);
   const templateResult = await resolveApprovedTemplate(automationKey, config);
-  const interactivePayload = buildWhatsAppFormInteractivePayload({
-    automationKey,
-    config,
-    replyActionResult,
-    text,
-  });
+  const interactivePayload =
+    config?.replyActionType === "whatsapp_form"
+      ? buildWhatsAppFormInteractivePayload({ automationKey, config, replyActionResult, text })
+      : config?.replyActionType === "interactive_list"
+        ? buildInteractiveListPayload({ automationKey, config, replyActionResult, text })
+        : config?.replyActionType === "product_collection"
+          ? buildProductCollectionPayload({ automationKey, config, replyActionResult, text })
+          : null;
   const canSendTemplate =
     trimString(config?.templateMode || "custom") === "approved_template"
     && templateResult?.supported
     && templateResult?.template;
-  const canSendInteractiveForm =
+  const canSendInteractiveReply =
     trimString(config?.templateMode || "custom") !== "approved_template"
-    && config?.replyActionType === "whatsapp_form"
+    && ["whatsapp_form", "interactive_list", "product_collection"].includes(config?.replyActionType)
     && Boolean(interactivePayload);
-  const deliveredType = canSendTemplate ? "template" : canSendInteractiveForm ? "interactive" : "text";
+  const deliveredType = canSendTemplate ? "template" : canSendInteractiveReply ? "interactive" : "text";
   const notes = [];
 
   if (templateResult?.reason) {
@@ -536,19 +860,33 @@ const buildAutomationSendPlan = async ({ automationKey, config }) => {
     notes.push(replyActionResult.reason);
   }
 
-  if (canSendInteractiveForm) {
-    notes.push("WhatsApp form action will be delivered via Meta interactive flow message");
+  if (canSendInteractiveReply) {
+    notes.push(
+      config?.replyActionType === "interactive_list"
+        ? "Interactive list action will be delivered via Meta interactive list message"
+        : config?.replyActionType === "product_collection"
+          ? "Product collection action will be delivered via Meta catalog multi-product message"
+          : "WhatsApp form action will be delivered via Meta interactive flow message"
+    );
   }
 
   if (
     trimString(config?.templateMode || "custom") === "approved_template"
-    && config?.replyActionType === "whatsapp_form"
-    && replyActionResult?.supported
+    && ["whatsapp_form", "interactive_list", "product_collection"].includes(config?.replyActionType)
+    && (replyActionResult?.supported || config?.replyActionType === "product_collection")
   ) {
-    notes.push("WhatsApp form actions cannot be attached to approved template sends in the current automation config; template delivery will continue without the form action");
+    notes.push(
+      config?.replyActionType === "interactive_list"
+        ? "Interactive lists cannot be attached to approved template sends in the current automation config; template delivery will continue without the list action"
+        : config?.replyActionType === "product_collection"
+          ? "Product collections cannot be attached to approved template sends in the current automation config; template delivery will continue without the collection action"
+          : "WhatsApp form actions cannot be attached to approved template sends in the current automation config; template delivery will continue without the form action"
+    );
   }
 
-  if (!canSendTemplate && !canSendInteractiveForm && !text) {
+  const interactiveBodyText = trimString(interactivePayload?.body?.text || "");
+
+  if (!canSendTemplate && !canSendInteractiveReply && !text && !interactiveBodyText) {
     return {
       sendable: false,
       deliveredType,
@@ -566,13 +904,13 @@ const buildAutomationSendPlan = async ({ automationKey, config }) => {
   return {
     sendable: true,
     deliveredType,
-    text,
+    text: text || interactiveBodyText,
     template: canSendTemplate ? templateResult.template : null,
-    interactive: canSendInteractiveForm ? interactivePayload : null,
+    interactive: canSendInteractiveReply ? interactivePayload : null,
     content: canSendTemplate
       ? `Template: ${templateResult.resource?.name || config?.templateName || automationKey}`
-      : canSendInteractiveForm
-        ? text || `[interactive:${config?.actionButtonText || "form"}]`
+      : canSendInteractiveReply
+        ? text || interactiveBodyText || `[interactive:${config?.actionButtonText || "reply"}]`
         : text,
     replyActionResult,
     templateResult,
@@ -608,18 +946,75 @@ const sendAutomationMessage = async ({
     return { status: "skipped", savedMessage: null };
   }
 
-  const savedMessage = await dispatchAutomationMessage({
-    app,
-    conversation,
-    contact,
-    automationKey,
-    messageType: plan.deliveredType,
-    text: plan.text,
-    template: plan.template,
-    interactive: plan.interactive,
-    content: plan.content,
-    deliveryMeta: plan.deliveryMeta,
-  });
+  let savedMessage = null;
+  let deliveredType = plan.deliveredType;
+  const notes = [...plan.notes];
+
+  try {
+    savedMessage = await dispatchAutomationMessage({
+      app,
+      conversation,
+      contact,
+      automationKey,
+      messageType: deliveredType,
+      text: plan.text,
+      template: plan.template,
+      interactive: plan.interactive,
+      content: plan.content,
+      deliveryMeta: plan.deliveryMeta,
+    });
+  } catch (error) {
+    const canFallbackToText = deliveredType === "interactive" && trimString(plan.text);
+    const replyActionLabel = getReplyActionLabel(config?.replyActionType);
+
+    if (!canFallbackToText) {
+      throw error;
+    }
+
+    console.error(`[WhatsAppAutomation] ${automationKey} ${replyActionLabel.toLowerCase()} send failed, sending text fallback`, {
+      error: error.message,
+      phone: contact?.phone || "",
+      replyActionType: config?.replyActionType || "none",
+      interactiveListId: plan.replyActionResult?.resource?.id || "",
+      interactiveListName: plan.replyActionResult?.resource?.name || "",
+      sectionCount: plan.replyActionResult?.resource?.sectionCount || 0,
+      rowCount: plan.replyActionResult?.resource?.rowCount || 0,
+      productCollectionId: plan.replyActionResult?.resource?.id || "",
+      productCollectionName: plan.replyActionResult?.resource?.name || "",
+      itemCount: plan.replyActionResult?.resource?.itemCount || 0,
+      mode: plan.interactive?.flow?.mode || "",
+      providerFlowId: plan.interactive?.flow?.id || "",
+      providerFlowName: plan.interactive?.flow?.name || "",
+    });
+
+    notes.push(`${replyActionLabel} send failed: ${error.message}`);
+    notes.push(
+      config?.replyActionType === "interactive_list"
+        ? "Sent plain text fallback instead without the list action"
+        : config?.replyActionType === "product_collection"
+          ? "Sent plain text fallback instead without the collection action"
+          : "Sent plain text fallback instead without the form action"
+    );
+    deliveredType = "text";
+
+    savedMessage = await dispatchAutomationMessage({
+      app,
+      conversation,
+      contact,
+      automationKey,
+      messageType: "text",
+      text: plan.text,
+      content: plan.text,
+      deliveryMeta: {
+        ...plan.deliveryMeta,
+        deliveredType: "text",
+        fallbackUsed: true,
+        replyActionDelivered: false,
+        replyActionFallbackUsed: true,
+        replyActionReason: `${plan.deliveryMeta?.replyActionReason || ""}${plan.deliveryMeta?.replyActionReason ? " | " : ""}Flow send failed: ${error.message}`,
+      },
+    });
+  }
 
   if (!savedMessage) {
     return { status: "skipped", savedMessage: null };
@@ -630,8 +1025,8 @@ const sendAutomationMessage = async ({
     savedMessage,
     replyActionResult: plan.replyActionResult,
     templateResult: plan.templateResult,
-    deliveredType: plan.deliveredType,
-    notes: plan.notes,
+    deliveredType,
+    notes,
   };
 };
 
@@ -653,6 +1048,8 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
   let deliveredType = plan.deliveredType;
   let fallbackUsed = Boolean(plan.deliveryMeta?.fallbackUsed);
   let sendResult = null;
+  let replyActionDelivered = Boolean(plan.deliveryMeta?.replyActionDelivered);
+  let replyActionFallbackUsed = Boolean(plan.deliveryMeta?.replyActionFallbackUsed);
 
   const baseContext = {
     source: "basic_automation_test_send",
@@ -660,6 +1057,7 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
     isTestSend: true,
     actorId: actorId || null,
   };
+  const replyActionLabel = getReplyActionLabel(config.replyActionType);
 
   try {
     sendResult = await sendMessage({
@@ -670,12 +1068,28 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
       interactive: deliveredType === "interactive" ? plan.interactive : undefined,
       context: baseContext,
     });
+    replyActionDelivered =
+      deliveredType === "interactive" && ["whatsapp_form", "interactive_list", "product_collection"].includes(config.replyActionType);
+    replyActionFallbackUsed =
+      ["whatsapp_form", "interactive_list", "product_collection"].includes(config.replyActionType) && deliveredType !== "interactive";
   } catch (error) {
     if (["template", "interactive"].includes(deliveredType) && plan.text) {
-      notes.push(`${deliveredType === "template" ? "Template" : "Interactive form"} send failed: ${error.message}`);
-      notes.push(`Sent plain text fallback instead${deliveredType === "interactive" ? " without the form action" : ""}`);
+      notes.push(`${deliveredType === "template" ? "Template" : replyActionLabel} send failed: ${error.message}`);
+      notes.push(
+        deliveredType === "interactive"
+          ? `Sent plain text fallback instead without the ${
+            config.replyActionType === "interactive_list"
+              ? "list"
+              : config.replyActionType === "product_collection"
+                ? "collection"
+                : "form"
+          } action`
+          : "Sent plain text fallback instead"
+      );
       deliveredType = "text";
       fallbackUsed = true;
+      replyActionDelivered = false;
+      replyActionFallbackUsed = ["whatsapp_form", "interactive_list", "product_collection"].includes(config.replyActionType);
       sendResult = await sendMessage({
         to: normalizedPhoneNumber,
         type: "text",
@@ -697,8 +1111,8 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
     modeUsed: deliveredType,
     fallbackUsed,
     replyActionUsed: config.replyActionType || "none",
-    replyActionDelivered: Boolean(plan.deliveryMeta?.replyActionDelivered),
-    replyActionFallbackUsed: Boolean(plan.deliveryMeta?.replyActionFallbackUsed || (config.replyActionType === "whatsapp_form" && deliveredType !== "interactive")),
+    replyActionDelivered,
+    replyActionFallbackUsed,
     messageId: sendResult?.response?.messages?.[0]?.id || "",
     template: plan.templateResult?.resource
       ? {

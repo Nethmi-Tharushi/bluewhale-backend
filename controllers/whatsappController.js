@@ -45,16 +45,34 @@ const {
   toggleWhatsAppForm,
 } = require("../services/whatsappFormService");
 const {
+  listWhatsAppCampaigns,
+  getWhatsAppCampaignById,
+  createWhatsAppCampaign,
+  updateWhatsAppCampaign,
+  listWhatsAppCampaignAudienceResources,
+  listWhatsAppCampaignAudienceContacts,
+  testSendWhatsAppCampaign,
+  launchWhatsAppCampaign,
+  pauseWhatsAppCampaign,
+  resumeWhatsAppCampaign,
+  cancelWhatsAppCampaign,
+  deleteWhatsAppCampaign,
+} = require("../services/whatsappCampaignService");
+const {
   getBasicAutomationSettings,
   updateWorkingHours,
   updateOutOfOfficeAutomation,
   updateWelcomeAutomation,
   updateDelayedResponseAutomation,
   listAvailableBasicAutomationForms,
+  listAvailableBasicAutomationInteractiveLists,
+  listAvailableBasicAutomationProductCollections,
   listAvailableBasicAutomationTemplates,
   listBasicAutomationHistory,
   previewBasicAutomation,
 } = require("../services/whatsappBasicAutomationService");
+const { listInteractiveLists } = require("../services/whatsappInteractiveListService");
+const { listProductCollections } = require("../services/whatsappProductCollectionService");
 const {
   listTemplates,
   syncTemplatesFromMeta,
@@ -111,6 +129,102 @@ const canUpdateConversationStatus = ({ admin, conversation }) => {
 };
 
 const getAuthenticatedActor = (req) => req.admin || req.user || null;
+const trimString = (value) => String(value || "").trim();
+const toIsoStringOrNull = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+const toApiId = (value) => trimString(value?._id || value?.id || value);
+const buildLegacyCompatibleResponse = (data, contract = data) => ({
+  success: true,
+  data,
+  ...(contract && typeof contract === "object" && !Array.isArray(contract) ? contract : {}),
+});
+const buildPreviewContract = (preview = {}) => ({
+  mode: trimString(preview.mode || "custom") || "custom",
+  phoneNumber: trimString(preview.phoneNumber),
+  message: trimString(preview.message),
+  template: preview.template || null,
+  replyAction:
+    preview.replyAction && trimString(preview.replyAction.type) && trimString(preview.replyAction.type) !== "none"
+      ? preview.replyAction
+      : null,
+  runtimeNotes: Array.isArray(preview.runtimeNotes)
+    ? preview.runtimeNotes.map((note) => trimString(note)).filter(Boolean)
+    : [],
+});
+const buildTestSendContract = (result = {}) => ({
+  sent: Boolean(result.sent),
+  type: trimString(result.type),
+  phoneNumber: trimString(result.phoneNumber),
+  modeUsed: trimString(result.modeUsed),
+  fallbackUsed: Boolean(result.fallbackUsed),
+  replyActionUsed: trimString(result.replyActionUsed || "none") || "none",
+  replyActionDelivered: Boolean(result.replyActionDelivered),
+  replyActionFallbackUsed: Boolean(result.replyActionFallbackUsed),
+  messageId: trimString(result.messageId),
+  template: result.template || null,
+  notes: Array.isArray(result.notes) ? result.notes.map((note) => trimString(note)).filter(Boolean) : [],
+});
+const buildHistoryContract = (history = {}) => ({
+  items: Array.isArray(history.items)
+    ? history.items.map((item) => ({
+        id: toApiId(item.id),
+        type: trimString(item.type),
+        triggeredAt: toIsoStringOrNull(item.triggeredAt),
+        conversationId: toApiId(item.conversationId),
+        recipient: trimString(item.recipient?.phone || item.recipient),
+        outcome: trimString(item.outcome || "sent") || "sent",
+        fallbackUsed: Boolean(item.fallbackUsed),
+        sentCountSnapshot: Number(item.sentCountSnapshot || 0),
+      }))
+    : [],
+  summary: {
+    lastTriggeredAt: toIsoStringOrNull(history.summary?.lastTriggeredAt),
+    lastSentCount: Number(history.summary?.lastSentCount || 0),
+    lastUpdatedAt: toIsoStringOrNull(history.summary?.lastUpdatedAt),
+    lastUpdatedBy: history.summary?.lastUpdatedBy || null,
+  },
+});
+const escapeCsvValue = (value) => {
+  const stringValue = String(value ?? "");
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+};
+const buildCampaignCsv = (campaigns = []) => {
+  const headers = [
+    "id",
+    "name",
+    "type",
+    "channel",
+    "status",
+    "audienceType",
+    "audienceSize",
+    "templateName",
+    "contentMode",
+    "scheduleType",
+    "scheduledAt",
+    "sent",
+    "delivered",
+    "read",
+    "clicked",
+    "failed",
+    "createdAt",
+    "updatedAt",
+  ];
+
+  const rows = campaigns.map((campaign) => headers.map((header) => {
+    if (["sent", "delivered", "read", "clicked", "failed"].includes(header)) {
+      return escapeCsvValue(campaign.stats?.[header] ?? 0);
+    }
+    return escapeCsvValue(campaign[header] ?? "");
+  }).join(","));
+
+  return [headers.join(","), ...rows].join("\n");
+};
 
 const parseOptionalJson = (value) => {
   if (!value) return null;
@@ -464,10 +578,181 @@ const getWhatsAppQuickReplies = async (req, res) => {
 const getWhatsAppBasicAutomations = async (_req, res) => {
   try {
     const settings = await getBasicAutomationSettings();
-    return res.json({ success: true, data: settings });
+    return res.json(buildLegacyCompatibleResponse(settings));
   } catch (error) {
     console.error("Failed to fetch WhatsApp basic automations:", error);
     return res.status(error.status || 500).json({ message: error.message || "Failed to fetch basic automations" });
+  }
+};
+
+const getWhatsAppCampaigns = async (req, res) => {
+  try {
+    const campaigns = await listWhatsAppCampaigns(req.query || {});
+    const exportFormat = trimString(req.query?.format || req.query?.export).toLowerCase();
+
+    if (exportFormat === "csv") {
+      const csv = buildCampaignCsv(campaigns);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", "attachment; filename=\"whatsapp-campaigns.csv\"");
+      return res.status(200).send(csv);
+    }
+
+    return res.json({ success: true, data: campaigns });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaigns:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch WhatsApp campaigns" });
+  }
+};
+
+const getWhatsAppCampaignAudienceResources = async (_req, res) => {
+  try {
+    const resources = await listWhatsAppCampaignAudienceResources();
+    return res.json({ success: true, data: resources });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaign audience resources:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp campaign audience resources" });
+  }
+};
+
+const getWhatsAppCampaignAudienceContacts = async (req, res) => {
+  try {
+    const contacts = await listWhatsAppCampaignAudienceContacts(req.query || {});
+    return res.json({ success: true, data: contacts });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaign audience contacts:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp campaign audience contacts" });
+  }
+};
+
+const getWhatsAppCampaign = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const campaign = await getWhatsAppCampaignById(req.params.id);
+    if (!campaign) {
+      return res.status(404).json({ message: "WhatsApp campaign not found" });
+    }
+
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch WhatsApp campaign" });
+  }
+};
+
+const createWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    const actor = getAuthenticatedActor(req);
+    const campaign = await createWhatsAppCampaign(req.body || {}, actor?._id || null);
+    return res.status(201).json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to create WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to create WhatsApp campaign" });
+  }
+};
+
+const updateWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await updateWhatsAppCampaign(req.params.id, req.body || {}, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to update WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update WhatsApp campaign" });
+  }
+};
+
+const testSendWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const result = await testSendWhatsAppCampaign(req.params.id, req.body || {});
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    console.error("Failed to test send WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to test send WhatsApp campaign" });
+  }
+};
+
+const launchWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await launchWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to launch WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to launch WhatsApp campaign" });
+  }
+};
+
+const pauseWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await pauseWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to pause WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to pause WhatsApp campaign" });
+  }
+};
+
+const resumeWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await resumeWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to resume WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to resume WhatsApp campaign" });
+  }
+};
+
+const cancelWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const actor = getAuthenticatedActor(req);
+    const campaign = await cancelWhatsAppCampaign(req.params.id, actor?._id || null);
+    return res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error("Failed to cancel WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to cancel WhatsApp campaign" });
+  }
+};
+
+const deleteWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    await deleteWhatsAppCampaign(req.params.id);
+    return res.json({ success: true, message: "WhatsApp campaign deleted successfully" });
+  } catch (error) {
+    console.error("Failed to delete WhatsApp campaign:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to delete WhatsApp campaign" });
   }
 };
 
@@ -491,10 +776,92 @@ const getWhatsAppBasicAutomationTemplates = async (_req, res) => {
   }
 };
 
+const getWhatsAppBasicAutomationInteractiveLists = async (_req, res) => {
+  try {
+    const lists = await listAvailableBasicAutomationInteractiveLists();
+    return res.json({
+      success: true,
+      data: lists,
+      items: lists,
+      pagination: {
+        page: 1,
+        limit: lists.length,
+        total: lists.length,
+        totalPages: lists.length ? 1 : 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      },
+      filters: {
+        activeOnly: true,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp automation interactive lists:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch automation interactive lists" });
+  }
+};
+
+const getWhatsAppBasicAutomationProductCollections = async (_req, res) => {
+  try {
+    const collections = await listAvailableBasicAutomationProductCollections();
+    return res.json({
+      success: true,
+      data: collections,
+      items: collections,
+      pagination: {
+        page: 1,
+        limit: collections.length,
+        total: collections.length,
+        totalPages: collections.length ? 1 : 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      },
+      filters: {
+        activeOnly: true,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp automation product collections:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch automation product collections" });
+  }
+};
+
+const getWhatsAppInteractiveLists = async (req, res) => {
+  try {
+    const result = await listInteractiveLists(req.query || {});
+    return res.json({
+      success: true,
+      data: result.items,
+      items: result.items,
+      pagination: result.pagination,
+      filters: result.filters,
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp interactive lists:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch interactive lists" });
+  }
+};
+
+const getWhatsAppProductCollections = async (req, res) => {
+  try {
+    const result = await listProductCollections(req.query || {});
+    return res.json({
+      success: true,
+      data: result.items,
+      items: result.items,
+      pagination: result.pagination,
+      filters: result.filters,
+    });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp product collections:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch product collections" });
+  }
+};
+
 const getWhatsAppBasicAutomationHistory = async (req, res) => {
   try {
     const history = await listBasicAutomationHistory(req.query || {});
-    return res.json({ success: true, data: history });
+    return res.json(buildLegacyCompatibleResponse(history, buildHistoryContract(history)));
   } catch (error) {
     console.error("Failed to fetch WhatsApp automation history:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to fetch automation history" });
@@ -504,7 +871,7 @@ const getWhatsAppBasicAutomationHistory = async (req, res) => {
 const testWhatsAppBasicAutomation = async (req, res) => {
   try {
     const preview = await previewBasicAutomation(req.body || {});
-    return res.json({ success: true, data: preview });
+    return res.json(buildLegacyCompatibleResponse(preview, buildPreviewContract(preview)));
   } catch (error) {
     console.error("Failed to preview WhatsApp automation:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to preview automation" });
@@ -518,7 +885,7 @@ const testSendWhatsAppBasicAutomation = async (req, res) => {
       ...(req.body || {}),
       actorId: actor?._id || null,
     });
-    return res.json({ success: true, data: result });
+    return res.json(buildLegacyCompatibleResponse(result, buildTestSendContract(result)));
   } catch (error) {
     console.error("Failed to send WhatsApp automation test message:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to send automation test message" });
@@ -656,7 +1023,7 @@ const updateWhatsAppWelcomeAutomation = async (req, res) => {
   try {
     const actor = getAuthenticatedActor(req);
     const settings = await updateWelcomeAutomation(req.body || {}, actor?._id || null);
-    return res.json({ success: true, data: settings });
+    return res.json(buildLegacyCompatibleResponse(settings));
   } catch (error) {
     console.error("Failed to update WhatsApp welcome automation:", error);
     return res.status(error.status || 400).json({ message: error.message || "Failed to update welcome automation" });
@@ -1377,11 +1744,27 @@ module.exports = {
   getRoundRobinSettings,
   saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
+  getWhatsAppCampaigns,
+  getWhatsAppCampaignAudienceResources,
+  getWhatsAppCampaignAudienceContacts,
+  getWhatsAppCampaign,
+  createWhatsAppCampaignRecord,
+  updateWhatsAppCampaignRecord,
+  testSendWhatsAppCampaignRecord,
+  launchWhatsAppCampaignRecord,
+  pauseWhatsAppCampaignRecord,
+  resumeWhatsAppCampaignRecord,
+  cancelWhatsAppCampaignRecord,
+  deleteWhatsAppCampaignRecord,
   getWhatsAppBasicAutomationForms,
+  getWhatsAppBasicAutomationInteractiveLists,
+  getWhatsAppBasicAutomationProductCollections,
   getWhatsAppBasicAutomationTemplates,
   getWhatsAppBasicAutomationHistory,
   testWhatsAppBasicAutomation,
   testSendWhatsAppBasicAutomation,
+  getWhatsAppInteractiveLists,
+  getWhatsAppProductCollections,
   getWhatsAppForms,
   getWhatsAppForm,
   createWhatsAppFormDefinition,

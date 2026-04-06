@@ -11,11 +11,27 @@ const {
   getRoundRobinSettings,
   saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
+  getWhatsAppCampaigns,
+  getWhatsAppCampaignAudienceResources,
+  getWhatsAppCampaignAudienceContacts,
+  getWhatsAppCampaign,
+  createWhatsAppCampaignRecord,
+  updateWhatsAppCampaignRecord,
+  testSendWhatsAppCampaignRecord,
+  launchWhatsAppCampaignRecord,
+  pauseWhatsAppCampaignRecord,
+  resumeWhatsAppCampaignRecord,
+  cancelWhatsAppCampaignRecord,
+  deleteWhatsAppCampaignRecord,
   getWhatsAppBasicAutomationForms,
+  getWhatsAppBasicAutomationInteractiveLists,
+  getWhatsAppBasicAutomationProductCollections,
   getWhatsAppBasicAutomationTemplates,
   getWhatsAppBasicAutomationHistory,
   testWhatsAppBasicAutomation,
   testSendWhatsAppBasicAutomation,
+  getWhatsAppInteractiveLists,
+  getWhatsAppProductCollections,
   getWhatsAppForms,
   getWhatsAppForm,
   createWhatsAppFormDefinition,
@@ -67,12 +83,28 @@ router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConve
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
 router.get("/assignment-settings", protectAdmin, authorizeAdmin(), getRoundRobinSettings);
 router.put("/assignment-settings", protectAdmin, authorizeAdmin(), saveRoundRobinSettings);
+router.get("/campaigns", protectAdmin, authorizeAdmin(), getWhatsAppCampaigns);
+router.get("/campaigns/audience-resources", protectAdmin, authorizeAdmin(), getWhatsAppCampaignAudienceResources);
+router.get("/campaigns/audience-contacts", protectAdmin, authorizeAdmin(), getWhatsAppCampaignAudienceContacts);
+router.get("/campaigns/:id", protectAdmin, authorizeAdmin(), getWhatsAppCampaign);
+router.post("/campaigns", protectAdmin, authorizeAdmin(), createWhatsAppCampaignRecord);
+router.put("/campaigns/:id", protectAdmin, authorizeAdmin(), updateWhatsAppCampaignRecord);
+router.post("/campaigns/:id/test-send", protectAdmin, authorizeAdmin(), testSendWhatsAppCampaignRecord);
+router.post("/campaigns/:id/launch", protectAdmin, authorizeAdmin(), launchWhatsAppCampaignRecord);
+router.post("/campaigns/:id/pause", protectAdmin, authorizeAdmin(), pauseWhatsAppCampaignRecord);
+router.post("/campaigns/:id/resume", protectAdmin, authorizeAdmin(), resumeWhatsAppCampaignRecord);
+router.post("/campaigns/:id/cancel", protectAdmin, authorizeAdmin(), cancelWhatsAppCampaignRecord);
+router.delete("/campaigns/:id", protectAdmin, authorizeAdmin(), deleteWhatsAppCampaignRecord);
 router.get("/basic-automations", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomations);
 router.get("/basic-automations/forms", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationForms);
+router.get("/basic-automations/interactive-lists", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationInteractiveLists);
+router.get("/basic-automations/product-collections", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationProductCollections);
 router.get("/basic-automations/templates", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationTemplates);
 router.get("/basic-automations/history", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationHistory);
 router.post("/basic-automations/test", protectAdmin, authorizeAdmin(), testWhatsAppBasicAutomation);
 router.post("/basic-automations/test-send", protectAdmin, authorizeAdmin(), testSendWhatsAppBasicAutomation);
+router.get("/interactive-lists", protectAdmin, authorizeAdmin(), getWhatsAppInteractiveLists);
+router.get("/product-collections", protectAdmin, authorizeAdmin(), getWhatsAppProductCollections);
 router.get("/forms", protectAdmin, authorizeAdmin(), getWhatsAppForms);
 router.get("/forms/:id", protectAdmin, authorizeAdmin(), getWhatsAppForm);
 router.post("/forms", protectAdmin, authorizeAdmin(), createWhatsAppFormDefinition);
