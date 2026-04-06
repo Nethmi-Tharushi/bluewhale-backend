@@ -135,8 +135,8 @@ const createModelMocks = () => {
       _id: "campaign_2",
       name: "Scheduled Campaign",
       status: "Scheduled",
-      audienceType: "all_contacts",
-      manualContactIds: [],
+      audienceType: "manual",
+      manualContactIds: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"],
       segmentIds: [],
       channel: "WhatsApp",
       contentMode: "compose",
@@ -148,6 +148,23 @@ const createModelMocks = () => {
       stats: { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 },
       createdAt: "2026-04-03T08:10:00.000Z",
       updatedAt: "2026-04-03T08:10:00.000Z",
+    },
+    {
+      _id: "campaign_3",
+      name: "Expired Compose Campaign",
+      status: "Draft",
+      audienceType: "manual",
+      manualContactIds: ["507f1f77bcf86cd799439013"],
+      segmentIds: [],
+      channel: "WhatsApp",
+      contentMode: "compose",
+      bodyText: "This should be blocked",
+      scheduleType: "draft",
+      batchEnabled: false,
+      stopIfTemplateMissing: false,
+      stats: { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 },
+      createdAt: "2026-04-03T08:20:00.000Z",
+      updatedAt: "2026-04-03T08:20:00.000Z",
     },
   ];
 
@@ -166,9 +183,41 @@ const createModelMocks = () => {
       name: "Bob",
       lastActivityAt: "2026-04-02T11:00:00.000Z",
     },
+    {
+      _id: "507f1f77bcf86cd799439013",
+      phone: "+94770000003",
+      waId: "+94770000003",
+      name: "Charlie",
+      lastActivityAt: "2026-04-01T11:00:00.000Z",
+    },
   ];
 
-  const conversations = [];
+  const conversations = [
+    {
+      _id: "conversation_1",
+      contactId: "507f1f77bcf86cd799439011",
+      agentId: null,
+      channel: "whatsapp",
+      lastIncomingAt: new Date().toISOString(),
+      automationState: { lastCustomerMessageAt: new Date().toISOString() },
+    },
+    {
+      _id: "conversation_2",
+      contactId: "507f1f77bcf86cd799439012",
+      agentId: null,
+      channel: "whatsapp",
+      lastIncomingAt: new Date().toISOString(),
+      automationState: { lastCustomerMessageAt: new Date().toISOString() },
+    },
+    {
+      _id: "conversation_3",
+      contactId: "507f1f77bcf86cd799439013",
+      agentId: null,
+      channel: "whatsapp",
+      lastIncomingAt: "2020-04-01T08:00:00.000Z",
+      automationState: { lastCustomerMessageAt: "2020-04-01T08:00:00.000Z" },
+    },
+  ];
   const jobs = [];
   let messageCounter = 0;
 
@@ -447,4 +496,25 @@ module.exports = async () => {
   assert.equal(scheduledCampaign.status, "Running");
   assert.equal(scheduledCampaign.audienceSize, 2);
   assert.equal(stores.jobs.filter((job) => job.campaignId === "campaign_2").length, 2);
+  const scheduledProcessed = await runtimeService.processPendingCampaignJobs(null);
+  assert.equal(scheduledProcessed.processed, 2);
+  assert.equal(scheduledProcessed.sent, 2);
+  assert.equal(scheduledProcessed.failed, 0);
+
+  const expiredLaunch = await runtimeService.launchCampaign({ campaignId: "campaign_3", actorId: "admin_2" });
+  assert.equal(expiredLaunch.campaignId, "campaign_3");
+  assert.equal(expiredLaunch.audienceSize, 1);
+
+  const expiredProcessed = await runtimeService.processPendingCampaignJobs(null);
+  assert.equal(expiredProcessed.processed, 1);
+  assert.equal(expiredProcessed.sent, 0);
+  assert.equal(expiredProcessed.failed, 1);
+
+  const expiredJob = stores.jobs.find((job) => job.campaignId === "campaign_3");
+  assert.equal(expiredJob.status, "failed");
+  assert.match(expiredJob.errorMessage, /24-hour customer care window/);
+
+  const expiredCampaign = stores.campaigns.find((item) => item._id === "campaign_3");
+  assert.equal(expiredCampaign.status, "Failed");
+  assert.equal(expiredCampaign.stats.failed, 1);
 };

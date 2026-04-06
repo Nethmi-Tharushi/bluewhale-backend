@@ -144,11 +144,15 @@ const loadCampaignService = ({
   setCampaignStatus,
   contacts = [],
   conversations = [],
+  campaignJobCount = 0,
 } = {}) =>
   loadWithMocks(path.resolve(__dirname, "../services/whatsappCampaignService.js"), {
     "../models/WhatsAppCampaign": campaignModelMock,
     "../models/WhatsAppContact": createAudienceModelMock(contacts),
     "../models/WhatsAppConversation": createAudienceModelMock(conversations),
+    "../models/WhatsAppCampaignJob": {
+      countDocuments: async () => campaignJobCount,
+    },
     "./whatsappTemplateService": {
       getTemplateById: async (templateId) => (
         templateId === "tpl_missing" ? null : { id: templateId, name: "Approved Template" }
@@ -219,6 +223,8 @@ module.exports = async () => {
       _id: "conversation_1",
       contactId: "contact_1",
       tags: ["VIP", " follow up "],
+      lastIncomingAt: "2020-04-03T09:00:00.000Z",
+      automationState: { lastCustomerMessageAt: "2020-04-03T09:00:00.000Z" },
       linkedLeadId: { _id: "lead_1", name: "Lead Alice", source: "Facebook Ads" },
     },
     {
@@ -269,6 +275,14 @@ module.exports = async () => {
   assert.deepEqual(created.templateVariables, {});
   assert.deepEqual(created.stats, { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 });
   assert.equal(created.createdBy._id, "admin_1");
+
+  await assert.rejects(
+    () => whatsappCampaignService.testSendWhatsAppCampaign(created.id, {
+      phoneNumber: "+94770000001",
+    }),
+    /24-hour customer care window/
+  );
+  assert.equal(sendCalls.length, 0);
 
   campaignModelMock.__store.push({
     _id: "legacy_campaign",
@@ -342,6 +356,28 @@ module.exports = async () => {
   assert.equal(launched.status, "Running");
   assert.equal(launched.launchedBy._id, "admin_3");
   assert.equal(launched.stats.sent, 1);
+
+  campaignModelMock.__store.push({
+    _id: "stale_running_campaign",
+    name: "Stale Running Campaign",
+    type: "Custom",
+    channel: "WhatsApp",
+    status: "Running",
+    audienceType: "manual",
+    manualContactIds: ["contact_1"],
+    contentMode: "template",
+    templateId: "tpl_approved_1",
+    templateName: "Approved Template 1",
+    templateVariables: {},
+    scheduleType: "draft",
+    stats: { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 },
+    createdBy: { _id: "admin_1", name: "", email: "" },
+    updatedBy: { _id: "admin_1", name: "", email: "" },
+  });
+
+  const relaunched = await whatsappCampaignService.launchWhatsAppCampaign("stale_running_campaign", "admin_5");
+  assert.equal(relaunched.status, "Running");
+  assert.equal(relaunched.launchedBy._id, "admin_5");
 
   const paused = await whatsappCampaignService.pauseWhatsAppCampaign(created.id, "admin_4");
   assert.equal(paused.status, "Paused");
