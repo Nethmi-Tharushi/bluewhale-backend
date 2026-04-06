@@ -31,6 +31,25 @@ const buildMetaErrorMessage = (data, fallbackMessage) => {
   return message || fallbackMessage || "WhatsApp API request failed";
 };
 
+const isWhatsAppTokenError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    Number(error?.status || 0) === 401 ||
+    Number(error?.payload?.error?.code || 0) === 190 ||
+    message.includes("whatsapp access token is invalid or expired") ||
+    message.includes("access token") ||
+    message.includes("session has expired")
+  );
+};
+
+const normalizeWhatsAppApiError = (error) => {
+  if (!error || typeof error !== "object") return error;
+  if (isWhatsAppTokenError(error)) {
+    error.status = 503;
+  }
+  return error;
+};
+
 const trimString = (value) => String(value || "").trim();
 
 const isFlowInteractivePayload = (payload = {}) =>
@@ -389,7 +408,7 @@ const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries =
         const error = new Error(buildMetaErrorMessage(data, "WhatsApp API request failed"));
         error.status = response.status;
         error.payload = data;
-        throw error;
+        throw normalizeWhatsAppApiError(error);
       }
 
       if (isListPayload) {
@@ -428,7 +447,7 @@ const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries =
           attempt,
         });
       }
-      lastError = error;
+      lastError = normalizeWhatsAppApiError(error);
       const canRetry = attempt < retries && (!error.status || error.status >= 500);
       if (!canRetry) break;
       await sleep(300 * attempt);
@@ -476,7 +495,7 @@ const sendFlowGraphRequest = async ({ payload, accessToken, phoneNumberId }) => 
       response: data,
     });
 
-    throw wrappedError;
+    throw normalizeWhatsAppApiError(wrappedError);
   }
 };
 
@@ -493,7 +512,7 @@ const getMediaMetadata = async ({ mediaId, accessToken }) => {
     const error = new Error(buildMetaErrorMessage(data, "Failed to fetch WhatsApp media metadata"));
     error.status = response.status;
     error.payload = data;
-    throw error;
+    throw normalizeWhatsAppApiError(error);
   }
 
   return data;
@@ -513,7 +532,7 @@ const downloadMedia = async ({ mediaId, accessToken }) => {
     const error = new Error(buildMetaErrorMessage(data, "Failed to download WhatsApp media"));
     error.status = response.status;
     error.payload = data;
-    throw error;
+    throw normalizeWhatsAppApiError(error);
   }
 
   const arrayBuffer = await response.arrayBuffer();
