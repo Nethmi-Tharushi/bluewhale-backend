@@ -14,6 +14,7 @@ const {
   resumeCampaignJobs,
   cancelCampaignJobs,
   deleteCampaignJobs,
+  __private: runtimePrivate = {},
 } = require("./whatsappCampaignRuntimeService");
 
 const WHATSAPP_CAMPAIGN_STATUS_OPTIONS = WhatsAppCampaign.WHATSAPP_CAMPAIGN_STATUS_OPTIONS || [
@@ -64,9 +65,10 @@ const DEFAULT_STATS = Object.freeze({
 const trimString = (value) => String(value || "").trim();
 const hasOwnProperty = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
 
-const createHttpError = (message, status = 400) => {
+const createHttpError = (message, status = 400, extras = {}) => {
   const error = new Error(message);
   error.status = status;
+  Object.assign(error, extras);
   return error;
 };
 
@@ -94,6 +96,17 @@ const toNonNegativeNumber = (value, fallback = 0) => {
     return fallback;
   }
   return parsed;
+};
+
+const normalizePhoneOrNull = (value) => {
+  const normalized = normalizePhone(value);
+  const digits = normalized.replace(/[^\d]/g, "");
+
+  if (!normalized || digits.length < 8 || digits.length > 15) {
+    return null;
+  }
+
+  return normalized;
 };
 
 const normalizeBoolean = (value, fieldLabel, defaultValue) => {
@@ -149,6 +162,82 @@ const normalizeStringArray = (value, fieldLabel, { maxLength } = {}) => {
   }
 
   return normalized;
+};
+
+const normalizeManualPhoneArray = (value, fieldLabel, { partial = false } = {}) => {
+  if (value === undefined) {
+    return partial ? undefined : [];
+  }
+
+  if (value === null || value === "") {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw createHttpError(`${fieldLabel} must be an array`, 400, { code: "INVALID_MANUAL_PHONE" });
+  }
+
+  const normalized = [];
+  const seen = new Set();
+
+  value.forEach((item, index) => {
+    const phone = normalizePhoneOrNull(item);
+    if (!phone) {
+      throw createHttpError(`${fieldLabel}[${index}] must be a valid WhatsApp number`, 400, {
+        code: "INVALID_MANUAL_PHONE",
+        field: fieldLabel,
+      });
+    }
+
+    const dedupeKey = phone.replace(/[^\d]/g, "");
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+
+    seen.add(dedupeKey);
+    normalized.push(phone);
+  });
+
+  return normalized;
+};
+
+const splitManualAudienceTokens = ({
+  manualContactIds = [],
+  manualPhones = [],
+  partial = false,
+} = {}) => {
+  const normalizedContactIds = normalizeStringArray(manualContactIds, "manualContactIds");
+  const normalizedManualPhones = normalizeManualPhoneArray(manualPhones, "manualPhones", { partial: false });
+  const contactIds = [];
+  const contactIdSeen = new Set();
+  const phoneSeen = new Set(normalizedManualPhones.map((phone) => phone.replace(/[^\d]/g, "")));
+  const mergedManualPhones = [...normalizedManualPhones];
+
+  normalizedContactIds.forEach((token) => {
+    const normalizedPhone = normalizePhoneOrNull(token);
+    if (normalizedPhone) {
+      const dedupeKey = normalizedPhone.replace(/[^\d]/g, "");
+      if (!phoneSeen.has(dedupeKey)) {
+        phoneSeen.add(dedupeKey);
+        mergedManualPhones.push(normalizedPhone);
+      }
+      return;
+    }
+
+    const dedupeKey = token.toLowerCase();
+    if (contactIdSeen.has(dedupeKey)) {
+      return;
+    }
+
+    contactIdSeen.add(dedupeKey);
+    contactIds.push(token);
+  });
+
+  return {
+    manualContactIds: contactIds,
+    manualPhones: mergedManualPhones,
+    invalidManualPhoneCount: 0,
+  };
 };
 
 const normalizeTemplateVariables = (value, { partial = false } = {}) => {
@@ -732,8 +821,18 @@ const normalizeCampaignPayload = (payload = {}, options = {}) => {
     normalized.segmentIds = normalizeStringArray(source.segmentIds, "segmentIds");
   }
 
-  if (!partial || hasOwnProperty(payload, "manualContactIds")) {
-    normalized.manualContactIds = normalizeStringArray(source.manualContactIds, "manualContactIds");
+  if (
+    !partial
+    || hasOwnProperty(payload, "manualContactIds")
+    || hasOwnProperty(payload, "manualPhones")
+  ) {
+    const manualAudience = splitManualAudienceTokens({
+      manualContactIds: source.manualContactIds,
+      manualPhones: source.manualPhones,
+      partial,
+    });
+    normalized.manualContactIds = manualAudience.manualContactIds;
+    normalized.manualPhones = manualAudience.manualPhones;
   }
 
   if (!partial || hasOwnProperty(payload, "templateId") || hasOwnProperty(payload, "template")) {
@@ -874,6 +973,10 @@ const normalizeCampaignRecord = (campaignDoc) => {
     ...DEFAULT_STATS,
     ...normalizeStats(statsSource),
   };
+  const manualAudience = splitManualAudienceTokens({
+    manualContactIds: plain.manualContactIds,
+    manualPhones: plain.manualPhones,
+  });
 
   return {
     id: trimString(plain._id || plain.id),
@@ -885,7 +988,8 @@ const normalizeCampaignRecord = (campaignDoc) => {
     audienceType: trimString(plain.audienceType),
     audienceSize: toNonNegativeNumber(plain.audienceSize, 0),
     segmentIds: normalizeStringArray(plain.segmentIds, "segmentIds"),
-    manualContactIds: normalizeStringArray(plain.manualContactIds, "manualContactIds"),
+    manualContactIds: manualAudience.manualContactIds,
+    manualPhones: manualAudience.manualPhones,
     templateId: trimString(plain.templateId || plain.template?.id),
     templateName: trimString(plain.templateName || plain.template?.name),
     contentMode: trimString(plain.contentMode || "compose"),
@@ -920,6 +1024,24 @@ const normalizeCampaignRecord = (campaignDoc) => {
     cancelledAt: toIsoStringOrNull(plain.cancelledAt),
     createdAt: toIsoStringOrNull(plain.createdAt),
     updatedAt: toIsoStringOrNull(plain.updatedAt),
+  };
+};
+
+const withEligibilityMetadata = async (campaignDoc) => {
+  const normalized = normalizeCampaignRecord(campaignDoc);
+  const { evaluateCampaignAudience } = runtimePrivate;
+
+  if (typeof evaluateCampaignAudience !== "function") {
+    return normalized;
+  }
+
+  const eligibility = await evaluateCampaignAudience(campaignDoc);
+  return {
+    ...normalized,
+    eligibleAudienceCount: Number(eligibility?.eligibleAudienceCount || 0),
+    optedOutExcludedCount: Number(eligibility?.optedOutExcludedCount || 0),
+    inactiveExcludedCount: Number(eligibility?.inactiveExcludedCount || 0),
+    invalidManualPhoneCount: Number(eligibility?.invalidManualPhoneCount || 0),
   };
 };
 
@@ -1005,14 +1127,14 @@ const getWhatsAppCampaignById = async (id) => {
   if (!campaign) {
     return null;
   }
-  return normalizeCampaignRecord(campaign);
+  return withEligibilityMetadata(campaign);
 };
 
 const createWhatsAppCampaign = async (payload = {}, actorId = null) => {
   const normalized = normalizeCampaignPayload(payload, { actorId, current: {} });
   const created = await WhatsAppCampaign.create(normalized);
   const campaign = await fetchCampaignById(created._id);
-  return normalizeCampaignRecord(campaign);
+  return withEligibilityMetadata(campaign);
 };
 
 const updateWhatsAppCampaign = async (id, payload = {}, actorId = null) => {
@@ -1027,7 +1149,7 @@ const updateWhatsAppCampaign = async (id, payload = {}, actorId = null) => {
   await campaign.save();
 
   const updated = await fetchCampaignById(campaign._id);
-  return normalizeCampaignRecord(updated);
+  return withEligibilityMetadata(updated);
 };
 
 const normalizeTestSendPhoneNumber = (value) => {
@@ -1035,7 +1157,9 @@ const normalizeTestSendPhoneNumber = (value) => {
   const digits = normalized.replace(/[^\d]/g, "");
 
   if (!normalized || digits.length < 8 || digits.length > 15) {
-    throw createHttpError("phoneNumber must be a valid WhatsApp number");
+    throw createHttpError("phoneNumber must be a valid WhatsApp number", 400, {
+      code: "INVALID_PHONE_NUMBER",
+    });
   }
 
   return normalized;
@@ -1043,7 +1167,7 @@ const normalizeTestSendPhoneNumber = (value) => {
 
 const testSendWhatsAppCampaign = async (id, payload = {}) => {
   const campaign = await getCampaignDocumentOrThrow(id);
-  const normalizedCampaign = normalizeCampaignRecord(campaign);
+  const normalizedCampaign = await withEligibilityMetadata(campaign);
   const phoneNumber = normalizeTestSendPhoneNumber(payload.phoneNumber || payload.to || payload.recipient);
   const context = {
     source: "whatsapp_campaign_test_send",
@@ -1081,7 +1205,10 @@ const testSendWhatsAppCampaign = async (id, payload = {}) => {
 
   const text = buildComposeCampaignText(normalizedCampaign);
   if (!text) {
-    throw createHttpError("This campaign does not have any sendable compose content");
+    throw createHttpError("This campaign does not have any sendable compose content", 400, {
+      code: "EMPTY_COMPOSE_CONTENT",
+      contentMode: "compose",
+    });
   }
 
   const { contact, conversation } = await findContactConversationByPhone({
@@ -1093,7 +1220,10 @@ const testSendWhatsAppCampaign = async (id, payload = {}) => {
   assertOpenCustomerCareWindow({
     conversation,
     contact,
-    createError: (message) => createHttpError(message),
+    createError: (message) => createHttpError(message, 400, {
+      code: "OUTSIDE_CARE_WINDOW",
+      contentMode: "compose",
+    }),
     contextLabel: "Compose campaign test sends",
   });
 
@@ -1149,7 +1279,7 @@ const launchWhatsAppCampaign = async (id, actorId = null) => {
   await launchCampaign({ campaignId: campaign._id, actorId });
 
   const updated = await fetchCampaignById(campaign._id);
-  return normalizeCampaignRecord(updated);
+  return withEligibilityMetadata(updated);
 };
 
 const pauseWhatsAppCampaign = async (id, actorId = null) => {
@@ -1168,7 +1298,7 @@ const pauseWhatsAppCampaign = async (id, actorId = null) => {
   await pauseCampaignJobs(campaign._id);
 
   const updated = await fetchCampaignById(campaign._id);
-  return normalizeCampaignRecord(updated);
+  return withEligibilityMetadata(updated);
 };
 
 const resumeWhatsAppCampaign = async (id, actorId = null) => {
@@ -1187,7 +1317,7 @@ const resumeWhatsAppCampaign = async (id, actorId = null) => {
   await resumeCampaignJobs(campaign._id);
 
   const updated = await fetchCampaignById(campaign._id);
-  return normalizeCampaignRecord(updated);
+  return withEligibilityMetadata(updated);
 };
 
 const cancelWhatsAppCampaign = async (id, actorId = null) => {
@@ -1206,7 +1336,7 @@ const cancelWhatsAppCampaign = async (id, actorId = null) => {
   await cancelCampaignJobs(campaign._id);
 
   const updated = await fetchCampaignById(campaign._id);
-  return normalizeCampaignRecord(updated);
+  return withEligibilityMetadata(updated);
 };
 
 const deleteWhatsAppCampaign = async (id) => {

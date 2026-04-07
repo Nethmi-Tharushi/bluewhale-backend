@@ -187,6 +187,13 @@ const buildHistoryContract = (history = {}) => ({
     lastUpdatedBy: history.summary?.lastUpdatedBy || null,
   },
 });
+const buildStructuredErrorPayload = (error, fallbackMessage) => ({
+  message: error.message || fallbackMessage,
+  ...(error.code ? { code: trimString(error.code) } : {}),
+  ...(error.contentMode ? { contentMode: trimString(error.contentMode) } : {}),
+  ...(error.field ? { field: trimString(error.field) } : {}),
+  ...(error.details && typeof error.details === "object" ? { details: error.details } : {}),
+});
 const escapeCsvValue = (value) => {
   const stringValue = String(value ?? "");
   if (/[",\n]/.test(stringValue)) {
@@ -600,7 +607,7 @@ const getWhatsAppCampaigns = async (req, res) => {
     return res.json({ success: true, data: campaigns });
   } catch (error) {
     console.error("Failed to fetch WhatsApp campaigns:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch WhatsApp campaigns" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to fetch WhatsApp campaigns"));
   }
 };
 
@@ -610,7 +617,7 @@ const getWhatsAppCampaignAudienceResources = async (_req, res) => {
     return res.json({ success: true, data: resources });
   } catch (error) {
     console.error("Failed to fetch WhatsApp campaign audience resources:", error);
-    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp campaign audience resources" });
+    return res.status(error.status || 500).json(buildStructuredErrorPayload(error, "Failed to fetch WhatsApp campaign audience resources"));
   }
 };
 
@@ -620,7 +627,7 @@ const getWhatsAppCampaignAudienceContacts = async (req, res) => {
     return res.json({ success: true, data: contacts });
   } catch (error) {
     console.error("Failed to fetch WhatsApp campaign audience contacts:", error);
-    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch WhatsApp campaign audience contacts" });
+    return res.status(error.status || 500).json(buildStructuredErrorPayload(error, "Failed to fetch WhatsApp campaign audience contacts"));
   }
 };
 
@@ -638,7 +645,7 @@ const getWhatsAppCampaign = async (req, res) => {
     return res.json({ success: true, data: campaign });
   } catch (error) {
     console.error("Failed to fetch WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to fetch WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to fetch WhatsApp campaign"));
   }
 };
 
@@ -649,7 +656,7 @@ const createWhatsAppCampaignRecord = async (req, res) => {
     return res.status(201).json({ success: true, data: campaign });
   } catch (error) {
     console.error("Failed to create WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to create WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to create WhatsApp campaign"));
   }
 };
 
@@ -664,7 +671,7 @@ const updateWhatsAppCampaignRecord = async (req, res) => {
     return res.json({ success: true, data: campaign });
   } catch (error) {
     console.error("Failed to update WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to update WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to update WhatsApp campaign"));
   }
 };
 
@@ -678,7 +685,7 @@ const testSendWhatsAppCampaignRecord = async (req, res) => {
     return res.json({ success: true, data: result });
   } catch (error) {
     console.error("Failed to test send WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to test send WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to test send WhatsApp campaign"));
   }
 };
 
@@ -693,7 +700,7 @@ const launchWhatsAppCampaignRecord = async (req, res) => {
     return res.json({ success: true, data: campaign });
   } catch (error) {
     console.error("Failed to launch WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to launch WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to launch WhatsApp campaign"));
   }
 };
 
@@ -708,7 +715,7 @@ const pauseWhatsAppCampaignRecord = async (req, res) => {
     return res.json({ success: true, data: campaign });
   } catch (error) {
     console.error("Failed to pause WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to pause WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to pause WhatsApp campaign"));
   }
 };
 
@@ -723,7 +730,7 @@ const resumeWhatsAppCampaignRecord = async (req, res) => {
     return res.json({ success: true, data: campaign });
   } catch (error) {
     console.error("Failed to resume WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to resume WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to resume WhatsApp campaign"));
   }
 };
 
@@ -738,7 +745,7 @@ const cancelWhatsAppCampaignRecord = async (req, res) => {
     return res.json({ success: true, data: campaign });
   } catch (error) {
     console.error("Failed to cancel WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to cancel WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to cancel WhatsApp campaign"));
   }
 };
 
@@ -752,7 +759,7 @@ const deleteWhatsAppCampaignRecord = async (req, res) => {
     return res.json({ success: true, message: "WhatsApp campaign deleted successfully" });
   } catch (error) {
     console.error("Failed to delete WhatsApp campaign:", error);
-    return res.status(error.status || 400).json({ message: error.message || "Failed to delete WhatsApp campaign" });
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to delete WhatsApp campaign"));
   }
 };
 

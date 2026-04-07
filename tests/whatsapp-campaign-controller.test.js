@@ -155,6 +155,7 @@ module.exports = async () => {
     audienceSize: 10,
     segmentIds: [],
     manualContactIds: ["contact_1"],
+    manualPhones: ["+94770000010"],
     templateId: "",
     templateName: "",
     contentMode: "compose",
@@ -173,6 +174,10 @@ module.exports = async () => {
     batchEnabled: false,
     skipInactiveContacts: false,
     stopIfTemplateMissing: false,
+    eligibleAudienceCount: 1,
+    optedOutExcludedCount: 0,
+    inactiveExcludedCount: 0,
+    invalidManualPhoneCount: 0,
     stats: { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 },
     createdBy: null,
     createdAt: "2026-04-03T10:00:00.000Z",
@@ -265,6 +270,7 @@ module.exports = async () => {
   await controller.getWhatsAppCampaign({ params: { id: campaign.id } }, getRes);
   assert.equal(getRes.statusCode, 200);
   assert.equal(getRes.body.data.id, campaign.id);
+  assert.deepEqual(getRes.body.data.manualPhones, ["+94770000010"]);
 
   const createRes = createResponse();
   await controller.createWhatsAppCampaignRecord(
@@ -359,4 +365,33 @@ module.exports = async () => {
   assert.equal(deleteRes.statusCode, 200);
   assert.equal(deleteRes.body.success, true);
   assert.match(deleteRes.body.message, /deleted successfully/i);
+
+  const errorController = loadController({
+    launchWhatsAppCampaign: async () => {
+      const error = new Error("This campaign does not have any eligible audience contacts after applying contact filters");
+      error.status = 400;
+      error.code = "NO_ELIGIBLE_AUDIENCE";
+      error.contentMode = "compose";
+      error.details = {
+        eligibleAudienceCount: 0,
+        optedOutExcludedCount: 1,
+        inactiveExcludedCount: 2,
+        invalidManualPhoneCount: 0,
+      };
+      throw error;
+    },
+  });
+
+  const launchErrorRes = createResponse();
+  await errorController.launchWhatsAppCampaignRecord(
+    {
+      params: { id: campaign.id },
+      admin: { _id: "admin_1" },
+    },
+    launchErrorRes
+  );
+  assert.equal(launchErrorRes.statusCode, 400);
+  assert.equal(launchErrorRes.body.code, "NO_ELIGIBLE_AUDIENCE");
+  assert.equal(launchErrorRes.body.contentMode, "compose");
+  assert.equal(launchErrorRes.body.details.inactiveExcludedCount, 2);
 };
