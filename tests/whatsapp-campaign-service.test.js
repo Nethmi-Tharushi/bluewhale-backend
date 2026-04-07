@@ -155,9 +155,58 @@ const loadCampaignService = ({
     },
     "./whatsappTemplateService": {
       getTemplateById: async (templateId) => (
-        templateId === "tpl_missing" ? null : { id: templateId, name: "Approved Template" }
+        templateId === "tpl_missing"
+          ? null
+          : { id: templateId, name: "Approved Template", category: "MARKETING" }
       ),
       prepareTemplateMessage: async (payload) => payload.template,
+    },
+    "./whatsappWalletService": {
+      getWalletSummary: async () => ({
+        currency: "USD",
+        balanceMinor: 5000,
+        reservedMinor: 0,
+        availableMinor: 5000,
+        balance: 50,
+        reserved: 0,
+        available: 50,
+        templateChargeMinor: 100,
+        templateCharge: 1,
+        templateChargeByCategory: {
+          MARKETING: 1,
+        },
+        templateChargeByCategoryMinor: {
+          MARKETING: 100,
+        },
+        lowBalanceThresholdMinor: 500,
+        lowBalanceThreshold: 5,
+        isActive: true,
+      }),
+      estimateTemplateReservation: async ({ template, recipientCount }) => ({
+        wallet: {
+          currency: "USD",
+          balanceMinor: 5000,
+          reservedMinor: 0,
+          availableMinor: 5000,
+          balance: 50,
+          reserved: 0,
+          available: 50,
+          lowBalanceThresholdMinor: 500,
+          lowBalanceThreshold: 5,
+          isActive: true,
+        },
+        recipientCount: Number(recipientCount || 0),
+        templateCategory: String(template?.category || "").toUpperCase(),
+        perRecipientAmountMinor: 100,
+        perRecipientAmount: 1,
+        estimatedReserveAmountMinor: Number(recipientCount || 0) * 100,
+        estimatedReserveAmount: Number(recipientCount || 0),
+        canProceed: true,
+        blockingReasonCode: "",
+        blockingReasonMessage: "",
+        reservationMode: "template_send",
+      }),
+      resolveTemplateChargeMinor: () => 100,
     },
     "./whatsappService": {
       normalizePhone: (value) => String(value || "").replace(/[^\d+]/g, "").replace(/^00/, "+"),

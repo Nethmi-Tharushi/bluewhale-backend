@@ -57,6 +57,14 @@ const normalizeWhatsAppApiError = (error) => {
   return error;
 };
 
+const createStructuredError = (message, status = 400, code = "WHATSAPP_SEND_ERROR", details = {}) => {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  error.details = details;
+  return error;
+};
+
 const trimString = (value) => String(value || "").trim();
 
 const isFlowInteractivePayload = (payload = {}) =>
@@ -607,6 +615,9 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   let walletReservation = null;
+  let walletChargeMinor = 0;
+  let walletCurrency = "";
+  const templateCategory = trimString(template?.category || template?.templateCategory || template?.messageCategory || "").toUpperCase();
 
   if (!accessToken || !phoneNumberId) {
     throw new Error("Missing WhatsApp Cloud API credentials in environment variables");
@@ -614,8 +625,10 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
 
   if (type === "template") {
     const wallet = await getWalletSummary();
+    walletChargeMinor = context?.walletChargeMinor !== undefined ? Number(context.walletChargeMinor) : resolveTemplateChargeMinor(template, wallet);
+    walletCurrency = wallet.currency;
     walletReservation = await reserveWalletAmount({
-      amountMinor: context?.walletChargeMinor !== undefined ? Number(context.walletChargeMinor) : resolveTemplateChargeMinor(template, wallet),
+      amountMinor: walletChargeMinor,
       actorId: context?.actorId || null,
       note: `Reserved for WhatsApp template send to ${normalizePhone(to)}`,
       description: `Reserved for template send: ${String(template?.name || template?.id || "template").trim() || "template"}`,
@@ -631,16 +644,27 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
   try {
     payload = buildSendPayload({ to, type, text, template, media, interactive });
   } catch (error) {
+    let releaseInfo = null;
     if (walletReservation?.reservationId) {
-      await releaseWalletReservation({
+      releaseInfo = await releaseWalletReservation({
         reservationId: walletReservation.reservationId,
         note: `Template payload build failed: ${error.message}`,
         metadata: { context },
       }).catch((releaseError) => {
         console.warn("[WhatsAppWallet] Failed to release reservation after payload build error:", releaseError.message);
+        return null;
       });
     }
-    throw error;
+    throw Object.assign(
+      createStructuredError(error.message || "Failed to build WhatsApp payload", error.status || 400, error.code || "WHATSAPP_PAYLOAD_BUILD_FAILED", {
+        reservationReleased: Boolean(releaseInfo),
+        releasedAmountMinor: Number(releaseInfo?.amountMinor || 0),
+        releasedAmount: Number(releaseInfo?.amount || 0),
+        currency: walletCurrency,
+        templateCategory,
+      }),
+      { payload: error.payload || null }
+    );
   }
 
   const eventLog = await WhatsAppEventLog.create({
@@ -657,9 +681,10 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
     const response = isFlowInteractivePayload(payload)
       ? await sendFlowGraphRequest({ payload, accessToken, phoneNumberId })
       : await sendGraphRequest({ payload, accessToken, phoneNumberId });
+    let walletCommit = null;
     if (walletReservation?.reservationId) {
       try {
-        await commitWalletReservation({
+        walletCommit = await commitWalletReservation({
           reservationId: walletReservation.reservationId,
           note: `Template send completed for ${normalizePhone(to)}`,
           metadata: {
@@ -674,10 +699,27 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
     eventLog.status = "processed";
     eventLog.payload = { ...eventLog.payload, response };
     await eventLog.save();
-    return { payload, response };
+    return {
+      payload,
+      response,
+      wallet: walletReservation
+        ? {
+            reservationId: walletReservation.reservationId,
+            reservedAmountMinor: Number(walletReservation.amountMinor || walletChargeMinor || 0),
+            reservedAmount: Number(walletReservation.amount || 0),
+            deductedAmountMinor: Number(walletCommit?.amountMinor || 0),
+            deductedAmount: Number(walletCommit?.amount || 0),
+            currency: walletCommit?.wallet?.currency || walletCurrency,
+            templateCategory,
+            reservationMode: walletReservation.reservationMode || "template_send",
+            reservationReleased: false,
+          }
+        : null,
+    };
   } catch (error) {
+    let releaseInfo = null;
     if (walletReservation?.reservationId) {
-      await releaseWalletReservation({
+      releaseInfo = await releaseWalletReservation({
         reservationId: walletReservation.reservationId,
         note: `Template send failed: ${error.message}`,
         metadata: {
@@ -686,13 +728,30 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
         },
       }).catch((releaseError) => {
         console.warn("[WhatsAppWallet] Failed to release reservation after send error:", releaseError.message);
+        return null;
       });
     }
     eventLog.status = "failed";
     eventLog.errorMessage = error.message;
     eventLog.payload = { ...eventLog.payload, errorPayload: error.payload || null };
     await eventLog.save();
-    throw error;
+    throw Object.assign(
+      createStructuredError(
+        error.message || "Failed to send WhatsApp message",
+        error.status || 500,
+        error.code || "WHATSAPP_SEND_FAILED",
+        {
+          ...(error.details && typeof error.details === "object" ? error.details : {}),
+          reservationReleased: Boolean(releaseInfo),
+          releasedAmountMinor: Number(releaseInfo?.amountMinor || 0),
+          releasedAmount: Number(releaseInfo?.amount || 0),
+          reservationId: walletReservation?.reservationId || "",
+          currency: walletCurrency,
+          templateCategory,
+        }
+      ),
+      { payload: error.payload || null }
+    );
   }
 };
 

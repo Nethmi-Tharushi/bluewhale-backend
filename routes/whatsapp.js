@@ -23,6 +23,7 @@ const {
   resumeWhatsAppCampaignRecord,
   cancelWhatsAppCampaignRecord,
   deleteWhatsAppCampaignRecord,
+  duplicateWhatsAppCampaignRecord,
   getWhatsAppBasicAutomationForms,
   getWhatsAppBasicAutomationInteractiveLists,
   getWhatsAppBasicAutomationProductCollections,
@@ -94,6 +95,7 @@ router.post("/campaigns/:id/launch", protectAdmin, authorizeAdmin(), launchWhats
 router.post("/campaigns/:id/pause", protectAdmin, authorizeAdmin(), pauseWhatsAppCampaignRecord);
 router.post("/campaigns/:id/resume", protectAdmin, authorizeAdmin(), resumeWhatsAppCampaignRecord);
 router.post("/campaigns/:id/cancel", protectAdmin, authorizeAdmin(), cancelWhatsAppCampaignRecord);
+router.post("/campaigns/:id/duplicate", protectAdmin, authorizeAdmin(), duplicateWhatsAppCampaignRecord);
 router.delete("/campaigns/:id", protectAdmin, authorizeAdmin(), deleteWhatsAppCampaignRecord);
 router.get("/basic-automations", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomations);
 router.get("/basic-automations/forms", protectAdmin, authorizeAdmin(), getWhatsAppBasicAutomationForms);

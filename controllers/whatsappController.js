@@ -57,6 +57,7 @@ const {
   resumeWhatsAppCampaign,
   cancelWhatsAppCampaign,
   deleteWhatsAppCampaign,
+  duplicateWhatsAppCampaign,
 } = require("../services/whatsappCampaignService");
 const {
   getBasicAutomationSettings,
@@ -153,6 +154,13 @@ const buildPreviewContract = (preview = {}) => ({
   runtimeNotes: Array.isArray(preview.runtimeNotes)
     ? preview.runtimeNotes.map((note) => trimString(note)).filter(Boolean)
     : [],
+  deliveryMode: trimString(preview.deliveryMode),
+  fallbackUsed: Boolean(preview.fallbackUsed),
+  providerDelivered: Boolean(preview.providerDelivered),
+  providerCapability: trimString(preview.providerCapability),
+  providerBlockingReason: trimString(preview.providerBlockingReason),
+  reasonCode: trimString(preview.reasonCode),
+  reasonMessage: trimString(preview.reasonMessage),
 });
 const buildTestSendContract = (result = {}) => ({
   sent: Boolean(result.sent),
@@ -166,6 +174,12 @@ const buildTestSendContract = (result = {}) => ({
   messageId: trimString(result.messageId),
   template: result.template || null,
   notes: Array.isArray(result.notes) ? result.notes.map((note) => trimString(note)).filter(Boolean) : [],
+  deliveryMode: trimString(result.deliveryMode),
+  providerDelivered: Boolean(result.providerDelivered),
+  providerCapability: trimString(result.providerCapability),
+  providerBlockingReason: trimString(result.providerBlockingReason),
+  reasonCode: trimString(result.reasonCode),
+  reasonMessage: trimString(result.reasonMessage),
 });
 const buildHistoryContract = (history = {}) => ({
   items: Array.isArray(history.items)
@@ -188,11 +202,13 @@ const buildHistoryContract = (history = {}) => ({
   },
 });
 const buildStructuredErrorPayload = (error, fallbackMessage) => ({
+  success: false,
   message: error.message || fallbackMessage,
   ...(error.code ? { code: trimString(error.code) } : {}),
   ...(error.contentMode ? { contentMode: trimString(error.contentMode) } : {}),
   ...(error.field ? { field: trimString(error.field) } : {}),
   ...(error.details && typeof error.details === "object" ? { details: error.details } : {}),
+  ...(error.wallet && typeof error.wallet === "object" ? { wallet: error.wallet } : {}),
 });
 const escapeCsvValue = (value) => {
   const stringValue = String(value ?? "");
@@ -585,7 +601,38 @@ const getWhatsAppQuickReplies = async (req, res) => {
 const getWhatsAppBasicAutomations = async (_req, res) => {
   try {
     const settings = await getBasicAutomationSettings();
-    return res.json(buildLegacyCompatibleResponse(settings));
+    const capabilityTypes = ["welcome", "outOfOffice", "delayedResponse"];
+    const capabilityEntries = await Promise.all(
+      capabilityTypes.map(async (type) => {
+        try {
+          const preview = await previewBasicAutomation({ type });
+          return [type, {
+            deliveryMode: trimString(preview.deliveryMode),
+            fallbackUsed: Boolean(preview.fallbackUsed),
+            providerDelivered: Boolean(preview.providerDelivered),
+            providerCapability: trimString(preview.providerCapability),
+            providerBlockingReason: trimString(preview.providerBlockingReason),
+            reasonCode: trimString(preview.reasonCode),
+            reasonMessage: trimString(preview.reasonMessage),
+          }];
+        } catch (error) {
+          return [type, {
+            deliveryMode: "saved_but_not_runtime_connected",
+            fallbackUsed: false,
+            providerDelivered: false,
+            providerCapability: "unknown",
+            providerBlockingReason: error.message || "Failed to resolve automation capability",
+            reasonCode: trimString(error.code || "AUTOMATION_CAPABILITY_UNAVAILABLE"),
+            reasonMessage: error.message || "Failed to resolve automation capability",
+          }];
+        }
+      })
+    );
+
+    return res.json(buildLegacyCompatibleResponse({
+      ...settings,
+      deliveryCapabilities: Object.fromEntries(capabilityEntries),
+    }));
   } catch (error) {
     console.error("Failed to fetch WhatsApp basic automations:", error);
     return res.status(error.status || 500).json({ message: error.message || "Failed to fetch basic automations" });
@@ -760,6 +807,20 @@ const deleteWhatsAppCampaignRecord = async (req, res) => {
   } catch (error) {
     console.error("Failed to delete WhatsApp campaign:", error);
     return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to delete WhatsApp campaign"));
+  }
+};
+
+const duplicateWhatsAppCampaignRecord = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid WhatsApp campaign id" });
+    }
+
+    const duplicated = await duplicateWhatsAppCampaign(req.params.id, getAuthenticatedActor(req)?._id || null);
+    return res.status(201).json({ success: true, data: duplicated });
+  } catch (error) {
+    console.error("Failed to duplicate WhatsApp campaign:", error);
+    return res.status(error.status || 501).json(buildStructuredErrorPayload(error, "Failed to duplicate WhatsApp campaign"));
   }
 };
 
@@ -1697,7 +1758,7 @@ const sendOutgoingMessage = async (req, res) => {
       return res.status(400).json({ message: `attachment is required for ${type} messages` });
     }
 
-    const { payload, response } = await sendMessage({
+    const { payload, response, wallet } = await sendMessage({
       to: contact.phone,
       type,
       text,
@@ -1732,12 +1793,23 @@ const sendOutgoingMessage = async (req, res) => {
     return res.status(201).json({
       success: true,
       data: savedMessage,
+      messageId: trimString(response?.messages?.[0]?.id || savedMessage?.externalMessageId || ""),
       conversation: conversationData,
       response,
+      ...(type === "template"
+        ? {
+            wallet: wallet || null,
+            reservationId: trimString(wallet?.reservationId || ""),
+            reservedAmount: Number(wallet?.reservedAmount || 0),
+            deductedAmount: Number(wallet?.deductedAmount || 0),
+            currency: trimString(wallet?.currency || ""),
+            templateCategory: trimString(wallet?.templateCategory || ""),
+          }
+        : {}),
     });
   } catch (error) {
     console.error("Failed to send WhatsApp message:", error);
-    return res.status(error.status || 500).json({ message: error.message || "Failed to send WhatsApp message" });
+    return res.status(error.status || 500).json(buildStructuredErrorPayload(error, "Failed to send WhatsApp message"));
   }
 };
 
@@ -1763,6 +1835,7 @@ module.exports = {
   resumeWhatsAppCampaignRecord,
   cancelWhatsAppCampaignRecord,
   deleteWhatsAppCampaignRecord,
+  duplicateWhatsAppCampaignRecord,
   getWhatsAppBasicAutomationForms,
   getWhatsAppBasicAutomationInteractiveLists,
   getWhatsAppBasicAutomationProductCollections,

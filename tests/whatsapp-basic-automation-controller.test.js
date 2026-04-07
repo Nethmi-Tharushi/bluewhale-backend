@@ -340,7 +340,45 @@ module.exports = async () => {
   await controller.getWhatsAppBasicAutomations({}, getRes);
   assert.equal(getRes.statusCode, 200);
   assert.equal(getRes.body.success, true);
-  assert.deepEqual(getRes.body.data, settings);
+  assert.deepEqual(
+    {
+      ...getRes.body.data,
+      deliveryCapabilities: undefined,
+    },
+    {
+      ...settings,
+      deliveryCapabilities: undefined,
+    }
+  );
+  assert.deepEqual(getRes.body.data.deliveryCapabilities, {
+    welcome: {
+      deliveryMode: "",
+      fallbackUsed: false,
+      providerDelivered: false,
+      providerCapability: "",
+      providerBlockingReason: "",
+      reasonCode: "",
+      reasonMessage: "",
+    },
+    outOfOffice: {
+      deliveryMode: "",
+      fallbackUsed: false,
+      providerDelivered: false,
+      providerCapability: "",
+      providerBlockingReason: "",
+      reasonCode: "",
+      reasonMessage: "",
+    },
+    delayedResponse: {
+      deliveryMode: "",
+      fallbackUsed: false,
+      providerDelivered: false,
+      providerCapability: "",
+      providerBlockingReason: "",
+      reasonCode: "",
+      reasonMessage: "",
+    },
+  });
   assert.deepEqual(getRes.body.workingHours, settings.workingHours);
   assert.deepEqual(getRes.body.automations.welcome, settings.automations.welcome);
 
