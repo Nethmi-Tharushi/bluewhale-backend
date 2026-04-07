@@ -1,6 +1,12 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const AdminUser = require('../models/AdminUser');
+const {
+  getWalletSummary,
+  listWalletTransactions,
+  topUpWallet,
+  updateWalletConfig,
+} = require("../services/whatsappWalletService");
 
 function getClientIp(req) {
   const xfwd = req.headers['x-forwarded-for'];
@@ -22,6 +28,8 @@ function generateApiKey() {
   for (let i = 0; i < 32; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
 }
+
+const canManageWallet = (admin) => ["MainAdmin", "SalesAdmin"].includes(String(admin?.role || ""));
 
 // REGISTER ADMIN USER
 exports.registerAdmin = async (req, res) => {
@@ -159,7 +167,8 @@ exports.getMyAdminProfile = async (req, res) => {
     if (touched) await admin.save();
 
     const sanitized = await AdminUser.findById(adminId).select('-password');
-    res.json({ success: true, admin: sanitized });
+    const wallet = await getWalletSummary();
+    res.json({ success: true, admin: sanitized, wallet });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -270,5 +279,75 @@ exports.getMyAuditLogs = async (req, res) => {
     res.json({ success: true, logs });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/admins/me/wallet
+exports.getMyWallet = async (req, res) => {
+  try {
+    const wallet = await getWalletSummary();
+    const limit = Math.min(parseInt(req.query.limit || "20", 10) || 20, 100);
+    const transactions = await listWalletTransactions({ limit });
+    res.json({ success: true, wallet, transactions });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message });
+  }
+};
+
+// POST /api/admins/me/wallet/top-up
+exports.topUpMyWallet = async (req, res) => {
+  try {
+    if (!canManageWallet(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only MainAdmin or SalesAdmin can top up the wallet" });
+    }
+
+    const amount = req.body?.amount;
+    const note = String(req.body?.note || "").trim();
+    const wallet = await topUpWallet({
+      amount,
+      actorId: req.admin?._id || null,
+      note,
+      reference: "Manual CRM top up",
+      metadata: {
+        source: "crm_wallet_top_up",
+      },
+    });
+
+    res.json({ success: true, wallet });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message });
+  }
+};
+
+// GET /api/admins/me/wallet/transactions
+exports.getMyWalletTransactions = async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || "20", 10) || 20, 100);
+    const transactions = await listWalletTransactions({ limit });
+    res.json({ success: true, transactions });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message });
+  }
+};
+
+// PUT /api/admins/me/wallet
+exports.updateMyWallet = async (req, res) => {
+  try {
+    if (!canManageWallet(req.admin)) {
+      return res.status(403).json({ message: "Access denied: only MainAdmin or SalesAdmin can manage wallet pricing" });
+    }
+
+    const wallet = await updateWalletConfig({
+      templateChargeMinor: req.body?.templateChargeMinor,
+      templateChargeByCategory: req.body?.templateChargeByCategory,
+      lowBalanceThresholdMinor: req.body?.lowBalanceThresholdMinor,
+      currency: req.body?.currency,
+      active: req.body?.active,
+      actorId: req.admin?._id || null,
+    });
+
+    res.json({ success: true, wallet });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message });
   }
 };

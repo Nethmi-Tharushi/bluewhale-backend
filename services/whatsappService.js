@@ -2,6 +2,13 @@ const axios = require("axios");
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 const cloudinary = require("../config/cloudinary");
 const streamifier = require("streamifier");
+const {
+  getWalletSummary,
+  reserveWalletAmount,
+  commitWalletReservation,
+  releaseWalletReservation,
+  resolveTemplateChargeMinor,
+} = require("./whatsappWalletService");
 
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 const FLOW_GRAPH_API_VERSION = "v19.0";
@@ -599,12 +606,42 @@ const cacheInboundMedia = async ({ mediaId, mimeType = "", filename = "" }) => {
 const sendMessage = async ({ to, type = "text", text, template, media, interactive, context = {} }) => {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  let walletReservation = null;
 
   if (!accessToken || !phoneNumberId) {
     throw new Error("Missing WhatsApp Cloud API credentials in environment variables");
   }
 
-  const payload = buildSendPayload({ to, type, text, template, media, interactive });
+  if (type === "template") {
+    const wallet = await getWalletSummary();
+    walletReservation = await reserveWalletAmount({
+      amountMinor: context?.walletChargeMinor !== undefined ? Number(context.walletChargeMinor) : resolveTemplateChargeMinor(template, wallet),
+      actorId: context?.actorId || null,
+      note: `Reserved for WhatsApp template send to ${normalizePhone(to)}`,
+      description: `Reserved for template send: ${String(template?.name || template?.id || "template").trim() || "template"}`,
+      metadata: {
+        to: normalizePhone(to),
+        type,
+        context,
+      },
+    });
+  }
+
+  let payload;
+  try {
+    payload = buildSendPayload({ to, type, text, template, media, interactive });
+  } catch (error) {
+    if (walletReservation?.reservationId) {
+      await releaseWalletReservation({
+        reservationId: walletReservation.reservationId,
+        note: `Template payload build failed: ${error.message}`,
+        metadata: { context },
+      }).catch((releaseError) => {
+        console.warn("[WhatsAppWallet] Failed to release reservation after payload build error:", releaseError.message);
+      });
+    }
+    throw error;
+  }
 
   const eventLog = await WhatsAppEventLog.create({
     direction: "outgoing",
@@ -620,11 +657,37 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
     const response = isFlowInteractivePayload(payload)
       ? await sendFlowGraphRequest({ payload, accessToken, phoneNumberId })
       : await sendGraphRequest({ payload, accessToken, phoneNumberId });
+    if (walletReservation?.reservationId) {
+      try {
+        await commitWalletReservation({
+          reservationId: walletReservation.reservationId,
+          note: `Template send completed for ${normalizePhone(to)}`,
+          metadata: {
+            context,
+            responseMessageId: response?.messages?.[0]?.id || "",
+          },
+        });
+      } catch (commitError) {
+        console.error("[WhatsAppWallet] Failed to commit template reservation:", commitError.message);
+      }
+    }
     eventLog.status = "processed";
     eventLog.payload = { ...eventLog.payload, response };
     await eventLog.save();
     return { payload, response };
   } catch (error) {
+    if (walletReservation?.reservationId) {
+      await releaseWalletReservation({
+        reservationId: walletReservation.reservationId,
+        note: `Template send failed: ${error.message}`,
+        metadata: {
+          context,
+          error: error.message,
+        },
+      }).catch((releaseError) => {
+        console.warn("[WhatsAppWallet] Failed to release reservation after send error:", releaseError.message);
+      });
+    }
     eventLog.status = "failed";
     eventLog.errorMessage = error.message;
     eventLog.payload = { ...eventLog.payload, errorPayload: error.payload || null };

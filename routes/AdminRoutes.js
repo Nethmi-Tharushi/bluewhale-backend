@@ -11,6 +11,10 @@ const {
   changeMyAdminPassword,
   regenerateMyApiKey,
   getMyAuditLogs,
+  getMyWallet,
+  topUpMyWallet,
+  getMyWalletTransactions,
+  updateMyWallet,
 } = require('../controllers/AdminAuthController');
 const {
   createAdminMeeting,
@@ -32,6 +36,10 @@ router.put('/me', protectAdmin, updateMyAdminProfile);
 router.put('/me/password', protectAdmin, changeMyAdminPassword);
 router.post('/me/api-key', protectAdmin, regenerateMyApiKey);
 router.get('/me/audit-logs', protectAdmin, getMyAuditLogs);
+router.get('/me/wallet', protectAdmin, getMyWallet);
+router.get('/me/wallet/transactions', protectAdmin, getMyWalletTransactions);
+router.put('/me/wallet', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), updateMyWallet);
+router.post('/me/wallet/top-up', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), topUpMyWallet);
 
 // PROTECTED ROUTES
 router.get('/admin-dashboard', protectAdmin, authorizeAdmin('MainAdmin'), (req, res) => {

@@ -1073,6 +1073,10 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
     replyActionFallbackUsed =
       ["whatsapp_form", "interactive_list", "product_collection"].includes(config.replyActionType) && deliveredType !== "interactive";
   } catch (error) {
+    if (Number(error?.status || 0) === 402 || String(error?.message || "").toLowerCase().includes("wallet balance is too low")) {
+      throw error;
+    }
+
     if (["template", "interactive"].includes(deliveredType) && plan.text) {
       notes.push(`${deliveredType === "template" ? "Template" : replyActionLabel} send failed: ${error.message}`);
       notes.push(
