@@ -1329,6 +1329,7 @@ const prepareTemplateMessage = async ({ template, media = null } = {}) => {
 
   return {
     name: templateName,
+    category: trimString(localTemplate?.category || template?.category || "").toUpperCase(),
     languageCode,
     headerFormat,
     defaultHeaderMedia: resolvedDefaultMedia,
