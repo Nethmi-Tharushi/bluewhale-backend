@@ -98,6 +98,12 @@ const loadController = (campaignServiceOverrides = {}) =>
       resumeWhatsAppCampaign: async () => ({}),
       cancelWhatsAppCampaign: async () => ({}),
       deleteWhatsAppCampaign: async () => ({ success: true }),
+      duplicateWhatsAppCampaign: async () => {
+        const error = new Error("Campaign duplication is not supported by this backend");
+        error.status = 501;
+        error.code = "UNSUPPORTED_CAMPAIGN_DUPLICATE";
+        throw error;
+      },
       ...campaignServiceOverrides,
     },
     "../services/whatsappBasicAutomationService": {
@@ -365,6 +371,17 @@ module.exports = async () => {
   assert.equal(deleteRes.statusCode, 200);
   assert.equal(deleteRes.body.success, true);
   assert.match(deleteRes.body.message, /deleted successfully/i);
+
+  const duplicateRes = createResponse();
+  await controller.duplicateWhatsAppCampaignRecord(
+    {
+      params: { id: campaign.id },
+      admin: { _id: "admin_1" },
+    },
+    duplicateRes
+  );
+  assert.equal(duplicateRes.statusCode, 501);
+  assert.equal(duplicateRes.body.code, "UNSUPPORTED_CAMPAIGN_DUPLICATE");
 
   const errorController = loadController({
     launchWhatsAppCampaign: async () => {

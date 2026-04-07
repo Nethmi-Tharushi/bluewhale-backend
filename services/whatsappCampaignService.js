@@ -4,6 +4,7 @@ const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppCampaignJob = require("../models/WhatsAppCampaignJob");
 const { getTemplateById, prepareTemplateMessage } = require("./whatsappTemplateService");
 const { normalizePhone, sendMessage } = require("./whatsappService");
+const { estimateTemplateReservation, getWalletSummary, resolveTemplateChargeMinor } = require("./whatsappWalletService");
 const {
   findContactConversationByPhone,
   assertOpenCustomerCareWindow,
@@ -61,6 +62,13 @@ const DEFAULT_STATS = Object.freeze({
   clicked: 0,
   failed: 0,
 });
+const CAMPAIGN_ACTION_STATUS_RULES = Object.freeze({
+  launch: ["Draft", "Scheduled"],
+  pause: ["Scheduled", "Running"],
+  resume: ["Paused"],
+  cancel: ["Scheduled", "Running", "Paused"],
+  delete: ["Draft", "Failed", "Cancelled"],
+});
 
 const trimString = (value) => String(value || "").trim();
 const hasOwnProperty = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
@@ -96,6 +104,47 @@ const toNonNegativeNumber = (value, fallback = 0) => {
     return fallback;
   }
   return parsed;
+};
+
+const buildWalletEstimatePayload = async (campaign = {}, eligibleAudienceCount = 0) => {
+  if (trimString(campaign.contentMode || "compose") !== "template" || eligibleAudienceCount <= 0) {
+    return null;
+  }
+
+  const template = trimString(campaign.templateId)
+    ? await getTemplateById(campaign.templateId, { includeSyncFallback: false })
+    : null;
+  const walletEstimate = await estimateTemplateReservation({
+    template: {
+      id: trimString(campaign.templateId),
+      name: trimString(campaign.templateName),
+      category: trimString(template?.category),
+    },
+    recipientCount: eligibleAudienceCount,
+  });
+
+  return {
+    estimatedRecipients: walletEstimate.recipientCount,
+    estimatedReserveAmountMinor: walletEstimate.estimatedReserveAmountMinor,
+    estimatedReserveAmount: walletEstimate.estimatedReserveAmount,
+    perRecipientAmountMinor: walletEstimate.perRecipientAmountMinor,
+    perRecipientAmount: walletEstimate.perRecipientAmount,
+    walletBalanceMinor: Number(walletEstimate.wallet?.balanceMinor || 0),
+    walletBalance: Number(walletEstimate.wallet?.balance || 0),
+    walletReservedMinor: Number(walletEstimate.wallet?.reservedMinor || 0),
+    walletReserved: Number(walletEstimate.wallet?.reserved || 0),
+    walletAvailableMinor: Number(walletEstimate.wallet?.availableMinor || 0),
+    walletAvailable: Number(walletEstimate.wallet?.available || 0),
+    walletCurrency: walletEstimate.wallet?.currency || "USD",
+    walletActive: Boolean(walletEstimate.wallet?.isActive),
+    lowBalanceThresholdMinor: Number(walletEstimate.wallet?.lowBalanceThresholdMinor || 0),
+    lowBalanceThreshold: Number(walletEstimate.wallet?.lowBalanceThreshold || 0),
+    templateCategory: walletEstimate.templateCategory || trimString(template?.category || "").toUpperCase(),
+    canProceed: Boolean(walletEstimate.canProceed),
+    blockingReasonCode: trimString(walletEstimate.blockingReasonCode),
+    blockingReasonMessage: trimString(walletEstimate.blockingReasonMessage),
+    reservationMode: "campaign_launch_estimate",
+  };
 };
 
 const normalizePhoneOrNull = (value) => {
@@ -1036,12 +1085,14 @@ const withEligibilityMetadata = async (campaignDoc) => {
   }
 
   const eligibility = await evaluateCampaignAudience(campaignDoc);
+  const walletEstimate = await buildWalletEstimatePayload(campaignDoc, Number(eligibility?.eligibleAudienceCount || 0));
   return {
     ...normalized,
     eligibleAudienceCount: Number(eligibility?.eligibleAudienceCount || 0),
     optedOutExcludedCount: Number(eligibility?.optedOutExcludedCount || 0),
     inactiveExcludedCount: Number(eligibility?.inactiveExcludedCount || 0),
     invalidManualPhoneCount: Number(eligibility?.invalidManualPhoneCount || 0),
+    ...(walletEstimate ? { walletEstimate } : {}),
   };
 };
 
@@ -1200,6 +1251,11 @@ const testSendWhatsAppCampaign = async (id, payload = {}) => {
       sent: true,
       modeUsed: "template",
       messageId: sendResult?.response?.messages?.[0]?.id || "",
+      reservationId: trimString(sendResult?.wallet?.reservationId || ""),
+      reservedAmount: Number(sendResult?.wallet?.reservedAmount || 0),
+      deductedAmount: Number(sendResult?.wallet?.deductedAmount || 0),
+      currency: trimString(sendResult?.wallet?.currency || ""),
+      templateCategory: trimString(sendResult?.wallet?.templateCategory || normalizedCampaign.templateVariables?.category || ""),
     };
   }
 
@@ -1247,17 +1303,29 @@ const testSendWhatsAppCampaign = async (id, payload = {}) => {
 
 const ensureLaunchAllowed = async (campaign) => {
   if (campaign.status === "Cancelled") {
-    throw createHttpError("Cancelled campaigns cannot be launched");
+    throw createHttpError("Cancelled campaigns cannot be launched", 400, {
+      code: "CAMPAIGN_ALREADY_CANCELLED",
+      currentStatus: trimString(campaign.status),
+      allowedStatuses: CAMPAIGN_ACTION_STATUS_RULES.launch,
+    });
   }
 
   if (campaign.status === "Sent") {
-    throw createHttpError("Sent campaigns cannot be launched again");
+    throw createHttpError("Sent campaigns cannot be launched again", 400, {
+      code: "INVALID_CAMPAIGN_STATUS_TRANSITION",
+      currentStatus: trimString(campaign.status),
+      allowedStatuses: CAMPAIGN_ACTION_STATUS_RULES.launch,
+      action: "launch",
+    });
   }
 
   if (campaign.status === "Running") {
     const jobCount = await WhatsAppCampaignJob.countDocuments({ campaignId: campaign._id });
     if (jobCount > 0) {
-      throw createHttpError("Campaign is already running");
+      throw createHttpError("Campaign is already running", 400, {
+        code: "CAMPAIGN_ALREADY_RUNNING",
+        currentStatus: trimString(campaign.status),
+      });
     }
 
     const fallbackStatus = defaultStatusForScheduleType(trimString(campaign.scheduleType || "draft"));
@@ -1268,14 +1336,90 @@ const ensureLaunchAllowed = async (campaign) => {
   if (campaign.contentMode === "template" && campaign.stopIfTemplateMissing) {
     const template = await getTemplateById(campaign.templateId, { includeSyncFallback: false });
     if (!template) {
-      throw createHttpError("Selected template could not be found for this campaign");
+      throw createHttpError("Selected template could not be found for this campaign", 400, {
+        code: "INVALID_TEMPLATE",
+      });
     }
   }
+};
+
+const ensureCampaignWalletCanLaunch = async (campaign) => {
+  if (trimString(campaign.contentMode || "compose") !== "template") {
+    return null;
+  }
+
+  const { evaluateCampaignAudience } = runtimePrivate;
+  if (typeof evaluateCampaignAudience !== "function") {
+    return null;
+  }
+
+  const eligibility = await evaluateCampaignAudience(campaign);
+  const eligibleAudienceCount = Number(eligibility?.eligibleAudienceCount || 0);
+  if (eligibleAudienceCount <= 0) {
+    return null;
+  }
+
+  const template = trimString(campaign.templateId)
+    ? await getTemplateById(campaign.templateId, { includeSyncFallback: false })
+    : null;
+  const wallet = await getWalletSummary();
+  const templateCategory = trimString(template?.category || "").toUpperCase();
+  const requiredAmountMinor = resolveTemplateChargeMinor({
+    id: trimString(campaign.templateId),
+    name: trimString(campaign.templateName),
+    category: templateCategory,
+  }, wallet) * eligibleAudienceCount;
+
+  if (!wallet.isActive) {
+    throw createHttpError("WhatsApp wallet is currently inactive", 403, {
+      code: "WALLET_INACTIVE",
+      contentMode: "template",
+      details: {
+        eligibleAudienceCount,
+        requiredAmountMinor,
+        requiredAmount: Number((requiredAmountMinor / 100).toFixed(2)),
+        availableAmountMinor: Number(wallet.availableMinor || 0),
+        availableAmount: Number(wallet.available || 0),
+        reservedAmountMinor: Number(wallet.reservedMinor || 0),
+        reservedAmount: Number(wallet.reserved || 0),
+        walletCurrency: wallet.currency,
+        templateCategory,
+        reservationMode: "campaign_launch",
+      },
+    });
+  }
+
+  if (Number(wallet.availableMinor || 0) < requiredAmountMinor) {
+    throw createHttpError("WhatsApp wallet balance is too low for template messages", 402, {
+      code: "INSUFFICIENT_WALLET_BALANCE",
+      contentMode: "template",
+      details: {
+        eligibleAudienceCount,
+        requiredAmountMinor,
+        requiredAmount: Number((requiredAmountMinor / 100).toFixed(2)),
+        availableAmountMinor: Number(wallet.availableMinor || 0),
+        availableAmount: Number(wallet.available || 0),
+        reservedAmountMinor: Number(wallet.reservedMinor || 0),
+        reservedAmount: Number(wallet.reserved || 0),
+        walletCurrency: wallet.currency,
+        templateCategory,
+        reservationMode: "campaign_launch",
+      },
+    });
+  }
+
+  return {
+    eligibleAudienceCount,
+    requiredAmountMinor,
+    walletCurrency: wallet.currency,
+    templateCategory,
+  };
 };
 
 const launchWhatsAppCampaign = async (id, actorId = null) => {
   const campaign = await getCampaignDocumentOrThrow(id);
   await ensureLaunchAllowed(campaign);
+  await ensureCampaignWalletCanLaunch(campaign);
   await launchCampaign({ campaignId: campaign._id, actorId });
 
   const updated = await fetchCampaignById(campaign._id);
@@ -1284,8 +1428,13 @@ const launchWhatsAppCampaign = async (id, actorId = null) => {
 
 const pauseWhatsAppCampaign = async (id, actorId = null) => {
   const campaign = await getCampaignDocumentOrThrow(id);
-  if (!["Scheduled", "Running"].includes(campaign.status)) {
-    throw createHttpError("Only Scheduled or Running campaigns can be paused");
+  if (!CAMPAIGN_ACTION_STATUS_RULES.pause.includes(campaign.status)) {
+    throw createHttpError("Only Scheduled or Running campaigns can be paused", 400, {
+      code: "INVALID_CAMPAIGN_STATUS_TRANSITION",
+      action: "pause",
+      currentStatus: trimString(campaign.status),
+      allowedStatuses: CAMPAIGN_ACTION_STATUS_RULES.pause,
+    });
   }
 
   campaign.status = "Paused";
@@ -1303,8 +1452,13 @@ const pauseWhatsAppCampaign = async (id, actorId = null) => {
 
 const resumeWhatsAppCampaign = async (id, actorId = null) => {
   const campaign = await getCampaignDocumentOrThrow(id);
-  if (campaign.status !== "Paused") {
-    throw createHttpError("Only Paused campaigns can be resumed");
+  if (!CAMPAIGN_ACTION_STATUS_RULES.resume.includes(campaign.status)) {
+    throw createHttpError("Only Paused campaigns can be resumed", 400, {
+      code: "INVALID_CAMPAIGN_STATUS_TRANSITION",
+      action: "resume",
+      currentStatus: trimString(campaign.status),
+      allowedStatuses: CAMPAIGN_ACTION_STATUS_RULES.resume,
+    });
   }
 
   campaign.status = "Running";
@@ -1322,8 +1476,13 @@ const resumeWhatsAppCampaign = async (id, actorId = null) => {
 
 const cancelWhatsAppCampaign = async (id, actorId = null) => {
   const campaign = await getCampaignDocumentOrThrow(id);
-  if (!["Scheduled", "Running", "Paused"].includes(campaign.status)) {
-    throw createHttpError("Only Scheduled, Running, or Paused campaigns can be cancelled");
+  if (!CAMPAIGN_ACTION_STATUS_RULES.cancel.includes(campaign.status)) {
+    throw createHttpError("Only Scheduled, Running, or Paused campaigns can be cancelled", 400, {
+      code: "INVALID_CAMPAIGN_STATUS_TRANSITION",
+      action: "cancel",
+      currentStatus: trimString(campaign.status),
+      allowedStatuses: CAMPAIGN_ACTION_STATUS_RULES.cancel,
+    });
   }
 
   campaign.status = "Cancelled";
@@ -1340,6 +1499,15 @@ const cancelWhatsAppCampaign = async (id, actorId = null) => {
 };
 
 const deleteWhatsAppCampaign = async (id) => {
+  const campaign = await getCampaignDocumentOrThrow(id);
+  if (!CAMPAIGN_ACTION_STATUS_RULES.delete.includes(campaign.status)) {
+    throw createHttpError("Only Draft, Failed, or Cancelled campaigns can be deleted", 400, {
+      code: "INVALID_CAMPAIGN_STATUS_TRANSITION",
+      action: "delete",
+      currentStatus: trimString(campaign.status),
+      allowedStatuses: CAMPAIGN_ACTION_STATUS_RULES.delete,
+    });
+  }
   await deleteCampaignJobs(id);
   const deleted = await WhatsAppCampaign.findByIdAndDelete(id);
   if (!deleted) {
@@ -1350,6 +1518,12 @@ const deleteWhatsAppCampaign = async (id) => {
     id: trimString(deleted._id || deleted.id),
     success: true,
   };
+};
+
+const duplicateWhatsAppCampaign = async () => {
+  throw createHttpError("Campaign duplication is not supported by this backend", 501, {
+    code: "UNSUPPORTED_CAMPAIGN_DUPLICATE",
+  });
 };
 
 module.exports = {
@@ -1369,6 +1543,7 @@ module.exports = {
   resumeWhatsAppCampaign,
   cancelWhatsAppCampaign,
   deleteWhatsAppCampaign,
+  duplicateWhatsAppCampaign,
   listWhatsAppCampaignAudienceResources,
   listWhatsAppCampaignAudienceContacts,
   __private: {
@@ -1382,5 +1557,6 @@ module.exports = {
     buildAudienceSegments,
     inferAudienceOptIn,
     resolveAudienceSourceLabel,
+    buildWalletEstimatePayload,
   },
 };

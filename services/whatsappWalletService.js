@@ -6,6 +6,13 @@ const WALLET_SINGLETON_KEY = "default";
 const DEFAULT_TEMPLATE_CATEGORIES = ["AUTHENTICATION", "MARKETING", "UTILITY"];
 
 const trimString = (value) => String(value || "").trim();
+const createWalletError = (message, status = 400, code = "WALLET_ERROR", details = {}) => {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  error.details = details;
+  return error;
+};
 
 const toMinor = (amount) => {
   const numeric = Number(amount);
@@ -123,6 +130,8 @@ const buildWalletSummary = (wallet) => {
   const balanceMinor = Number(normalized.balanceMinor || 0);
   const reservedMinor = Number(normalized.reservedMinor || 0);
   const availableMinor = Math.max(0, balanceMinor - reservedMinor);
+  const lowBalanceThresholdMinor = Number(normalized.lowBalanceThresholdMinor || 0);
+  const isActive = normalized.active !== false;
 
   return {
     id: normalized._id ? String(normalized._id) : "",
@@ -137,10 +146,42 @@ const buildWalletSummary = (wallet) => {
     templateCharge: toMajor(normalized.templateChargeMinor || getDefaultTemplateChargeMinor()),
     templateChargeByCategory: formatTemplateChargeByCategory(normalized.templateChargeByCategory || {}),
     templateChargeByCategoryMinor: sanitizeStoredTemplateChargeByCategory(normalized.templateChargeByCategory || {}),
-    lowBalanceThresholdMinor: Number(normalized.lowBalanceThresholdMinor || 0),
-    active: normalized.active !== false,
+    lowBalanceThresholdMinor,
+    lowBalanceThreshold: toMajor(lowBalanceThresholdMinor),
+    active: isActive,
+    isActive,
+    belowLowBalanceThreshold: availableMinor <= lowBalanceThresholdMinor,
     updatedAt: normalized.updatedAt || null,
     createdAt: normalized.createdAt || null,
+  };
+};
+
+const estimateTemplateReservation = async ({ template = {}, recipientCount = 1 } = {}) => {
+  const wallet = await getWalletSummary();
+  const safeRecipientCount = Math.max(0, Math.round(Number(recipientCount) || 0));
+  const perRecipientAmountMinor = resolveTemplateChargeMinor(template, wallet);
+  const estimatedReserveAmountMinor = perRecipientAmountMinor * safeRecipientCount;
+
+  return {
+    wallet,
+    recipientCount: safeRecipientCount,
+    templateCategory: trimString(template?.category || template?.templateCategory || template?.messageCategory || "").toUpperCase(),
+    perRecipientAmountMinor,
+    perRecipientAmount: toMajor(perRecipientAmountMinor),
+    estimatedReserveAmountMinor,
+    estimatedReserveAmount: toMajor(estimatedReserveAmountMinor),
+    canProceed: wallet.isActive && Number(wallet.availableMinor || 0) >= estimatedReserveAmountMinor,
+    blockingReasonCode: !wallet.isActive
+      ? "WALLET_INACTIVE"
+      : Number(wallet.availableMinor || 0) < estimatedReserveAmountMinor
+        ? "INSUFFICIENT_WALLET_BALANCE"
+        : "",
+    blockingReasonMessage: !wallet.isActive
+      ? "WhatsApp wallet is currently inactive"
+      : Number(wallet.availableMinor || 0) < estimatedReserveAmountMinor
+        ? "WhatsApp wallet balance is too low for template messages"
+        : "",
+    reservationMode: "template_send",
   };
 };
 
@@ -208,9 +249,7 @@ const recordTransaction = async ({
 const topUpWallet = async ({ amount, actorId = null, note = "", reference = "", metadata = {} } = {}) => {
   const amountMinor = toMinor(amount);
   if (amountMinor <= 0) {
-    const error = new Error("Top up amount must be greater than 0");
-    error.status = 400;
-    throw error;
+    throw createWalletError("Top up amount must be greater than 0", 400, "INVALID_WALLET_TOP_UP_AMOUNT");
   }
 
   const wallet = await getOrCreateWallet();
@@ -258,7 +297,7 @@ const updateWalletConfig = async ({
 
   if (lowBalanceThresholdMinor !== undefined) {
     const normalizedThreshold = toMinor(lowBalanceThresholdMinor);
-    if (normalizedThreshold >= 0) {
+  if (normalizedThreshold >= 0) {
       wallet.lowBalanceThresholdMinor = normalizedThreshold;
       touched = true;
     }
@@ -293,16 +332,20 @@ const reserveWalletAmount = async ({
   const normalizedAmountMinor =
     amountMinor !== undefined ? Math.max(0, Math.round(Number(amountMinor) || 0)) : toMinor(amount);
   if (normalizedAmountMinor <= 0) {
-    const error = new Error("Reservation amount must be greater than 0");
-    error.status = 400;
-    throw error;
+    throw createWalletError("Reservation amount must be greater than 0", 400, "INVALID_WALLET_RESERVE_AMOUNT");
   }
 
   const wallet = await getOrCreateWallet();
   if (wallet.active === false) {
-    const error = new Error("WhatsApp wallet is currently inactive");
-    error.status = 403;
-    throw error;
+    const summary = buildWalletSummary(wallet);
+    throw createWalletError("WhatsApp wallet is currently inactive", 403, "WALLET_INACTIVE", {
+      requiredAmountMinor: normalizedAmountMinor,
+      requiredAmount: toMajor(normalizedAmountMinor),
+      availableAmountMinor: Number(summary.availableMinor || 0),
+      availableAmount: Number(summary.available || 0),
+      walletCurrency: summary.currency,
+      reservationMode: "template_send",
+    });
   }
 
   const updated = await WhatsAppWallet.findOneAndUpdate(
@@ -324,9 +367,15 @@ const reserveWalletAmount = async ({
   );
 
   if (!updated) {
-    const error = new Error("WhatsApp wallet balance is too low for template messages");
-    error.status = 402;
-    throw error;
+    const summary = buildWalletSummary(wallet);
+    throw createWalletError("WhatsApp wallet balance is too low for template messages", 402, "INSUFFICIENT_WALLET_BALANCE", {
+      requiredAmountMinor: normalizedAmountMinor,
+      requiredAmount: toMajor(normalizedAmountMinor),
+      availableAmountMinor: Number(summary.availableMinor || 0),
+      availableAmount: Number(summary.available || 0),
+      walletCurrency: summary.currency,
+      reservationMode: "template_send",
+    });
   }
 
   const reservationId = randomUUID();
@@ -349,6 +398,7 @@ const reserveWalletAmount = async ({
     amountMinor: normalizedAmountMinor,
     amount: toMajor(normalizedAmountMinor),
     wallet: buildWalletSummary(updated),
+    reservationMode: "template_send",
     transactionId: String(tx._id),
   };
 };
@@ -457,6 +507,7 @@ module.exports = {
   getWalletSummary,
   listWalletTransactions,
   topUpWallet,
+  estimateTemplateReservation,
   reserveWalletAmount,
   commitWalletReservation,
   releaseWalletReservation,
