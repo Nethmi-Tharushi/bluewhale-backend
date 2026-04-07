@@ -116,6 +116,10 @@ const whatsAppCampaignSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    manualPhones: {
+      type: [String],
+      default: [],
+    },
     templateId: {
       type: String,
       default: "",

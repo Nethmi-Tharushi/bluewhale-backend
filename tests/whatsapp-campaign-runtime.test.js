@@ -166,6 +166,49 @@ const createModelMocks = () => {
       createdAt: "2026-04-03T08:20:00.000Z",
       updatedAt: "2026-04-03T08:20:00.000Z",
     },
+    {
+      _id: "campaign_4",
+      name: "Filtered Campaign",
+      status: "Draft",
+      audienceType: "manual",
+      manualContactIds: [
+        "507f1f77bcf86cd799439011",
+        "507f1f77bcf86cd799439013",
+        "507f1f77bcf86cd799439014",
+      ],
+      segmentIds: [],
+      channel: "WhatsApp",
+      contentMode: "compose",
+      bodyText: "Only eligible contacts should be queued",
+      scheduleType: "draft",
+      batchEnabled: false,
+      skipInactiveContacts: true,
+      stopIfTemplateMissing: false,
+      stats: { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 },
+      createdAt: "2026-04-03T08:25:00.000Z",
+      updatedAt: "2026-04-03T08:25:00.000Z",
+    },
+    {
+      _id: "campaign_5",
+      name: "Manual Phone Campaign",
+      status: "Draft",
+      audienceType: "manual",
+      manualContactIds: [],
+      manualPhones: ["+94770000099"],
+      segmentIds: [],
+      channel: "WhatsApp",
+      contentMode: "template",
+      templateId: "tpl_1",
+      templateName: "Approved Template",
+      bodyText: "",
+      scheduleType: "draft",
+      batchEnabled: false,
+      skipInactiveContacts: false,
+      stopIfTemplateMissing: false,
+      stats: { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 },
+      createdAt: "2026-04-03T08:30:00.000Z",
+      updatedAt: "2026-04-03T08:30:00.000Z",
+    },
   ];
 
   const contacts = [
@@ -189,6 +232,14 @@ const createModelMocks = () => {
       waId: "+94770000003",
       name: "Charlie",
       lastActivityAt: "2026-04-01T11:00:00.000Z",
+    },
+    {
+      _id: "507f1f77bcf86cd799439014",
+      phone: "+94770000004",
+      waId: "+94770000004",
+      name: "Dana",
+      profile: { whatsappOptIn: false },
+      lastActivityAt: "2026-04-02T12:00:00.000Z",
     },
   ];
 
@@ -216,6 +267,14 @@ const createModelMocks = () => {
       channel: "whatsapp",
       lastIncomingAt: "2020-04-01T08:00:00.000Z",
       automationState: { lastCustomerMessageAt: "2020-04-01T08:00:00.000Z" },
+    },
+    {
+      _id: "conversation_4",
+      contactId: "507f1f77bcf86cd799439014",
+      agentId: null,
+      channel: "whatsapp",
+      lastIncomingAt: new Date().toISOString(),
+      automationState: { lastCustomerMessageAt: new Date().toISOString() },
     },
   ];
   const jobs = [];
@@ -274,6 +333,27 @@ const createModelMocks = () => {
         contacts.filter((item) => matchesQuery(item, query)),
         sortSpec
       ).slice(0, limit || undefined));
+    },
+    async findOneAndUpdate(query = {}, update = {}, options = {}) {
+      const existing = contacts.find((item) => matchesQuery(item, query));
+      if (existing) {
+        if (update.$set) {
+          Object.assign(existing, deepClone(update.$set));
+        }
+        return deepClone(existing);
+      }
+
+      if (!options.upsert) {
+        return null;
+      }
+
+      const created = {
+        _id: `507f1f77bcf86cd7994390${String(contacts.length + 11).padStart(2, "0")}`,
+        ...(update.$setOnInsert ? deepClone(update.$setOnInsert) : {}),
+        ...(update.$set ? deepClone(update.$set) : {}),
+      };
+      contacts.push(created);
+      return deepClone(created);
     },
   };
 
@@ -414,6 +494,7 @@ module.exports = async () => {
       prepareTemplateMessage: async ({ template }) => template,
     },
     "./whatsappService": {
+      normalizePhone: (value) => String(value || "").replace(/[^\d+]/g, "").replace(/^00/, "+"),
       sendMessage: async (payload) => {
         sendCounter += 1;
         return {
@@ -428,6 +509,7 @@ module.exports = async () => {
       __private: {
         buildComposeCampaignText: (campaign) => String(campaign.bodyText || "").trim(),
         buildTemplateSendComponents: () => [],
+        inferAudienceOptIn: (contact) => contact?.profile?.whatsappOptIn !== false,
       },
     },
   });
@@ -517,4 +599,22 @@ module.exports = async () => {
   const expiredCampaign = stores.campaigns.find((item) => item._id === "campaign_3");
   assert.equal(expiredCampaign.status, "Failed");
   assert.equal(expiredCampaign.stats.failed, 1);
+
+  const filteredLaunch = await runtimeService.launchCampaign({ campaignId: "campaign_4", actorId: "admin_3" });
+  assert.equal(filteredLaunch.campaignId, "campaign_4");
+  assert.equal(filteredLaunch.audienceSize, 1);
+
+  const filteredJobs = stores.jobs.filter((job) => job.campaignId === "campaign_4");
+  assert.equal(filteredJobs.length, 1);
+  assert.equal(filteredJobs[0].contactId, "507f1f77bcf86cd799439011");
+
+  const manualPhoneLaunch = await runtimeService.launchCampaign({ campaignId: "campaign_5", actorId: "admin_4" });
+  assert.equal(manualPhoneLaunch.campaignId, "campaign_5");
+  assert.equal(manualPhoneLaunch.audienceSize, 1);
+
+  const manualPhoneJob = stores.jobs.find((job) => job.campaignId === "campaign_5");
+  assert.ok(manualPhoneJob);
+  assert.equal(manualPhoneJob.recipientPhone, "+94770000099");
+  const createdManualPhoneContact = stores.contacts.find((contact) => contact.phone === "+94770000099");
+  assert.ok(createdManualPhoneContact);
 };

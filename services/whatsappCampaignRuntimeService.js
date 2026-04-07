@@ -6,9 +6,12 @@ const {
   ensureConversation,
   saveOutgoingMessage,
 } = require("./whatsappCRMService");
-const { assertOpenCustomerCareWindow } = require("./whatsappCareWindowService");
+const {
+  assertOpenCustomerCareWindow,
+  hasOpenCustomerCareWindow,
+} = require("./whatsappCareWindowService");
 const { getTemplateById, prepareTemplateMessage } = require("./whatsappTemplateService");
-const { sendMessage } = require("./whatsappService");
+const { normalizePhone, sendMessage } = require("./whatsappService");
 
 let workerInterval = null;
 let workerInFlight = false;
@@ -19,9 +22,10 @@ const TERMINAL_JOB_STATUSES = new Set(["sent", "delivered", "read", "failed", "c
 
 const trimString = (value) => String(value || "").trim();
 
-const createHttpError = (message, status = 400) => {
+const createHttpError = (message, status = 400, extras = {}) => {
   const error = new Error(message);
   error.status = status;
+  Object.assign(error, extras);
   return error;
 };
 
@@ -60,13 +64,31 @@ const getCampaignHelpers = () => {
   return campaignService.__private || {};
 };
 
+const normalizePhoneOrNull = (value) => {
+  const normalized = normalizePhone(value);
+  const digits = normalized.replace(/[^\d]/g, "");
+
+  if (!normalized || digits.length < 8 || digits.length > 15) {
+    return null;
+  }
+
+  return normalized;
+};
+
 const dedupeContacts = (contacts = []) => {
   const seen = new Set();
   const deduped = [];
 
   for (const contactDoc of contacts) {
     const contact = toObject(contactDoc);
-    const dedupeKey = trimString(contact._id || contact.id || contact.phone || contact.waId).toLowerCase();
+    const normalizedPhone = normalizePhoneOrNull(contact.phone || contact.waId || contact.recipientPhone);
+    const dedupeKey = trimString(
+      normalizedPhone
+      || contact._id
+      || contact.id
+      || contact.phone
+      || contact.waId
+    ).toLowerCase();
     if (!dedupeKey || seen.has(dedupeKey)) {
       continue;
     }
@@ -78,26 +100,62 @@ const dedupeContacts = (contacts = []) => {
   return deduped.filter((contact) => trimString(contact.phone || contact.waId));
 };
 
-const resolveManualAudienceContacts = async (manualContactIds = []) => {
+const resolveManualAudienceContacts = async (manualContactIds = [], manualPhones = []) => {
   const tokens = Array.isArray(manualContactIds)
     ? manualContactIds.map((value) => trimString(value)).filter(Boolean)
     : [];
+  const directPhones = Array.isArray(manualPhones)
+    ? manualPhones.map((value) => normalizePhoneOrNull(value)).filter(Boolean)
+    : [];
 
-  if (!tokens.length) {
+  const phoneTokens = [];
+  const idTokens = [];
+
+  tokens.forEach((token) => {
+    const normalizedPhone = normalizePhoneOrNull(token);
+    if (normalizedPhone) {
+      phoneTokens.push(normalizedPhone);
+      return;
+    }
+
+    idTokens.push(token);
+  });
+
+  phoneTokens.push(...directPhones);
+  const uniquePhoneTokens = [...new Set(phoneTokens)];
+
+  if (!idTokens.length && !uniquePhoneTokens.length) {
     return [];
   }
 
-  const objectIdTokens = tokens.filter((value) => /^[a-fA-F0-9]{24}$/.test(value));
+  const objectIdTokens = idTokens.filter((value) => /^[a-fA-F0-9]{24}$/.test(value));
   const query = {
     $or: [
       objectIdTokens.length ? { _id: { $in: objectIdTokens } } : null,
-      { phone: { $in: tokens } },
-      { waId: { $in: tokens } },
+      uniquePhoneTokens.length ? { phone: { $in: uniquePhoneTokens } } : null,
+      uniquePhoneTokens.length ? { waId: { $in: uniquePhoneTokens } } : null,
     ].filter(Boolean),
   };
 
-  const contacts = await WhatsAppContact.find(query).lean();
-  return dedupeContacts(contacts);
+  const contacts = query.$or.length ? await WhatsAppContact.find(query).lean() : [];
+  const matchedPhoneDigits = new Set(
+    contacts
+      .map((contact) => normalizePhoneOrNull(contact.phone || contact.waId))
+      .filter(Boolean)
+      .map((phone) => phone.replace(/[^\d]/g, ""))
+  );
+  const virtualContacts = uniquePhoneTokens
+    .filter((phone) => !matchedPhoneDigits.has(phone.replace(/[^\d]/g, "")))
+    .map((phone) => ({
+      phone,
+      waId: phone,
+      name: "",
+      profile: {},
+      source: "manual_phone",
+      isManualPhoneOnly: true,
+    }));
+
+  return dedupeContacts([...contacts, ...virtualContacts]);
 };
 
 const resolveSegmentAudienceContacts = async (segmentIds = []) => {
@@ -132,7 +190,79 @@ const resolveCampaignAudienceContacts = async (campaignDoc) => {
     return resolveSegmentAudienceContacts(campaign.segmentIds);
   }
 
-  return resolveManualAudienceContacts(campaign.manualContactIds);
+  return resolveManualAudienceContacts(campaign.manualContactIds, campaign.manualPhones);
+};
+
+const fetchAudienceConversationMap = async (contacts = []) => {
+  const contactIds = contacts
+    .map((contact) => trimString(contact?._id || contact?.id))
+    .filter(Boolean);
+
+  if (!contactIds.length) {
+    return new Map();
+  }
+
+  const conversations = await WhatsAppConversation.find({
+    channel: "whatsapp",
+    contactId: { $in: contactIds },
+  }).lean();
+
+  const conversationMap = new Map();
+  for (const conversation of conversations) {
+    const contactId = trimString(conversation?.contactId?._id || conversation?.contactId);
+    if (!contactId || conversationMap.has(contactId)) {
+      continue;
+    }
+    conversationMap.set(contactId, conversation);
+  }
+
+  return conversationMap;
+};
+
+const evaluateCampaignAudience = async (campaignDoc, contacts = null) => {
+  const campaign = toObject(campaignDoc);
+  const { inferAudienceOptIn } = getCampaignHelpers();
+  const resolvedContacts = Array.isArray(contacts)
+    ? dedupeContacts(contacts)
+    : await resolveCampaignAudienceContacts(campaign);
+  const conversationMap = await fetchAudienceConversationMap(resolvedContacts);
+  const eligibleContacts = [];
+  let optedOutExcludedCount = 0;
+  let inactiveExcludedCount = 0;
+
+  resolvedContacts.forEach((contactDoc) => {
+    const contact = toObject(contactDoc);
+    const contactId = trimString(contact._id || contact.id);
+    const conversation = conversationMap.get(contactId) || null;
+    const optedIn = typeof inferAudienceOptIn === "function"
+      ? inferAudienceOptIn(contact, null)
+      : true;
+
+    if (!optedIn) {
+      optedOutExcludedCount += 1;
+      return;
+    }
+
+    if (campaign.skipInactiveContacts && !hasOpenCustomerCareWindow({ conversation })) {
+      inactiveExcludedCount += 1;
+      return;
+    }
+
+    eligibleContacts.push(contact);
+  });
+
+  return {
+    eligibleContacts,
+    eligibleAudienceCount: eligibleContacts.length,
+    optedOutExcludedCount,
+    inactiveExcludedCount,
+    invalidManualPhoneCount: 0,
+  };
+};
+
+const filterEligibleAudienceContacts = async (campaignDoc, contacts = []) => {
+  const evaluation = await evaluateCampaignAudience(campaignDoc, contacts);
+  return evaluation.eligibleContacts;
 };
 
 const buildAudienceSourceMap = (campaignDoc, contacts = []) => {
@@ -160,6 +290,51 @@ const buildAudienceSourceMap = (campaignDoc, contacts = []) => {
   return sourceMap;
 };
 
+const ensureAudienceContactRecord = async (contactDoc) => {
+  const contact = toObject(contactDoc);
+  if (trimString(contact._id || contact.id)) {
+    return contact;
+  }
+
+  const phone = normalizePhoneOrNull(contact.phone || contact.waId || contact.recipientPhone);
+  if (!phone) {
+    throw createHttpError("Campaign audience phone could not be resolved", 400, {
+      code: "INVALID_MANUAL_PHONE",
+    });
+  }
+
+  const record = await WhatsAppContact.findOneAndUpdate(
+    {
+      $or: [
+        { phone },
+        { waId: phone },
+      ],
+    },
+    {
+      $setOnInsert: {
+        phone,
+        waId: phone,
+        source: "campaign_manual_phone",
+        profile: {
+          manualPhoneOnly: true,
+        },
+      },
+      $set: {
+        phone,
+        waId: phone,
+        lastActivityAt: contact.lastActivityAt || new Date(),
+      },
+    },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    }
+  );
+
+  return toObject(record);
+};
+
 const upsertCampaignJobsForAudience = async (campaignDoc, contacts = []) => {
   const campaign = toObject(campaignDoc);
   const now = new Date();
@@ -169,8 +344,9 @@ const upsertCampaignJobsForAudience = async (campaignDoc, contacts = []) => {
   let completedRecipients = 0;
 
   for (const [index, contact] of contacts.entries()) {
-    const contactId = trimString(contact._id || contact.id);
-    if (!contactId || !trimString(contact.phone || contact.waId)) {
+    const persistedContact = await ensureAudienceContactRecord(contact);
+    const contactId = trimString(persistedContact._id || persistedContact.id);
+    if (!contactId || !trimString(persistedContact.phone || persistedContact.waId)) {
       continue;
     }
 
@@ -179,7 +355,7 @@ const upsertCampaignJobsForAudience = async (campaignDoc, contacts = []) => {
       autoAssign: true,
     });
 
-    const recipientPhone = trimString(contact.phone || contact.waId);
+    const recipientPhone = trimString(persistedContact.phone || persistedContact.waId);
     let job = await WhatsAppCampaignJob.findOne({
       campaignId: campaign._id,
       recipientPhone,
@@ -197,11 +373,17 @@ const upsertCampaignJobsForAudience = async (campaignDoc, contacts = []) => {
     if (!job) {
       job = await WhatsAppCampaignJob.create({
         campaignId: campaign._id,
-        contactId: contact._id,
+        contactId,
         conversationId: conversation?._id || null,
-        audienceSource: sourceMap.get(contactId) || trimString(campaign.audienceType || "manual") || "manual",
+        audienceSource: sourceMap.get(contactId) || sourceMap.get(recipientPhone) || trimString(campaign.audienceType || "manual") || "manual",
         recipientPhone,
-        recipientName: trimString(contact.name || contact.profile?.name),
+        recipientName: trimString(
+          persistedContact.name
+          || persistedContact.profile?.name
+          || contact.name
+          || contact.profile?.name
+          || recipientPhone
+        ),
         runAt,
         status: "pending",
         metadata: {
@@ -209,11 +391,17 @@ const upsertCampaignJobsForAudience = async (campaignDoc, contacts = []) => {
         },
       });
     } else {
-      job.contactId = contact._id;
+      job.contactId = contactId;
       job.conversationId = conversation?._id || null;
-      job.audienceSource = sourceMap.get(contactId) || job.audienceSource || "manual";
+      job.audienceSource = sourceMap.get(contactId) || sourceMap.get(recipientPhone) || job.audienceSource || "manual";
       job.recipientPhone = recipientPhone;
-      job.recipientName = trimString(contact.name || contact.profile?.name);
+      job.recipientName = trimString(
+        persistedContact.name
+        || persistedContact.profile?.name
+        || contact.name
+        || contact.profile?.name
+        || recipientPhone
+      );
       job.runAt = runAt;
       job.status = "pending";
       job.errorMessage = "";
@@ -403,13 +591,19 @@ const sendCampaignJobMessage = async ({ app, campaignDoc, jobDoc }) => {
       : trimString(campaign.bodyText);
 
     if (!trimString(text)) {
-      throw createHttpError("This campaign does not have any sendable compose content");
+      throw createHttpError("This campaign does not have any sendable compose content", 400, {
+        code: "EMPTY_COMPOSE_CONTENT",
+        contentMode: "compose",
+      });
     }
 
     assertOpenCustomerCareWindow({
       conversation: resolvedConversation,
       contact,
-      createError: (message) => createHttpError(message),
+      createError: (message) => createHttpError(message, 400, {
+        code: "OUTSIDE_CARE_WINDOW",
+        contentMode: "compose",
+      }),
       contextLabel: "Compose campaign sends",
     });
 
@@ -459,9 +653,22 @@ const launchCampaign = async ({ campaignId, actorId = null, app = null, launched
     throw createHttpError("WhatsApp campaign not found", 404);
   }
 
-  const contacts = await resolveCampaignAudienceContacts(campaign);
+  const evaluation = await evaluateCampaignAudience(
+    campaign,
+    await resolveCampaignAudienceContacts(campaign)
+  );
+  const contacts = evaluation.eligibleContacts;
   if (!contacts.length) {
-    throw createHttpError("This campaign does not have any resolvable audience contacts");
+    throw createHttpError("This campaign does not have any eligible audience contacts after applying contact filters", 400, {
+      code: "NO_ELIGIBLE_AUDIENCE",
+      contentMode: trimString(campaign.contentMode || "compose"),
+      details: {
+        eligibleAudienceCount: 0,
+        optedOutExcludedCount: evaluation.optedOutExcludedCount,
+        inactiveExcludedCount: evaluation.inactiveExcludedCount,
+        invalidManualPhoneCount: evaluation.invalidManualPhoneCount,
+      },
+    });
   }
 
   const now = new Date();
@@ -749,5 +956,9 @@ module.exports = {
     resolveManualAudienceContacts,
     resolveSegmentAudienceContacts,
     buildCampaignJobCounts,
+    filterEligibleAudienceContacts,
+    fetchAudienceConversationMap,
+    ensureAudienceContactRecord,
+    evaluateCampaignAudience,
   },
 };

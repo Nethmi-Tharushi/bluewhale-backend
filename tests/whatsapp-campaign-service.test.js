@@ -196,6 +196,16 @@ const loadCampaignService = ({
         });
       },
       deleteCampaignJobs: async () => {},
+      __private: {
+        evaluateCampaignAudience: async (campaign) => ({
+          eligibleAudienceCount:
+            (Array.isArray(campaign?.manualContactIds) ? campaign.manualContactIds.length : 0)
+            + (Array.isArray(campaign?.manualPhones) ? campaign.manualPhones.length : 0),
+          optedOutExcludedCount: 1,
+          inactiveExcludedCount: Boolean(campaign?.skipInactiveContacts) ? 1 : 0,
+          invalidManualPhoneCount: 0,
+        }),
+      },
     },
   });
 
@@ -258,7 +268,8 @@ module.exports = async () => {
       type: "Promotional",
       channel: "WhatsApp",
       audienceType: "manual",
-      manualContactIds: ["contact_1", "contact_2"],
+      manualContactIds: ["contact_1", "+94770000009"],
+      manualPhones: ["+94770000010"],
       contentMode: "compose",
       bodyText: "Hello from Blue Whale",
       quickReplies: ["Book now", "Need help"],
@@ -270,11 +281,16 @@ module.exports = async () => {
   assert.equal(created.name, "Blue Whale April Outreach");
   assert.equal(created.status, "Draft");
   assert.equal(created._id, created.id);
-  assert.deepEqual(created.manualContactIds, ["contact_1", "contact_2"]);
+  assert.deepEqual(created.manualContactIds, ["contact_1"]);
+  assert.deepEqual(created.manualPhones, ["+94770000010", "+94770000009"]);
   assert.deepEqual(created.quickReplies, ["Book now", "Need help"]);
   assert.deepEqual(created.templateVariables, {});
   assert.deepEqual(created.stats, { sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0 });
   assert.equal(created.createdBy._id, "admin_1");
+  assert.equal(created.eligibleAudienceCount, 3);
+  assert.equal(created.optedOutExcludedCount, 1);
+  assert.equal(created.inactiveExcludedCount, 0);
+  assert.equal(created.invalidManualPhoneCount, 0);
 
   await assert.rejects(
     () => whatsappCampaignService.testSendWhatsAppCampaign(created.id, {
@@ -313,6 +329,7 @@ module.exports = async () => {
   assert.equal(fetchedLegacy.stats.sent, 5);
   assert.equal(fetchedLegacy.sentCount, 5);
   assert.deepEqual(fetchedLegacy.quickReplies, []);
+  assert.deepEqual(fetchedLegacy.manualPhones, []);
 
   const updated = await whatsappCampaignService.updateWhatsAppCampaign(
     created.id,
@@ -334,6 +351,7 @@ module.exports = async () => {
   assert.equal(updated.scheduledAt, "2026-05-01T10:00:00.000Z");
   assert.equal(updated.scheduleAt, "2026-05-01T10:00:00.000Z");
   assert.equal(updated.stopIfTemplateMissing, true);
+  assert.deepEqual(updated.manualPhones, ["+94770000010", "+94770000009"]);
 
   const statsBeforeTest = deepClone(updated.stats);
   const preview = await whatsappCampaignService.testSendWhatsAppCampaign(created.id, {
@@ -351,6 +369,7 @@ module.exports = async () => {
 
   const afterPreview = await whatsappCampaignService.getWhatsAppCampaignById(created.id);
   assert.deepEqual(afterPreview.stats, statsBeforeTest);
+  assert.equal(afterPreview.eligibleAudienceCount, 3);
 
   const launched = await whatsappCampaignService.launchWhatsAppCampaign(created.id, "admin_3");
   assert.equal(launched.status, "Running");
@@ -394,6 +413,23 @@ module.exports = async () => {
   await assert.rejects(
     () => whatsappCampaignService.launchWhatsAppCampaign(created.id, "admin_7"),
     /Cancelled campaigns cannot be launched/
+  );
+
+  await assert.rejects(
+    () => whatsappCampaignService.createWhatsAppCampaign(
+      {
+        name: "Bad phone campaign",
+        type: "Promotional",
+        channel: "WhatsApp",
+        audienceType: "manual",
+        manualPhones: ["bad-number"],
+        contentMode: "compose",
+        bodyText: "Hello from Blue Whale",
+        scheduleType: "draft",
+      },
+      "admin_1"
+    ),
+    /manualPhones\[0\] must be a valid WhatsApp number/
   );
 
   const deleted = await whatsappCampaignService.deleteWhatsAppCampaign(created.id);
