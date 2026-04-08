@@ -219,24 +219,46 @@ const upsertContact = async ({ phone, waId, name, profile = {} }) => {
     throw new Error("WhatsApp contact phone is required");
   }
 
-  return WhatsAppContact.findOneAndUpdate(
-    { phone: normalizedPhone },
-    {
-      $set: {
-        waId: String(waId || normalizedPhone),
-        name: name || "",
-        profile,
-        lastActivityAt: new Date(),
-      },
-      $setOnInsert: {
-        source: "whatsapp",
-      },
-    },
-    {
-      new: true,
-      upsert: true,
+  const existingContact = await WhatsAppContact.findOne({
+    $or: [
+      { normalizedPhone },
+      { phone: normalizedPhone },
+      { waId: normalizedPhone },
+      { phone: `+${normalizedPhone}` },
+      { waId: `+${normalizedPhone}` },
+    ],
+  });
+
+  if (existingContact) {
+    const nextProfile = {
+      ...(existingContact.profile && typeof existingContact.profile === "object" ? existingContact.profile : {}),
+      ...(profile && typeof profile === "object" ? profile : {}),
+    };
+
+    existingContact.phone = normalizedPhone;
+    existingContact.normalizedPhone = normalizedPhone;
+    existingContact.waId = String(waId || existingContact.waId || normalizedPhone);
+    if (String(name || "").trim()) {
+      existingContact.name = String(name).trim();
     }
-  );
+    existingContact.profile = nextProfile;
+    existingContact.lastActivityAt = new Date();
+    if (!String(existingContact.source || "").trim()) {
+      existingContact.source = "WhatsApp";
+    }
+    await existingContact.save();
+    return existingContact;
+  }
+
+  return WhatsAppContact.create({
+    phone: normalizedPhone,
+    normalizedPhone,
+    waId: String(waId || normalizedPhone),
+    name: String(name || "").trim(),
+    profile,
+    source: "WhatsApp",
+    lastActivityAt: new Date(),
+  });
 };
 
 const ensureConversation = async ({ contactId, autoAssign = true, returnMeta = false }) => {
@@ -426,6 +448,14 @@ const saveInboundMessage = async ({ app, message }) => {
   }
 
   await conversation.save();
+  const totalMessages = await WhatsAppMessage.countDocuments({ contactId: contact._id });
+  await contact.updateOne({
+    $set: {
+      lastActivityAt: savedMessage.timestamp,
+      lastSeenAt: savedMessage.timestamp,
+      totalMessages,
+    },
+  });
   emitMessageEvent(app, savedMessage.toObject ? savedMessage.toObject() : savedMessage);
   await emitConversationEvents(app, conversation._id);
   try {
@@ -527,8 +557,13 @@ const saveOutgoingMessage = async ({
   }
   await conversation.save();
 
+  const totalMessages = await WhatsAppMessage.countDocuments({ contactId: contact._id });
   await contact.updateOne({
-    $set: { lastActivityAt: savedMessage.timestamp },
+    $set: {
+      lastActivityAt: savedMessage.timestamp,
+      lastSeenAt: savedMessage.timestamp,
+      totalMessages,
+    },
   });
 
   emitMessageEvent(app, savedMessage.toObject ? savedMessage.toObject() : savedMessage);

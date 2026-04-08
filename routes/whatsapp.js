@@ -70,9 +70,37 @@ const {
   setConversationLinkedLead,
   sendOutgoingMessage,
 } = require("../controllers/whatsappController");
+const {
+  listContactHub,
+  createContactHubRecord,
+  updateContactHubRecord,
+  updateContactHubStatus,
+  bulkUpdateContactHub,
+  exportContactHubCsv,
+  getContactHubMeta,
+} = require("../controllers/whatsappContactHubController");
+const {
+  getWhatsAppProfile,
+  updateWhatsAppProfile,
+  uploadWhatsAppProfileLogo,
+  removeWhatsAppProfileLogo,
+} = require("../controllers/whatsappProfileController");
 const { protectAdmin, authorizeAdmin } = require("../middlewares/AdminAuth");
+const {
+  validateIdParam,
+  validateCreateBody,
+  validateUpdateBody,
+  validateStatusBody,
+  validateBulkBody,
+} = require("../middlewares/whatsappContactHubValidation");
+const {
+  validateWhatsAppProfileBody,
+} = require("../middlewares/whatsappProfileValidation");
 const whatsappUpload = require("../middlewares/whatsappUpload");
 const whatsappTemplateMediaUpload = require("../middlewares/whatsappTemplateMediaUpload");
+const {
+  uploadWhatsAppProfileLogo: uploadWhatsAppProfileLogoMiddleware,
+} = require("../middlewares/whatsappProfileLogoUpload");
 
 router.get("/webhook", getWebhookChallenge);
 router.post("/webhook", receiveWebhook);
@@ -84,6 +112,17 @@ router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConve
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
 router.get("/assignment-settings", protectAdmin, authorizeAdmin(), getRoundRobinSettings);
 router.put("/assignment-settings", protectAdmin, authorizeAdmin(), saveRoundRobinSettings);
+router.get("/profile", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), getWhatsAppProfile);
+router.put("/profile", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), validateWhatsAppProfileBody, updateWhatsAppProfile);
+router.post("/profile/logo", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), uploadWhatsAppProfileLogoMiddleware, uploadWhatsAppProfileLogo);
+router.delete("/profile/logo", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), removeWhatsAppProfileLogo);
+router.get("/contact-hub/meta", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getContactHubMeta);
+router.get("/contact-hub/export", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), exportContactHubCsv);
+router.get("/contact-hub", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listContactHub);
+router.post("/contact-hub", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), validateCreateBody, createContactHubRecord);
+router.post("/contact-hub/bulk", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), validateBulkBody, bulkUpdateContactHub);
+router.patch("/contact-hub/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), validateIdParam, validateStatusBody, updateContactHubStatus);
+router.patch("/contact-hub/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), validateIdParam, validateUpdateBody, updateContactHubRecord);
 router.get("/campaigns", protectAdmin, authorizeAdmin(), getWhatsAppCampaigns);
 router.get("/campaigns/audience-resources", protectAdmin, authorizeAdmin(), getWhatsAppCampaignAudienceResources);
 router.get("/campaigns/audience-contacts", protectAdmin, authorizeAdmin(), getWhatsAppCampaignAudienceContacts);

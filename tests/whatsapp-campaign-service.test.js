@@ -138,21 +138,141 @@ const createAudienceModelMock = (records = []) => ({
   },
 });
 
+const createContactHubServiceMock = ({ contacts = [], conversations = [], messages = [] } = {}) => {
+  const normalizeTags = (value) => {
+    const source = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+    const seen = new Set();
+    const normalized = [];
+
+    source.forEach((item) => {
+      const tag = String(item || "").trim();
+      if (!tag) return;
+      const dedupeKey = tag.toLowerCase();
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      normalized.push(tag);
+    });
+
+    return normalized;
+  };
+
+  const inferContactOptIn = (contact = {}, linkedLead = null) => {
+    if (typeof contact.optedIn === "boolean") return contact.optedIn;
+    if (typeof contact.profile?.whatsappOptIn === "boolean") return contact.profile.whatsappOptIn;
+    if (typeof linkedLead?.optedIn === "boolean") return linkedLead.optedIn;
+    return true;
+  };
+
+  const resolveContactSource = (contact = {}, linkedLead = null) =>
+    String(
+      linkedLead?.source
+      || linkedLead?.sourceDetails
+      || contact.source
+      || contact.profile?.source
+      || ""
+    ).trim() || "WhatsApp";
+
+  const buildConversationMap = () => {
+    const map = new Map();
+    conversations.forEach((conversation) => {
+      const contactId = String(conversation.contactId?._id || conversation.contactId || "");
+      if (!contactId) return;
+      const existing = map.get(contactId) || {
+        ...conversation,
+        tags: [],
+      };
+      existing.tags = normalizeTags([...(existing.tags || []), ...(conversation.tags || [])]);
+      if (!existing.linkedLeadId && conversation.linkedLeadId) {
+        existing.linkedLeadId = conversation.linkedLeadId;
+      }
+      map.set(contactId, existing);
+    });
+    return map;
+  };
+
+  const buildMessageStats = () => {
+    const map = new Map();
+    messages.forEach((message) => {
+      const contactId = String(message.contactId?._id || message.contactId || "");
+      if (!contactId) return;
+      const entry = map.get(contactId) || { totalMessages: 0, lastSeenAt: null };
+      entry.totalMessages += 1;
+      if (!entry.lastSeenAt || new Date(message.timestamp).getTime() > new Date(entry.lastSeenAt).getTime()) {
+        entry.lastSeenAt = message.timestamp;
+      }
+      map.set(contactId, entry);
+    });
+    return map;
+  };
+
+  const buildContactHubRecord = ({ contact = {}, conversation = null } = {}) => {
+    const linkedLead = conversation?.linkedLeadId && typeof conversation.linkedLeadId === "object"
+      ? conversation.linkedLeadId
+      : null;
+    const tags = normalizeTags([...(contact.tags || []), ...(conversation?.tags || [])]);
+    const messageStats = buildMessageStats().get(String(contact._id || contact.id || "")) || { totalMessages: 0, lastSeenAt: null };
+    const statusFromLead =
+      linkedLead?.status === "Follow-up Required"
+        ? "Follow-up"
+        : linkedLead?.status === "Not Interested"
+          ? "Inactive"
+          : linkedLead?.status === "Paid Client"
+            ? "Customer"
+            : "New Lead";
+
+    return {
+      id: String(contact._id || contact.id || ""),
+      name: String(contact.name || contact.profile?.name || linkedLead?.name || contact.phone || "").trim(),
+      phone: String(contact.phone || contact.waId || linkedLead?.phone || "").trim(),
+      source: resolveContactSource(contact, linkedLead),
+      tag: tags[0] || "",
+      optedIn: inferContactOptIn(contact, linkedLead),
+      email: String(contact.email || contact.profile?.email || linkedLead?.email || "").trim(),
+      tags,
+      status: String(contact.status || statusFromLead || "New Lead").trim() || "New Lead",
+      accountOwner: String(contact.accountOwner || conversation?.agentId?.name || "").trim(),
+      b2cConfirmation: String(contact.b2cConfirmation || (inferContactOptIn(contact, linkedLead) ? "Confirmed" : "Opted Out")).trim(),
+      city: String(contact.city || linkedLead?.city || "").trim(),
+      lastSeenAt: messageStats.lastSeenAt || conversation?.lastIncomingAt || conversation?.lastMessageAt || null,
+      totalMessages: messageStats.totalMessages,
+    };
+  };
+
+  return {
+    normalizeTags,
+    inferContactOptIn,
+    resolveContactSource,
+    buildContactHubRecord,
+    async listAllWhatsAppContactHubRecords() {
+      const conversationMap = buildConversationMap();
+      return contacts.map((contact) =>
+        buildContactHubRecord({
+          contact,
+          conversation: conversationMap.get(String(contact._id || contact.id || "")) || null,
+        })
+      );
+    },
+  };
+};
+
 const loadCampaignService = ({
   campaignModelMock,
   sendCalls,
   setCampaignStatus,
   contacts = [],
   conversations = [],
+  messages = [],
   campaignJobCount = 0,
 } = {}) =>
   loadWithMocks(path.resolve(__dirname, "../services/whatsappCampaignService.js"), {
     "../models/WhatsAppCampaign": campaignModelMock,
     "../models/WhatsAppContact": createAudienceModelMock(contacts),
     "../models/WhatsAppConversation": createAudienceModelMock(conversations),
+    "../models/WhatsAppMessage": createAudienceModelMock(messages),
     "../models/WhatsAppCampaignJob": {
       countDocuments: async () => campaignJobCount,
     },
+    "./whatsappContactHubService": createContactHubServiceMock({ contacts, conversations, messages }),
     "./whatsappTemplateService": {
       getTemplateById: async (templateId) => (
         templateId === "tpl_missing"
@@ -293,6 +413,18 @@ module.exports = async () => {
       linkedLeadId: null,
     },
   ];
+  const audienceMessages = [
+    {
+      _id: "message_1",
+      contactId: "contact_1",
+      timestamp: "2020-04-03T09:00:00.000Z",
+    },
+    {
+      _id: "message_2",
+      contactId: "contact_2",
+      timestamp: "2020-04-04T09:00:00.000Z",
+    },
+  ];
   const setCampaignStatus = (campaignId, updates = {}) => {
     const record = campaignModelMock.__store.find((item) => String(item._id) === String(campaignId));
     if (!record) {
@@ -309,6 +441,7 @@ module.exports = async () => {
     setCampaignStatus,
     contacts: audienceContacts,
     conversations: audienceConversations,
+    messages: audienceMessages,
   });
 
   const created = await whatsappCampaignService.createWhatsAppCampaign(
@@ -494,6 +627,9 @@ module.exports = async () => {
   assert.equal(audienceResources.contacts[0].source, "Facebook Ads");
   assert.equal(audienceResources.contacts[0].tag, "VIP");
   assert.equal(audienceResources.contacts[0].optedIn, false);
+  assert.equal(audienceResources.contacts[0].status, "New Lead");
+  assert.deepEqual(audienceResources.contacts[0].tags, ["VIP", "follow up"]);
+  assert.equal(audienceResources.contacts[0].totalMessages, 1);
   assert.equal(audienceResources.summary.totalContacts, 2);
   assert.equal(audienceResources.summary.optedInContacts, 1);
   assert.equal(audienceResources.summary.totalTags, 3);
@@ -516,6 +652,7 @@ module.exports = async () => {
     setCampaignStatus: () => {},
     contacts: [],
     conversations: [],
+    messages: [],
   });
   const emptyAudienceResources = await emptyAudienceService.listWhatsAppCampaignAudienceResources();
   assert.deepEqual(emptyAudienceResources, {
