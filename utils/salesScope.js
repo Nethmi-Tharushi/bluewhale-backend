@@ -31,6 +31,7 @@ const getSalesScope = (req) => {
     actorId,
     managerId,
     role: req.admin.role,
+    isMainAdmin: req.admin.role === "MainAdmin",
     isSalesAdmin: req.admin.role === "SalesAdmin",
     isSalesStaff: req.admin.role === "SalesStaff",
   };
@@ -58,4 +59,5 @@ module.exports = {
   getSalesScope,
   buildOwnedFilter,
 };
+
 

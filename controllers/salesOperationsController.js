@@ -1,5 +1,6 @@
 const asyncHandler = require("express-async-handler");
 const AdminUser = require("../models/AdminUser");
+const SalesTeam = require("../models/SalesTeam");
 const Invoice = require("../models/Invoice");
 const SalesTarget = require("../models/SalesTarget");
 const SalesProposal = require("../models/SalesProposal");
@@ -77,6 +78,107 @@ const generateDocumentNumber = async (Model, prefix) => {
   return `${docPrefix}-${String(seq).padStart(4, "0")}`;
 };
 
+const normalizeTeamId = (value) => {
+  if (!value) return "";
+  if (typeof value === "object" && value._id) return String(value._id);
+  return String(value);
+};
+
+const mapAdminUser = (user) => ({
+  _id: user?._id,
+  name: user?.name || "",
+  email: user?.email || "",
+  role: user?.role || "",
+  reportsTo: user?.reportsTo || null,
+});
+
+const mapTeamDoc = (team) => {
+  const owner = team?.ownerAdmin && typeof team.ownerAdmin === "object" ? team.ownerAdmin : null;
+  const members = Array.isArray(team?.members) ? team.members.filter(Boolean) : [];
+  return {
+    _id: team?._id,
+    name: team?.name || `${owner?.name || "Team"} Team`,
+    ownerAdminId: normalizeTeamId(team?.ownerAdmin),
+    ownerAdmin: owner ? mapAdminUser(owner) : null,
+    members: members.map((member) => mapAdminUser(member)),
+    memberIds: members.map((member) => normalizeTeamId(member)),
+    createdAt: team?.createdAt || null,
+    updatedAt: team?.updatedAt || null,
+  };
+};
+
+const loadTeamSnapshot = async (scope) => {
+  const ownerQuery = scope.isMainAdmin
+    ? { role: "SalesAdmin" }
+    : scope.isSalesAdmin
+    ? { _id: scope.actorId, role: "SalesAdmin" }
+    : { _id: scope.actorId, role: { $in: ["SalesAdmin", "SalesStaff"] } };
+
+  const staffQuery = scope.isMainAdmin
+    ? { role: "SalesStaff" }
+    : scope.isSalesAdmin
+    ? { role: "SalesStaff", reportsTo: scope.actorId }
+    : { _id: scope.actorId };
+
+  const teamQuery = scope.isMainAdmin
+    ? {}
+    : scope.isSalesAdmin
+    ? { ownerAdmin: scope.actorId }
+    : {
+        $or: [{ members: scope.actorId }, ...(scope.managerId ? [{ ownerAdmin: scope.managerId }] : [])],
+      };
+
+  const [owners, staff, teams] = await Promise.all([
+    AdminUser.find(ownerQuery).select("_id name email role reportsTo").sort({ name: 1 }).lean(),
+    AdminUser.find(staffQuery).select("_id name email role reportsTo").sort({ name: 1 }).lean(),
+    SalesTeam.find(teamQuery)
+      .populate("ownerAdmin", "_id name email role reportsTo")
+      .populate("members", "_id name email role reportsTo")
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean(),
+  ]);
+
+  const ownerTeamMap = new Map();
+  const memberTeamMap = new Map();
+  const teamRows = teams.map((team) => {
+    const row = mapTeamDoc(team);
+    if (row.ownerAdminId) ownerTeamMap.set(row.ownerAdminId, row);
+    row.memberIds.forEach((memberId) => {
+      if (memberId) memberTeamMap.set(memberId, row);
+    });
+    return row;
+  });
+
+  const ownersWithTeam = owners.map((owner) => ({
+    ...mapAdminUser(owner),
+    teamName: ownerTeamMap.get(normalizeTeamId(owner._id))?.name || "",
+    teamId: ownerTeamMap.get(normalizeTeamId(owner._id))?._id || null,
+    teamMemberCount: ownerTeamMap.get(normalizeTeamId(owner._id))?.memberIds.length || 0,
+  }));
+
+  const staffWithTeam = staff.map((member) => {
+    const team = memberTeamMap.get(normalizeTeamId(member._id)) || ownerTeamMap.get(normalizeTeamId(member.reportsTo));
+    return {
+      ...mapAdminUser(member),
+      teamName: team?.name || "",
+      teamId: team?._id || null,
+      teamOwnerId: team?.ownerAdminId || normalizeTeamId(member.reportsTo) || null,
+    };
+  });
+
+  const assignedStaffIds = new Set(
+    teamRows.flatMap((team) => team.memberIds.map((memberId) => normalizeTeamId(memberId)).filter(Boolean))
+  );
+  const unassignedStaff = staffWithTeam.filter((member) => !assignedStaffIds.has(normalizeTeamId(member._id)));
+
+  return {
+    owners: ownersWithTeam,
+    staff: staffWithTeam,
+    teams: teamRows,
+    unassignedStaff,
+  };
+};
+
 const getTeamStaff = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
   const query = scope.isMainAdmin
@@ -87,6 +189,96 @@ const getTeamStaff = asyncHandler(async (req, res) => {
 
   const staff = await AdminUser.find(query).select("_id name email role reportsTo").sort({ name: 1 }).lean();
   return res.json({ success: true, data: staff });
+});
+
+const getTeams = asyncHandler(async (req, res) => {
+  const scope = getSalesScope(req);
+  const snapshot = await loadTeamSnapshot(scope);
+  return res.json({
+    success: true,
+    data: {
+      role: scope.role,
+      owners: snapshot.owners,
+      staff: snapshot.staff,
+      teams: snapshot.teams,
+      unassignedStaff: snapshot.unassignedStaff,
+    },
+  });
+});
+
+const saveTeam = asyncHandler(async (req, res) => {
+  const scope = getSalesScope(req);
+  const payload = req.body || {};
+  const ownerAdminId = normalizeTeamId(payload.ownerAdminId || req.params.ownerId || scope.actorId);
+  const name = String(payload.name || payload.teamName || "").trim();
+  const memberIds = Array.from(
+    new Set(
+      (Array.isArray(payload.memberIds) ? payload.memberIds : Array.isArray(payload.members) ? payload.members : [])
+        .map(normalizeTeamId)
+        .filter(Boolean)
+    )
+  );
+
+  const ownerAdmin = await AdminUser.findOne({ _id: ownerAdminId, role: "SalesAdmin" })
+    .select("_id name email role reportsTo")
+    .lean();
+  if (!ownerAdmin) return res.status(404).json({ message: "SalesAdmin owner not found" });
+  if (scope.isSalesAdmin && normalizeTeamId(ownerAdmin._id) !== normalizeTeamId(scope.actorId)) {
+    return res.status(403).json({ message: "SalesAdmin can only manage their own team" });
+  }
+
+  const memberQuery = {
+    _id: { $in: memberIds },
+    role: "SalesStaff",
+  };
+  if (scope.isSalesAdmin && !scope.isMainAdmin) {
+    memberQuery.reportsTo = ownerAdmin._id;
+  }
+
+  const members = memberIds.length
+    ? await AdminUser.find(memberQuery).select("_id name email role reportsTo").sort({ name: 1 }).lean()
+    : [];
+
+  if (members.length !== memberIds.length) {
+    return res.status(400).json({ message: "One or more selected members are invalid SalesStaff users" });
+  }
+
+  const team = await SalesTeam.findOneAndUpdate(
+    { ownerAdmin: ownerAdmin._id },
+    {
+      $set: {
+        name: name || `${ownerAdmin.name || "Team"} Team`,
+        ownerAdmin: ownerAdmin._id,
+        members: members.map((member) => member._id),
+        updatedBy: scope.actorId,
+      },
+      $setOnInsert: {
+        createdBy: scope.actorId,
+      },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  )
+    .populate("ownerAdmin", "_id name email role reportsTo")
+    .populate("members", "_id name email role reportsTo")
+    .lean();
+
+  return res.json({ success: true, data: mapTeamDoc(team) });
+});
+
+const deleteTeam = asyncHandler(async (req, res) => {
+  const scope = getSalesScope(req);
+  const ownerAdminId = normalizeTeamId(req.params.ownerId || req.params.leaderId || req.body?.ownerAdminId);
+  if (!ownerAdminId) return res.status(400).json({ message: "Team owner is required" });
+
+  const ownerAdmin = await AdminUser.findOne({ _id: ownerAdminId, role: "SalesAdmin" }).select("_id role").lean();
+  if (!ownerAdmin) return res.status(404).json({ message: "SalesAdmin owner not found" });
+  if (scope.isSalesAdmin && normalizeTeamId(ownerAdmin._id) !== normalizeTeamId(scope.actorId)) {
+    return res.status(403).json({ message: "SalesAdmin can only manage their own team" });
+  }
+
+  const result = await SalesTeam.deleteOne({ ownerAdmin: ownerAdmin._id });
+  if (!result.deletedCount) return res.status(404).json({ message: "Team not found" });
+  return res.json({ success: true, message: "Team deleted successfully" });
 });
 
 const getSalesOverview = asyncHandler(async (req, res) => {
@@ -430,6 +622,9 @@ const listPayments = asyncHandler(async (req, res) => {
 
 module.exports = {
   getTeamStaff,
+  getTeams,
+  saveTeam,
+  deleteTeam,
   getSalesOverview,
   listTargets,
   createTarget,

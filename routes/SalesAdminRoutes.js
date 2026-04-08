@@ -16,6 +16,9 @@ const {
 } = require('../controllers/invoiceController');
 const {
   getTeamStaff,
+  getTeams,
+  saveTeam,
+  deleteTeam,
   getSalesOverview,
   listTargets,
   createTarget,
@@ -76,6 +79,10 @@ router.post('/tasks', protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "S
 router.put('/tasks/:id',protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateSalesAdminTask);
 router.delete('/tasks/:id', protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), deleteSalesAdminTask);
 
+router.get("/teams", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getTeams);
+router.post("/teams", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), saveTeam);
+router.put("/teams/:ownerId", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), saveTeam);
+router.delete("/teams/:ownerId", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), deleteTeam);
 router.get("/team/staff", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getTeamStaff);
 router.get("/overview", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getSalesOverview);
 router.get("/targets", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listTargets);
