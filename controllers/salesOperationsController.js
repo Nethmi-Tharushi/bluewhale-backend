@@ -95,6 +95,7 @@ const mapAdminUser = (user) => ({
 const mapTeamDoc = (team) => {
   const owner = team?.ownerAdmin && typeof team.ownerAdmin === "object" ? team.ownerAdmin : null;
   const members = Array.isArray(team?.members) ? team.members.filter(Boolean) : [];
+  const settings = team?.settings && typeof team.settings === "object" ? team.settings : {};
   return {
     _id: team?._id,
     name: team?.name || `${owner?.name || "Team"} Team`,
@@ -102,6 +103,11 @@ const mapTeamDoc = (team) => {
     ownerAdmin: owner ? mapAdminUser(owner) : null,
     members: members.map((member) => mapAdminUser(member)),
     memberIds: members.map((member) => normalizeTeamId(member)),
+    settings: {
+      inboxShowSameTeamMembersInAssigneeList: Boolean(settings.inboxShowSameTeamMembersInAssigneeList),
+      contactsAllowTeamLeadAssignContactsToTeamMembers: settings.contactsAllowTeamLeadAssignContactsToTeamMembers !== false,
+      contactsAllowTeamLeadViewAssignedContacts: settings.contactsAllowTeamLeadViewAssignedContacts !== false,
+    },
     createdAt: team?.createdAt || null,
     updatedAt: team?.updatedAt || null,
   };
@@ -211,6 +217,7 @@ const saveTeam = asyncHandler(async (req, res) => {
   const payload = req.body || {};
   const ownerAdminId = normalizeTeamId(payload.ownerAdminId || req.params.ownerId || scope.actorId);
   const name = String(payload.name || payload.teamName || "").trim();
+  const settingsPayload = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
   const memberIds = Array.from(
     new Set(
       (Array.isArray(payload.memberIds) ? payload.memberIds : Array.isArray(payload.members) ? payload.members : [])
@@ -250,6 +257,11 @@ const saveTeam = asyncHandler(async (req, res) => {
         name: name || `${ownerAdmin.name || "Team"} Team`,
         ownerAdmin: ownerAdmin._id,
         members: members.map((member) => member._id),
+        settings: {
+          inboxShowSameTeamMembersInAssigneeList: Boolean(settingsPayload.inboxShowSameTeamMembersInAssigneeList),
+          contactsAllowTeamLeadAssignContactsToTeamMembers: settingsPayload.contactsAllowTeamLeadAssignContactsToTeamMembers !== false,
+          contactsAllowTeamLeadViewAssignedContacts: settingsPayload.contactsAllowTeamLeadViewAssignedContacts !== false,
+        },
         updatedBy: scope.actorId,
       },
       $setOnInsert: {

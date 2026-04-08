@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const cloudinary = require("../config/cloudinary");
 const AdminUser = require('../models/AdminUser');
 const {
   getWalletSummary,
@@ -30,6 +31,66 @@ function generateApiKey() {
 }
 
 const canManageWallet = (admin) => ["MainAdmin", "SalesAdmin"].includes(String(admin?.role || ""));
+const buildDefaultRolePermissions = () => ({
+  MainAdmin: {
+    fullAccess: true,
+  },
+  SalesAdmin: {
+    contactHub: true,
+    inbox: true,
+    whatsappProfile: true,
+    whatsappTemplates: true,
+    whatsappAutomations: true,
+    whatsappAssignment: true,
+    whatsappCampaigns: true,
+    quickReplies: true,
+    basicAutomations: true,
+    forms: true,
+    teamManagement: true,
+    internalChat: true,
+    invoices: true,
+    targets: true,
+    leads: true,
+    projects: true,
+    reports: true,
+    settings: true,
+    wallet: true,
+    userManagement: true,
+    rolePermissions: false,
+  },
+  SalesStaff: {
+    contactHub: false,
+    inbox: true,
+    whatsappProfile: false,
+    whatsappTemplates: false,
+    whatsappAutomations: false,
+    whatsappAssignment: false,
+    whatsappCampaigns: false,
+    quickReplies: true,
+    basicAutomations: false,
+    forms: false,
+    teamManagement: false,
+    internalChat: true,
+    invoices: false,
+    targets: true,
+    leads: false,
+    projects: false,
+    reports: false,
+    settings: false,
+    wallet: false,
+    userManagement: false,
+    rolePermissions: false,
+  },
+});
+
+const getGlobalRolePermissions = async () => {
+  const mainAdmin = await AdminUser.findOne({ role: "MainAdmin" }).select("settings.rolePermissions");
+  return {
+    rolePermissions: (mainAdmin?.settings?.rolePermissions && typeof mainAdmin.settings.rolePermissions === "object")
+      ? mainAdmin.settings.rolePermissions
+      : buildDefaultRolePermissions(),
+  };
+};
 
 // REGISTER ADMIN USER
 exports.registerAdmin = async (req, res) => {
@@ -161,6 +222,27 @@ exports.getMyAdminProfile = async (req, res) => {
     // Backfill defaults for older admin records
     let touched = false;
     if (!admin.settings) { admin.settings = undefined; touched = true; }
+    if (!admin.settings?.rolePermissions) {
+      admin.settings = admin.settings || {};
+      admin.settings.rolePermissions = buildDefaultRolePermissions();
+      touched = true;
+    }
+    if (!admin.settings?.whatsappProfile) {
+      admin.settings = admin.settings || {};
+      admin.settings.whatsappProfile = {
+        logoUrl: "",
+        logoCloudinaryId: "",
+        displayName: "",
+        description: "",
+        businessType: "",
+        contactPhone: "",
+        contactEmail: "",
+        website: "",
+        address: "",
+        verificationNote: "",
+      };
+      touched = true;
+    }
     if (!admin.apiKey) { admin.apiKey = generateApiKey(); touched = true; }
     if (!admin.billing) { admin.billing = undefined; touched = true; }
     if (!admin.auditLogs) { admin.auditLogs = []; touched = true; }
@@ -169,6 +251,16 @@ exports.getMyAdminProfile = async (req, res) => {
     const sanitized = await AdminUser.findById(adminId).select('-password');
     const wallet = await getWalletSummary();
     res.json({ success: true, admin: sanitized, wallet });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/admins/role-permissions
+exports.getRolePermissions = async (_req, res) => {
+  try {
+    const payload = await getGlobalRolePermissions();
+    res.json({ success: true, ...payload });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -199,6 +291,18 @@ exports.updateMyAdminProfile = async (req, res) => {
         admin.settings.prefs = {
           ...(admin.settings.prefs || {}),
           ...settings.prefs,
+        };
+      }
+      if (settings.rolePermissions && typeof settings.rolePermissions === 'object') {
+        admin.settings.rolePermissions = {
+          ...(admin.settings.rolePermissions || buildDefaultRolePermissions()),
+          ...settings.rolePermissions,
+        };
+      }
+      if (settings.whatsappProfile && typeof settings.whatsappProfile === "object") {
+        admin.settings.whatsappProfile = {
+          ...(admin.settings.whatsappProfile || {}),
+          ...settings.whatsappProfile,
         };
       }
     }
@@ -277,6 +381,36 @@ exports.getMyAuditLogs = async (req, res) => {
 
     const logs = (admin.auditLogs || []).slice(0, limit);
     res.json({ success: true, logs });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/admins/me/whatsapp-profile/logo
+exports.uploadMyWhatsAppProfileLogo = async (req, res) => {
+  try {
+    const adminId = req.admin?._id;
+    const admin = await AdminUser.findById(adminId);
+    if (!admin) return res.status(404).json({ message: 'Admin not found' });
+    if (!req.file) return res.status(400).json({ message: "No logo uploaded" });
+
+    admin.settings = admin.settings || {};
+    admin.settings.whatsappProfile = admin.settings.whatsappProfile || {};
+
+    const previousPublicId = String(admin.settings.whatsappProfile.logoCloudinaryId || "").trim();
+    if (previousPublicId && previousPublicId !== req.file.filename) {
+      try {
+        await cloudinary.uploader.destroy(previousPublicId);
+      } catch (_) {}
+    }
+
+    admin.settings.whatsappProfile.logoUrl = req.file.path || req.file.secure_url || "";
+    admin.settings.whatsappProfile.logoCloudinaryId = req.file.filename || req.file.public_id || "";
+    pushAudit(admin, { what: "Updated WhatsApp profile logo", ip: getClientIp(req) });
+    await admin.save();
+
+    const sanitized = await AdminUser.findById(adminId).select('-password');
+    res.json({ success: true, admin: sanitized, logoUrl: admin.settings.whatsappProfile.logoUrl });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

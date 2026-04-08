@@ -41,6 +41,22 @@ const adminUserSchema = new mongoose.Schema({
       timezone: { type: String, default: 'UTC+05:30' },
       currency: { type: String, default: 'USD' },
     },
+    rolePermissions: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({}),
+    },
+    whatsappProfile: {
+      logoUrl: { type: String, default: "" },
+      logoCloudinaryId: { type: String, default: "" },
+      displayName: { type: String, default: "" },
+      description: { type: String, default: "" },
+      businessType: { type: String, default: "" },
+      contactPhone: { type: String, default: "" },
+      contactEmail: { type: String, default: "" },
+      website: { type: String, default: "" },
+      address: { type: String, default: "" },
+      verificationNote: { type: String, default: "" },
+    },
   },
 
   // Single active API key (simple approach)

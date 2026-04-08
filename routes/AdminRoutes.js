@@ -15,6 +15,8 @@ const {
   topUpMyWallet,
   getMyWalletTransactions,
   updateMyWallet,
+  getRolePermissions,
+  uploadMyWhatsAppProfileLogo,
 } = require('../controllers/AdminAuthController');
 const {
   createAdminMeeting,
@@ -23,6 +25,7 @@ const {
   updateAdminMeeting,
 } = require('../controllers/meetingController');
 const { protectAdmin, authorizeAdmin } = require('../middlewares/AdminAuth');
+const upload = require('../middlewares/upload');
 
 // LOGIN (public)
 router.post('/login', loginAdmin);
@@ -32,7 +35,9 @@ router.post('/register', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin')
 
 // Settings Hub "me" APIs
 router.get('/me', protectAdmin, getMyAdminProfile);
+router.get('/role-permissions', protectAdmin, getRolePermissions);
 router.put('/me', protectAdmin, updateMyAdminProfile);
+router.post('/me/whatsapp-profile/logo', protectAdmin, upload.single("photo"), uploadMyWhatsAppProfileLogo);
 router.put('/me/password', protectAdmin, changeMyAdminPassword);
 router.post('/me/api-key', protectAdmin, regenerateMyApiKey);
 router.get('/me/audit-logs', protectAdmin, getMyAuditLogs);

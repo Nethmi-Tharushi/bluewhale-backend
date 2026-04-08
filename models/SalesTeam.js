@@ -21,6 +21,20 @@ const salesTeamSchema = new mongoose.Schema(
         default: [],
       },
     ],
+    settings: {
+      inboxShowSameTeamMembersInAssigneeList: {
+        type: Boolean,
+        default: false,
+      },
+      contactsAllowTeamLeadAssignContactsToTeamMembers: {
+        type: Boolean,
+        default: true,
+      },
+      contactsAllowTeamLeadViewAssignedContacts: {
+        type: Boolean,
+        default: true,
+      },
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AdminUser",
