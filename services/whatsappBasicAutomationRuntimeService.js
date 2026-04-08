@@ -1035,6 +1035,10 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
     type,
     settingsOverride,
   });
+  const automationService = require("./whatsappBasicAutomationService");
+  const deriveAutomationDeliveryDiagnostics =
+    automationService?.__private?.deriveAutomationDeliveryDiagnostics
+    || (() => ({}));
   const normalizedPhoneNumber = normalizeTestPhoneNumber(phoneNumber);
   const plan = await buildAutomationSendPlan({ automationKey, config });
 
@@ -1108,6 +1112,16 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
     }
   }
 
+  const diagnostics = deriveAutomationDeliveryDiagnostics({
+    templateMode: config.templateMode,
+    replyActionType: config.replyActionType,
+    replyActionDelivered,
+    replyActionFallbackExpected: fallbackUsed || replyActionFallbackUsed,
+    replyActionProviderMode: plan.deliveryMeta?.replyActionStatus || plan.deliveryMeta?.deliveredType || "none",
+    runtimeNotes: notes,
+    template: plan.templateResult?.resource || null,
+  });
+
   return {
     sent: true,
     type: automationKey,
@@ -1126,6 +1140,7 @@ const sendBasicAutomationTestMessage = async ({ type, phoneNumber, settingsOverr
         }
       : null,
     notes,
+    ...diagnostics,
   };
 };
 

@@ -1065,6 +1065,63 @@ const listBasicAutomationHistory = async (query = {}) => {
   };
 };
 
+const deriveAutomationDeliveryDiagnostics = ({
+  templateMode = "custom",
+  replyActionType = "none",
+  replyActionDelivered = false,
+  replyActionFallbackExpected = false,
+  replyActionProviderMode = "none",
+  runtimeNotes = [],
+  template = null,
+} = {}) => {
+  const notes = Array.isArray(runtimeNotes) ? runtimeNotes.map((note) => trimString(note)).filter(Boolean) : [];
+  const providerCapability = replyActionType !== "none"
+    ? replyActionProviderMode || replyActionType
+    : templateMode === "approved_template"
+      ? "approved_template"
+      : "plain_text";
+  const providerBlockingReason = notes.find((note) =>
+    /not found|inactive|not supported|missing|fallback|cannot be attached|required|configured/i.test(note)
+  ) || "";
+
+  let deliveryMode = "fully_live";
+  if (replyActionType !== "none") {
+    if (replyActionDelivered) {
+      deliveryMode = "fully_live";
+    } else if (replyActionFallbackExpected || providerBlockingReason) {
+      deliveryMode = "partially_live_with_fallback";
+    } else {
+      deliveryMode = "saved_but_not_runtime_connected";
+    }
+  } else if (templateMode === "approved_template" && !template) {
+    deliveryMode = "saved_but_not_runtime_connected";
+  }
+
+  const reasonCode = providerBlockingReason
+    ? /not found/i.test(providerBlockingReason)
+      ? "RESOURCE_NOT_FOUND"
+      : /inactive/i.test(providerBlockingReason)
+        ? "RESOURCE_INACTIVE"
+        : /not supported/i.test(providerBlockingReason)
+          ? "PROVIDER_UNSUPPORTED"
+          : /missing|required/i.test(providerBlockingReason)
+            ? "MISSING_PROVIDER_CONFIG"
+            : /fallback/i.test(providerBlockingReason)
+              ? "FALLBACK_IN_USE"
+              : "PROVIDER_BLOCKED"
+    : "";
+
+  return {
+    deliveryMode,
+    fallbackUsed: Boolean(replyActionFallbackExpected),
+    providerDelivered: Boolean(replyActionDelivered),
+    providerCapability,
+    providerBlockingReason,
+    reasonCode,
+    reasonMessage: providerBlockingReason,
+  };
+};
+
 const previewBasicAutomation = async ({ type, phoneNumber = "", settingsOverride = {} } = {}) => {
   const { config: previewConfig } = await resolveBasicAutomationConfig({ type, settingsOverride });
   const runtimeNotes = [];
@@ -1208,6 +1265,15 @@ const previewBasicAutomation = async ({ type, phoneNumber = "", settingsOverride
   const productCollectionSnapshot = resolvedProductCollection || buildProductCollectionResourceFromConfig(previewConfig);
   const previewButtonText = trimString(previewConfig.actionButtonText || interactiveListSnapshot.buttonText);
   const previewProductButtonText = trimString(previewConfig.actionButtonText || productCollectionSnapshot.buttonText);
+  const diagnostics = deriveAutomationDeliveryDiagnostics({
+    templateMode: previewConfig.templateMode,
+    replyActionType: previewConfig.replyActionType,
+    replyActionDelivered,
+    replyActionFallbackExpected,
+    replyActionProviderMode,
+    runtimeNotes,
+    template,
+  });
 
   return {
     mode: previewConfig.templateMode || "custom",
@@ -1256,6 +1322,7 @@ const previewBasicAutomation = async ({ type, phoneNumber = "", settingsOverride
     replyActionFallbackExpected,
     replyActionProviderMode,
     runtimeNotes,
+    ...diagnostics,
   };
 };
 
@@ -1285,6 +1352,7 @@ module.exports = {
     normalizeDelayedResponsePayload,
     applyReplyActionRules,
     mergeReplyActionConfig,
+    deriveAutomationDeliveryDiagnostics,
   },
 };
 
