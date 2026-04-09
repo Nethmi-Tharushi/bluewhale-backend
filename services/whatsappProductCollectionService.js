@@ -1,5 +1,6 @@
 const { Types } = require("mongoose");
 const WhatsAppProductCollection = require("../models/WhatsAppProductCollection");
+const { loadWhatsAppMetaConnection } = require("./whatsappMetaConnectionService");
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -49,6 +50,12 @@ const normalizeProductCollectionItems = (items = []) =>
     .filter((item) => item.id && item.title);
 
 const countProductCollectionItems = (items = []) => normalizeProductCollectionItems(items).length;
+
+const buildProductCollectionValidationError = (reason, status = 400) => {
+  const error = new Error(reason);
+  error.status = status;
+  return error;
+};
 
 const validateProductCollectionSnapshot = ({
   items = [],
@@ -107,6 +114,77 @@ const validateProductCollectionSnapshot = ({
     items: normalizedItems,
     itemCount: normalizedItems.length,
   };
+};
+
+const normalizeProductCollectionPayload = (payload = {}, current = {}) => {
+  const name = trimString(payload.name ?? current.name);
+  const buttonText = trimString(payload.buttonText ?? current.buttonText);
+  const description = trimString(payload.description ?? current.description);
+  const category = trimString(payload.category ?? current.category);
+  const isActive =
+    payload.isActive === undefined
+      ? current.isActive === undefined
+        ? true
+        : Boolean(current.isActive)
+      : Boolean(payload.isActive);
+  const items = normalizeProductCollectionItems(payload.items ?? current.items);
+
+  if (!name) {
+    throw buildProductCollectionValidationError("Product collection name is required");
+  }
+
+  if (!buttonText) {
+    throw buildProductCollectionValidationError("Product collection button text is required");
+  }
+
+  const validation = validateProductCollectionSnapshot({
+    items,
+    buttonText,
+    requireActive: false,
+    isActive,
+  });
+
+  if (!validation.valid) {
+    throw buildProductCollectionValidationError(validation.reason);
+  }
+
+  return {
+    name,
+    description,
+    buttonText,
+    category,
+    isActive,
+    items: validation.items,
+  };
+};
+
+const findProductCollectionDocument = async (id) => {
+  const productCollectionId = trimString(id);
+  if (!productCollectionId) {
+    return null;
+  }
+
+  const filter = Types.ObjectId.isValid(productCollectionId)
+    ? { $or: [{ _id: productCollectionId }, { slug: productCollectionId }] }
+    : { slug: slugify(productCollectionId) };
+
+  return WhatsAppProductCollection.findOne(filter);
+};
+
+const resolveUniqueSlug = async (name, currentId = null) => {
+  const baseSlug = slugify(name) || `collection-${Date.now()}`;
+  let candidate = baseSlug;
+  let suffix = 1;
+
+  while (await WhatsAppProductCollection.exists({
+    slug: candidate,
+    ...(currentId ? { _id: { $ne: currentId } } : {}),
+  })) {
+    candidate = `${baseSlug}-${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
 };
 
 const serializeProductCollection = (record = {}) => {
@@ -214,16 +292,7 @@ const listAvailableProductCollections = async () => {
 };
 
 const getProductCollectionById = async (id, options = {}) => {
-  const productCollectionId = trimString(id);
-  if (!productCollectionId) {
-    return null;
-  }
-
-  const filter = Types.ObjectId.isValid(productCollectionId)
-    ? { $or: [{ _id: productCollectionId }, { slug: productCollectionId }] }
-    : { slug: slugify(productCollectionId) };
-
-  const record = await WhatsAppProductCollection.findOne(filter).lean();
+  const record = await findProductCollectionDocument(id).lean();
   if (!record) {
     return null;
   }
@@ -236,10 +305,84 @@ const getProductCollectionById = async (id, options = {}) => {
   return serialized;
 };
 
-const isProductCollectionProviderConfigured = () => Boolean(trimString(process.env.WHATSAPP_CATALOG_ID));
+const createProductCollection = async (payload = {}, actorId = null) => {
+  const normalized = normalizeProductCollectionPayload(payload, { isActive: payload.isActive });
+  const slug = await resolveUniqueSlug(normalized.name);
+  const record = await WhatsAppProductCollection.create({
+    slug,
+    name: normalized.name,
+    description: normalized.description,
+    buttonText: normalized.buttonText,
+    category: normalized.category,
+    isActive: normalized.isActive,
+    items: normalized.items,
+    createdBy: actorId || null,
+    updatedBy: actorId || null,
+  });
 
-const getProductCollectionProviderConfig = () => ({
-  catalogId: trimString(process.env.WHATSAPP_CATALOG_ID),
+  return serializeProductCollection(record);
+};
+
+const updateProductCollection = async (id, payload = {}, actorId = null) => {
+  const record = await findProductCollectionDocument(id);
+  if (!record) {
+    const error = new Error("Product collection not found");
+    error.status = 404;
+    throw error;
+  }
+
+  const normalized = normalizeProductCollectionPayload(payload, {
+    name: record.name,
+    description: record.description,
+    buttonText: record.buttonText,
+    category: record.category,
+    isActive: record.isActive,
+    items: record.items,
+  });
+
+  record.slug = await resolveUniqueSlug(normalized.name, record._id);
+  record.name = normalized.name;
+  record.description = normalized.description;
+  record.buttonText = normalized.buttonText;
+  record.category = normalized.category;
+  record.isActive = normalized.isActive;
+  record.items = normalized.items;
+  record.updatedBy = actorId || record.updatedBy || null;
+
+  await record.save();
+  return serializeProductCollection(record);
+};
+
+const toggleProductCollection = async (id, isActive, actorId = null) => {
+  const record = await findProductCollectionDocument(id);
+  if (!record) {
+    const error = new Error("Product collection not found");
+    error.status = 404;
+    throw error;
+  }
+
+  record.isActive = Boolean(isActive);
+  record.updatedBy = actorId || record.updatedBy || null;
+  await record.save();
+  return serializeProductCollection(record);
+};
+
+const deleteProductCollection = async (id) => {
+  const record = await findProductCollectionDocument(id);
+  if (!record) {
+    const error = new Error("Product collection not found");
+    error.status = 404;
+    throw error;
+  }
+
+  await WhatsAppProductCollection.deleteOne({ _id: record._id });
+  return serializeProductCollection(record);
+};
+
+const isProductCollectionProviderConfigured = async () => Boolean(trimString((await loadWhatsAppMetaConnection()).catalogId));
+
+const getProductCollectionProviderConfig = async () => ({
+  catalogId: trimString((await loadWhatsAppMetaConnection()).catalogId),
 });
 
 module.exports = {
@@ -253,6 +396,10 @@ module.exports = {
   listProductCollections,
   listAvailableProductCollections,
   getProductCollectionById,
+  createProductCollection,
+  updateProductCollection,
+  toggleProductCollection,
+  deleteProductCollection,
   isProductCollectionProviderConfigured,
   getProductCollectionProviderConfig,
   slugify,

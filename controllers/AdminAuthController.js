@@ -2,12 +2,14 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const cloudinary = require("../config/cloudinary");
 const AdminUser = require('../models/AdminUser');
+const { syncWhatsAppMetaConnectionCache } = require("../services/whatsappMetaConnectionService");
 const {
   getWalletSummary,
   listWalletTransactions,
   topUpWallet,
   updateWalletConfig,
 } = require("../services/whatsappWalletService");
+const { syncWhatsAppAiIntentSettingsCache } = require("../services/whatsappAiIntentService");
 
 function getClientIp(req) {
   const xfwd = req.headers['x-forwarded-for'];
@@ -40,6 +42,7 @@ const buildDefaultRolePermissions = () => ({
     inbox: true,
     whatsappProfile: true,
     whatsappTemplates: true,
+    whatsappCommerce: true,
     whatsappAutomations: true,
     whatsappAssignment: true,
     whatsappCampaigns: true,
@@ -63,6 +66,7 @@ const buildDefaultRolePermissions = () => ({
     inbox: true,
     whatsappProfile: false,
     whatsappTemplates: false,
+    whatsappCommerce: false,
     whatsappAutomations: false,
     whatsappAssignment: false,
     whatsappCampaigns: false,
@@ -243,6 +247,28 @@ exports.getMyAdminProfile = async (req, res) => {
       };
       touched = true;
     }
+    if (!admin.settings?.whatsappMetaConnection) {
+      admin.settings = admin.settings || {};
+      admin.settings.whatsappMetaConnection = {
+        accessToken: "",
+        phoneNumberId: "",
+        businessAccountId: "",
+        appSecret: "",
+        webhookVerifyToken: "",
+        graphApiVersion: process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0",
+        appId: "",
+        catalogId: "",
+      };
+      touched = true;
+    }
+    if (!admin.settings?.whatsappAiIntentAutomation) {
+      admin.settings = admin.settings || {};
+      admin.settings.whatsappAiIntentAutomation = {
+        enabled: false,
+        chargeMinor: 1,
+      };
+      touched = true;
+    }
     if (!admin.apiKey) { admin.apiKey = generateApiKey(); touched = true; }
     if (!admin.billing) { admin.billing = undefined; touched = true; }
     if (!admin.auditLogs) { admin.auditLogs = []; touched = true; }
@@ -305,6 +331,18 @@ exports.updateMyAdminProfile = async (req, res) => {
           ...settings.whatsappProfile,
         };
       }
+      if (settings.whatsappMetaConnection && typeof settings.whatsappMetaConnection === "object") {
+        admin.settings.whatsappMetaConnection = {
+          ...(admin.settings.whatsappMetaConnection || {}),
+          ...settings.whatsappMetaConnection,
+        };
+      }
+      if (settings.whatsappAiIntentAutomation && typeof settings.whatsappAiIntentAutomation === "object") {
+        admin.settings.whatsappAiIntentAutomation = {
+          ...(admin.settings.whatsappAiIntentAutomation || {}),
+          ...settings.whatsappAiIntentAutomation,
+        };
+      }
     }
 
     if (billing && typeof billing === 'object') {
@@ -313,6 +351,12 @@ exports.updateMyAdminProfile = async (req, res) => {
 
     pushAudit(admin, { what: 'Updated settings', ip: getClientIp(req) });
     await admin.save();
+    if (admin?.settings?.whatsappMetaConnection) {
+      syncWhatsAppMetaConnectionCache(admin.settings.whatsappMetaConnection);
+    }
+    if (admin?.settings?.whatsappAiIntentAutomation) {
+      syncWhatsAppAiIntentSettingsCache(admin.settings.whatsappAiIntentAutomation);
+    }
 
     const sanitized = await AdminUser.findById(adminId).select('-password');
     res.json({ success: true, admin: sanitized });

@@ -1240,7 +1240,7 @@ const previewBasicAutomation = async ({ type, phoneNumber = "", settingsOverride
       runtimeNotes.push("Product collection must include at least one item");
     } else if (previewConfig.templateMode === "approved_template") {
       runtimeNotes.push("Product collections cannot be attached to approved template sends in the current automation config");
-    } else if (!isProductCollectionProviderConfigured()) {
+    } else if (!(await isProductCollectionProviderConfigured())) {
       runtimeNotes.push("Product collection preset is saved, but provider catalog delivery is not yet configured; plain text fallback will be used at runtime");
     } else {
       replyActionDelivered = true;

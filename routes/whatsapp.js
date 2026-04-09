@@ -33,6 +33,10 @@ const {
   testSendWhatsAppBasicAutomation,
   getWhatsAppInteractiveLists,
   getWhatsAppProductCollections,
+  createWhatsAppProductCollection,
+  updateWhatsAppProductCollection,
+  toggleWhatsAppProductCollection,
+  deleteWhatsAppProductCollection,
   getWhatsAppForms,
   getWhatsAppForm,
   createWhatsAppFormDefinition,
@@ -107,6 +111,10 @@ router.post("/basic-automations/test", protectAdmin, authorizeAdmin(), testWhats
 router.post("/basic-automations/test-send", protectAdmin, authorizeAdmin(), testSendWhatsAppBasicAutomation);
 router.get("/interactive-lists", protectAdmin, authorizeAdmin(), getWhatsAppInteractiveLists);
 router.get("/product-collections", protectAdmin, authorizeAdmin(), getWhatsAppProductCollections);
+router.post("/product-collections", protectAdmin, authorizeAdmin(), createWhatsAppProductCollection);
+router.put("/product-collections/:id", protectAdmin, authorizeAdmin(), updateWhatsAppProductCollection);
+router.patch("/product-collections/:id/toggle", protectAdmin, authorizeAdmin(), toggleWhatsAppProductCollection);
+router.delete("/product-collections/:id", protectAdmin, authorizeAdmin(), deleteWhatsAppProductCollection);
 router.get("/forms", protectAdmin, authorizeAdmin(), getWhatsAppForms);
 router.get("/forms/:id", protectAdmin, authorizeAdmin(), getWhatsAppForm);
 router.post("/forms", protectAdmin, authorizeAdmin(), createWhatsAppFormDefinition);

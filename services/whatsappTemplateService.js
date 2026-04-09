@@ -2,8 +2,7 @@ const streamifier = require("streamifier");
 const cloudinary = require("../config/cloudinary");
 const WhatsAppTemplate = require("../models/WhatsAppTemplate");
 const WhatsAppTemplateDefaultMedia = require("../models/WhatsAppTemplateDefaultMedia");
-
-const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
+const { loadWhatsAppMetaConnection } = require("./whatsappMetaConnectionService");
 
 const SUPPORTED_TEMPLATE_CATEGORIES = ["MARKETING", "UTILITY", "AUTHENTICATION"];
 const SUPPORTED_TEMPLATE_BUTTONS = ["QUICK_REPLY", "URL", "PHONE_NUMBER"];
@@ -12,19 +11,20 @@ const MEDIA_HEADER_FORMATS = ["IMAGE", "VIDEO", "DOCUMENT"];
 
 const trimString = (value) => String(value || "").trim();
 
-const getWhatsAppConfig = () => {
-  const accessToken = trimString(process.env.WHATSAPP_ACCESS_TOKEN);
-  const businessAccountId = trimString(process.env.WHATSAPP_BUSINESS_ACCOUNT_ID);
+const getWhatsAppConfig = async () => {
+  const connection = await loadWhatsAppMetaConnection();
+  const accessToken = trimString(connection.accessToken);
+  const businessAccountId = trimString(connection.businessAccountId);
 
   if (!accessToken || !businessAccountId) {
-    throw new Error("Missing WhatsApp template credentials in environment variables");
+    throw new Error("Missing WhatsApp template credentials");
   }
 
-  return { accessToken, businessAccountId };
+  return { accessToken, businessAccountId, graphApiVersion: trimString(connection.graphApiVersion || "v21.0") || "v21.0" };
 };
 
-const buildGraphUrl = (path, searchParams = {}) => {
-  const url = new URL(`https://graph.facebook.com/${GRAPH_API_VERSION}/${path}`);
+const buildGraphUrl = (path, searchParams = {}, graphApiVersion = "v21.0") => {
+  const url = new URL(`https://graph.facebook.com/${graphApiVersion}/${path}`);
   Object.entries(searchParams).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, value);
@@ -357,12 +357,12 @@ const normalizeMetaTemplate = (template) => ({
 });
 
 const fetchAllTemplatesFromMeta = async () => {
-  const { businessAccountId, accessToken } = getWhatsAppConfig();
+  const { businessAccountId, accessToken, graphApiVersion } = await getWhatsAppConfig();
   const items = [];
   let nextUrl = buildGraphUrl(`${businessAccountId}/message_templates`, {
     limit: 100,
     fields: "id,name,status,category,language,components,quality_score,rejected_reason",
-  });
+  }, graphApiVersion);
 
   while (nextUrl) {
     const data = await graphJsonRequest({
@@ -723,7 +723,7 @@ const createTemplate = async ({
   allowCategoryChange = true,
   adminId = null,
 } = {}) => {
-  const { businessAccountId, accessToken } = getWhatsAppConfig();
+  const { businessAccountId, accessToken, graphApiVersion } = await getWhatsAppConfig();
   const definition = buildTemplateDefinition({
     name,
     category,
@@ -740,7 +740,7 @@ const createTemplate = async ({
   });
 
   const data = await graphJsonRequest({
-    url: buildGraphUrl(`${businessAccountId}/message_templates`),
+    url: buildGraphUrl(`${businessAccountId}/message_templates`, {}, graphApiVersion),
     method: "POST",
     accessToken,
     body: definition.metaPayload,
@@ -769,11 +769,10 @@ const createTemplate = async ({
 };
 
 const uploadTemplateHeaderMedia = async ({ buffer, filename = "", mimeType = "" } = {}) => {
-  const { accessToken } = getWhatsAppConfig();
-  const appId = trimString(process.env.WHATSAPP_APP_ID || process.env.META_APP_ID || "");
+  const { accessToken, appId, graphApiVersion } = await getWhatsAppConfig();
 
   if (!appId) {
-    throw new Error("Missing WhatsApp app id in environment variables");
+    throw new Error("Missing WhatsApp app id");
   }
 
   if (!buffer || !Buffer.isBuffer(buffer) || !buffer.length) {
@@ -788,7 +787,7 @@ const uploadTemplateHeaderMedia = async ({ buffer, filename = "", mimeType = "" 
       file_name: normalizedFilename,
       file_length: String(buffer.length),
       file_type: normalizedMimeType,
-    }),
+    }, graphApiVersion),
     method: "POST",
     accessToken,
     fallbackMessage: "Failed to start WhatsApp template media upload",
@@ -799,7 +798,7 @@ const uploadTemplateHeaderMedia = async ({ buffer, filename = "", mimeType = "" 
     throw new Error("Meta did not return an upload session id");
   }
 
-  const uploadResponse = await fetch(buildGraphUrl(uploadSessionId), {
+  const uploadResponse = await fetch(buildGraphUrl(uploadSessionId, {}, graphApiVersion), {
     method: "POST",
     headers: {
       Authorization: `OAuth ${accessToken}`,
@@ -1001,7 +1000,7 @@ const updateTemplate = async ({
     throw new Error("Template not found");
   }
 
-  const { accessToken } = getWhatsAppConfig();
+  const { accessToken, graphApiVersion } = await getWhatsAppConfig();
   const definition = buildTemplateDefinition({
     name: name || localTemplate.name,
     category: category || localTemplate.category,
@@ -1018,7 +1017,7 @@ const updateTemplate = async ({
   });
 
   const data = await graphJsonRequest({
-    url: buildGraphUrl(normalizedTemplateId),
+    url: buildGraphUrl(normalizedTemplateId, {}, graphApiVersion),
     method: "POST",
     accessToken,
     body: definition.metaPayload,
@@ -1057,17 +1056,17 @@ const deleteTemplate = async ({ templateId, adminId = null } = {}) => {
     throw new Error("Template not found");
   }
 
-  const { accessToken, businessAccountId } = getWhatsAppConfig();
+  const { accessToken, businessAccountId, graphApiVersion } = await getWhatsAppConfig();
   let deleted = false;
   let lastError = null;
 
   const deleteAttempts = [
     {
-      url: buildGraphUrl(normalizedTemplateId),
+      url: buildGraphUrl(normalizedTemplateId, {}, graphApiVersion),
       method: "DELETE",
     },
     {
-      url: buildGraphUrl(`${businessAccountId}/message_templates`, { name: localTemplate.name }),
+      url: buildGraphUrl(`${businessAccountId}/message_templates`, { name: localTemplate.name }, graphApiVersion),
       method: "DELETE",
     },
   ];

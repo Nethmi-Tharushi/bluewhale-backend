@@ -6,9 +6,26 @@ const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
 const AdminUser = require("../models/AdminUser");
 const { sendMessage } = require("./whatsappService");
+const { reserveWalletAmount, commitWalletReservation, releaseWalletReservation } = require("./whatsappWalletService");
+const { loadWhatsAppAiIntentSettings } = require("./whatsappAiIntentService");
 
 const AUTOMATION_TRIGGER_TYPES = ["new_conversation", "any_inbound_message", "keyword_match"];
 const AUTOMATION_ACTION_TYPES = ["send_text", "send_template", "send_buttons", "send_list", "add_tag", "add_note", "set_status", "assign_agent"];
+const AI_INTENT_MATCH_THRESHOLD = 0.58;
+const AI_INTENT_CONCEPT_MAP = [
+  { concept: "order", terms: ["order", "purchase", "booking", "invoice", "bill"] },
+  { concept: "tracking", terms: ["track", "tracking", "status", "delivery", "shipment", "shipping", "parcel", "courier", "dispatch", "where", "update", "updates"] },
+  { concept: "info", terms: ["detail", "details", "info", "information", "know", "tell", "show"] },
+  { concept: "payment", terms: ["payment", "pay", "paid", "billing", "invoice", "charge", "charged"] },
+  { concept: "pricing", terms: ["price", "pricing", "cost", "costs", "charge", "charges", "rate", "rates"] },
+  { concept: "support", terms: ["help", "support", "assist", "assistance", "issue", "problem", "query"] },
+  { concept: "schedule", terms: ["schedule", "booking", "appointment", "slot", "book", "reschedule", "meeting"] },
+  { concept: "refund", terms: ["refund", "refunds", "return", "returns", "cancel", "cancellation", "moneyback", "money-back"] },
+  { concept: "contact", terms: ["contact", "phone", "call", "email", "whatsapp", "reach", "message"] },
+  { concept: "delivery", terms: ["delivery", "deliver", "delivered", "dispatch", "shipment", "shipping"] },
+  { concept: "support_flow", terms: ["help", "support", "assist", "assistance", "issue", "problem", "query", "question"] },
+  { concept: "follow_up", terms: ["follow", "follow-up", "followup", "update", "updates", "status", "progress"] },
+];
 
 let workerInterval = null;
 let workerInFlight = false;
@@ -29,6 +46,109 @@ const normalizeStringArray = (value) => {
         .filter(Boolean)
     )
   );
+};
+
+const normalizeIntentText = (value = "") =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const tokenizeIntentText = (value = "") => normalizeIntentText(value).split(" ").filter(Boolean);
+
+const normalizeIntentToken = (token = "") => {
+  const normalized = String(token || "").toLowerCase().trim();
+  if (!normalized) return "";
+  if (normalized.length > 4 && normalized.endsWith("ies")) return normalized.slice(0, -3) + "y";
+  if (normalized.length > 4 && normalized.endsWith("ing")) return normalized.slice(0, -3);
+  if (normalized.length > 3 && normalized.endsWith("ed")) return normalized.slice(0, -2);
+  if (normalized.length > 3 && normalized.endsWith("es")) return normalized.slice(0, -2);
+  if (normalized.length > 3 && normalized.endsWith("s")) return normalized.slice(0, -1);
+  return normalized;
+};
+
+const buildIntentTokenSet = (value = "") => {
+  const tokens = tokenizeIntentText(value).map(normalizeIntentToken).filter(Boolean);
+  return new Set(tokens);
+};
+
+const buildIntentPhraseSet = (value = "") => {
+  const tokens = tokenizeIntentText(value);
+  const phrases = new Set();
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token) continue;
+    phrases.add(token);
+    if (tokens[index + 1]) {
+      phrases.add(`${token} ${tokens[index + 1]}`);
+    }
+    if (tokens[index + 2]) {
+      phrases.add(`${token} ${tokens[index + 1]} ${tokens[index + 2]}`);
+    }
+  }
+
+  return phrases;
+};
+
+const buildIntentConceptSet = (value = "") => {
+  const tokens = tokenizeIntentText(value).map(normalizeIntentToken).filter(Boolean);
+  const concepts = new Set();
+
+  for (const token of tokens) {
+    concepts.add(token);
+    for (const mapping of AI_INTENT_CONCEPT_MAP) {
+      if (Array.isArray(mapping.terms) && mapping.terms.includes(token)) {
+        concepts.add(mapping.concept);
+      }
+    }
+  }
+
+  return concepts;
+};
+
+const countSetOverlap = (leftSet = new Set(), rightSet = new Set()) => {
+  let overlap = 0;
+  for (const value of leftSet) {
+    if (rightSet.has(value)) overlap += 1;
+  }
+  return overlap;
+};
+
+const resolveIntentOverlapScore = (keyword = "", messageText = "") => {
+  const keywordConcepts = buildIntentConceptSet(keyword);
+  const messageConcepts = buildIntentConceptSet(messageText);
+  const keywordTokens = buildIntentTokenSet(keyword);
+  const messageTokens = buildIntentTokenSet(messageText);
+  const keywordPhrases = buildIntentPhraseSet(keyword);
+  const messagePhrases = buildIntentPhraseSet(messageText);
+
+  if (!keywordConcepts.size || !messageConcepts.size) return 0;
+
+  let conceptOverlap = 0;
+  for (const concept of keywordConcepts) {
+    if (messageConcepts.has(concept)) conceptOverlap += 1;
+  }
+
+  const keywordTokenOverlap = countSetOverlap(keywordTokens, messageTokens) / Math.max(1, keywordTokens.size);
+  const keywordPhraseOverlap = countSetOverlap(keywordPhrases, messagePhrases) / Math.max(1, keywordPhrases.size);
+  const conceptScore = conceptOverlap / Math.max(1, keywordConcepts.size);
+
+  const directPhrase = normalizeIntentText(keyword) && normalizeIntentText(messageText).includes(normalizeIntentText(keyword));
+  if (directPhrase) return 1;
+
+  const keywordHasQuestionIntent = keywordTokens.has("how") || keywordTokens.has("what") || keywordTokens.has("when") || keywordTokens.has("where");
+  const messageHasQuestionIntent = messageTokens.has("how") || messageTokens.has("what") || messageTokens.has("when") || messageTokens.has("where");
+  const intentPromptBonus = keywordHasQuestionIntent && messageHasQuestionIntent ? 0.05 : 0;
+
+  const weightedScore =
+    (conceptScore * 0.55) +
+    (keywordTokenOverlap * 0.3) +
+    (keywordPhraseOverlap * 0.15) +
+    intentPromptBonus;
+
+  return Math.max(0, Math.min(1, weightedScore));
 };
 
 const normalizeTimeValue = (value, fallback = "09:00") => {
@@ -278,17 +398,44 @@ const resolveBusinessHoursMatch = (triggerConfig = {}) => {
 
 const resolveKeywordMatch = (messageText = "", triggerConfig = {}) => {
   const keywords = normalizeStringArray(triggerConfig.keywords).map((item) => item.toLowerCase());
-  if (!keywords.length) return false;
+  if (!keywords.length) return { matched: false, matchMode: "none", keyword: "", score: 0 };
 
-  const normalizedMessage = String(messageText || "").trim().toLowerCase();
-  if (!normalizedMessage) return false;
+  const normalizedMessage = normalizeIntentText(messageText);
+  if (!normalizedMessage) return { matched: false, matchMode: "none", keyword: "", score: 0 };
 
   const keywordMatchMode = String(triggerConfig.keywordMatchMode || "contains").trim().toLowerCase();
   if (keywordMatchMode === "exact") {
-    return keywords.some((keyword) => normalizedMessage === keyword);
+    const matchedKeyword = keywords.find((keyword) => normalizedMessage === normalizeIntentText(keyword)) || "";
+    return matchedKeyword
+      ? { matched: true, matchMode: "exact", keyword: matchedKeyword, score: 1 }
+      : { matched: false, matchMode: "none", keyword: "", score: 0 };
   }
 
-  return keywords.some((keyword) => normalizedMessage.includes(keyword));
+  const containsKeyword = keywords.find((keyword) => normalizedMessage.includes(normalizeIntentText(keyword))) || "";
+  if (containsKeyword) {
+    return { matched: true, matchMode: "contains", keyword: containsKeyword, score: 1 };
+  }
+
+  const aiIntentEnabled = Boolean(triggerConfig.aiIntentEnabled);
+  if (!aiIntentEnabled) {
+    return { matched: false, matchMode: "none", keyword: "", score: 0 };
+  }
+
+  let bestKeyword = "";
+  let bestScore = 0;
+  for (const keyword of keywords) {
+    const score = resolveIntentOverlapScore(keyword, normalizedMessage);
+    if (score > bestScore) {
+      bestScore = score;
+      bestKeyword = keyword;
+    }
+  }
+
+  if (bestScore >= AI_INTENT_MATCH_THRESHOLD) {
+    return { matched: true, matchMode: "intent", keyword: bestKeyword, score: bestScore };
+  }
+
+  return { matched: false, matchMode: "none", keyword: "", score: bestScore };
 };
 
 const applyTemplateVariables = (template, context) => {
@@ -814,6 +961,7 @@ const processInboundAutomationEvent = async ({ app, conversation, contact, inbou
   const workflowContext = conversation?.workflowContext && typeof conversation.workflowContext === "object"
     ? conversation.workflowContext
     : null;
+  const aiIntentSettings = await loadWhatsAppAiIntentSettings();
 
   if (workflowContext?.status === "awaiting_interactive" && Types.ObjectId.isValid(String(workflowContext.automationId || ""))) {
     const pendingAutomation = await WhatsAppAutomation.findById(workflowContext.automationId).lean();
@@ -873,16 +1021,47 @@ const processInboundAutomationEvent = async ({ app, conversation, contact, inbou
 
     const triggerType = String(automation.triggerType || "").toLowerCase();
     const inboundText = String(inboundMessage?.content || "");
+    const keywordMatch = triggerType === "keyword_match"
+      ? resolveKeywordMatch(inboundText, {
+          ...(automation.triggerConfig || {}),
+          aiIntentEnabled: Boolean(aiIntentSettings?.enabled),
+        })
+      : null;
     const triggerMatches =
       (triggerType === "new_conversation" && isNewConversation) ||
       triggerType === "any_inbound_message" ||
-      (triggerType === "keyword_match" && resolveKeywordMatch(inboundText, automation.triggerConfig));
+      (triggerType === "keyword_match" && Boolean(keywordMatch?.matched));
 
     if (!triggerMatches) {
       continue;
     }
 
+    let aiIntentReservation = null;
     try {
+      const shouldChargeAiIntent =
+        triggerType === "keyword_match" &&
+        keywordMatch?.matchMode === "intent" &&
+        Number(aiIntentSettings?.chargeMinor || 0) > 0 &&
+        Boolean(aiIntentSettings?.enabled);
+
+      if (shouldChargeAiIntent) {
+        aiIntentReservation = await reserveWalletAmount({
+          amountMinor: Number(aiIntentSettings?.chargeMinor || 0),
+          description: `AI intent automation charge for ${automation.name || "workflow"}`,
+          note: `Matched "${keywordMatch.keyword || ""}" with semantic intent`,
+          metadata: {
+            automationId: toIdString(automation._id),
+            automationName: automation.name,
+            matchMode: keywordMatch.matchMode,
+            matchedKeyword: keywordMatch.keyword,
+            score: keywordMatch.score,
+            conversationId: toIdString(conversation?._id),
+            contactId: toIdString(contact?._id),
+            messageId: toIdString(inboundMessage?._id),
+          },
+        });
+      }
+
       if (String(automation.builderMode || "linear") === "visual") {
         const workflowResults = await executeVisualWorkflow({
           app,
@@ -923,7 +1102,33 @@ const processInboundAutomationEvent = async ({ app, conversation, contact, inbou
           });
         }
       }
+
+      if (aiIntentReservation?.reservationId) {
+        await commitWalletReservation({
+          reservationId: aiIntentReservation.reservationId,
+          note: `AI intent automation completed for ${automation.name || "workflow"}`,
+          metadata: {
+            automationId: toIdString(automation._id),
+            automationName: automation.name,
+            matchMode: keywordMatch?.matchMode || "intent",
+            matchedKeyword: keywordMatch?.keyword || "",
+            score: keywordMatch?.score || 0,
+          },
+        });
+      }
     } catch (error) {
+      if (aiIntentReservation?.reservationId) {
+        await releaseWalletReservation({
+          reservationId: aiIntentReservation.reservationId,
+          note: `AI intent automation failed for ${automation.name || "workflow"}`,
+          metadata: {
+            automationId: toIdString(automation._id),
+            automationName: automation.name,
+            error: error.message,
+          },
+        });
+      }
+
       results.push({
         automationId: toIdString(automation._id),
         automationName: automation.name,

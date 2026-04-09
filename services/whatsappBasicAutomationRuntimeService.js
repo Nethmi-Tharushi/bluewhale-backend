@@ -557,7 +557,7 @@ const validateReplyActionResource = async (automationKey, config) => {
       };
     }
 
-    if (!isProductCollectionProviderConfigured()) {
+    if (!(await isProductCollectionProviderConfigured())) {
       return {
         status: "provider_unavailable",
         supported: false,
@@ -571,7 +571,7 @@ const validateReplyActionResource = async (automationKey, config) => {
       };
     }
 
-    const providerConfig = getProductCollectionProviderConfig();
+    const providerConfig = await getProductCollectionProviderConfig();
     if (!providerConfig.catalogId) {
       return {
         status: "provider_invalid",

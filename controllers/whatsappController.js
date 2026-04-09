@@ -73,7 +73,16 @@ const {
   previewBasicAutomation,
 } = require("../services/whatsappBasicAutomationService");
 const { listInteractiveLists } = require("../services/whatsappInteractiveListService");
-const { listProductCollections } = require("../services/whatsappProductCollectionService");
+const {
+  listProductCollections,
+  createProductCollection,
+  updateProductCollection,
+  toggleProductCollection,
+  deleteProductCollection,
+  isProductCollectionProviderConfigured,
+  getProductCollectionProviderConfig,
+} = require("../services/whatsappProductCollectionService");
+const { loadWhatsAppMetaConnection } = require("../services/whatsappMetaConnectionService");
 const {
   listTemplates,
   syncTemplatesFromMeta,
@@ -107,6 +116,7 @@ const isDuplicateWhatsAppFormSlugError = (error) => error?.code === 11000 && Obj
 
 const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
 const canManageTemplates = (admin) => isMainAdmin(admin) || isSalesAdmin(admin) || isSalesStaff(admin);
+const canManageCommerce = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
 const isValidObjectId = (value) => Types.ObjectId.isValid(String(value || ""));
 
 const canSendConversationMessage = ({ admin, conversation }) => {
@@ -350,8 +360,9 @@ const getWebhookChallenge = async (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
+  const connection = await loadWhatsAppMetaConnection();
 
-  if (mode !== "subscribe" || token !== process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+  if (mode !== "subscribe" || token !== connection.webhookVerifyToken) {
     return res.status(403).json({ message: "Webhook verification failed" });
   }
 
@@ -372,10 +383,11 @@ const receiveWebhook = async (req, res) => {
       payload: req.body,
     });
 
+    const connection = await loadWhatsAppMetaConnection();
     const isValidSignature = verifyMetaSignature({
       rawBody: req.rawBody,
       signatureHeader: req.headers["x-hub-signature-256"],
-      appSecret: process.env.WHATSAPP_APP_SECRET,
+      appSecret: connection.appSecret,
     });
 
     if (!isValidSignature) {
@@ -500,7 +512,7 @@ const getMessageMedia = async (req, res) => {
       return res.status(404).json({ message: "Media reference is missing" });
     }
 
-    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    const { accessToken, graphApiVersion } = await loadWhatsAppMetaConnection();
     if (!accessToken) {
       return res.status(500).json({ message: "Missing WhatsApp access token" });
     }
@@ -508,6 +520,7 @@ const getMessageMedia = async (req, res) => {
     const { buffer, contentType } = await downloadMedia({
       mediaId: media.id,
       accessToken,
+      graphApiVersion,
     });
 
     if (media.filename) {
@@ -919,10 +932,68 @@ const getWhatsAppProductCollections = async (req, res) => {
       items: result.items,
       pagination: result.pagination,
       filters: result.filters,
+      providerConfigured: await isProductCollectionProviderConfigured(),
+      providerConfig: await getProductCollectionProviderConfig(),
     });
   } catch (error) {
     console.error("Failed to fetch WhatsApp product collections:", error);
     return res.status(error.status || 500).json({ message: error.message || "Failed to fetch product collections" });
+  }
+};
+
+const createWhatsAppProductCollection = async (req, res) => {
+  try {
+    if (!canManageCommerce(req.admin)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const collection = await createProductCollection(req.body || {}, req.admin?._id || null);
+    return res.status(201).json({ success: true, data: collection });
+  } catch (error) {
+    console.error("Failed to create WhatsApp product collection:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to create product collection" });
+  }
+};
+
+const updateWhatsAppProductCollection = async (req, res) => {
+  try {
+    if (!canManageCommerce(req.admin)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const collection = await updateProductCollection(req.params?.id, req.body || {}, req.admin?._id || null);
+    return res.json({ success: true, data: collection });
+  } catch (error) {
+    console.error("Failed to update WhatsApp product collection:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update product collection" });
+  }
+};
+
+const toggleWhatsAppProductCollection = async (req, res) => {
+  try {
+    if (!canManageCommerce(req.admin)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const collection = await toggleProductCollection(req.params?.id, req.body?.isActive, req.admin?._id || null);
+    return res.json({ success: true, data: collection });
+  } catch (error) {
+    console.error("Failed to toggle WhatsApp product collection:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to update product collection status" });
+  }
+};
+
+const deleteWhatsAppProductCollection = async (req, res) => {
+  try {
+    if (!canManageCommerce(req.admin)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const collection = await deleteProductCollection(req.params?.id);
+    return res.json({ success: true, data: collection, message: "Product collection deleted" });
+  } catch (error) {
+    console.error("Failed to delete WhatsApp product collection:", error);
+    return res.status(error.status || 400).json({ message: error.message || "Failed to delete product collection" });
   }
 };
 
@@ -1845,6 +1916,10 @@ module.exports = {
   testSendWhatsAppBasicAutomation,
   getWhatsAppInteractiveLists,
   getWhatsAppProductCollections,
+  createWhatsAppProductCollection,
+  updateWhatsAppProductCollection,
+  toggleWhatsAppProductCollection,
+  deleteWhatsAppProductCollection,
   getWhatsAppForms,
   getWhatsAppForm,
   createWhatsAppFormDefinition,

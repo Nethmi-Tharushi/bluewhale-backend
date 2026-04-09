@@ -2,6 +2,7 @@ const axios = require("axios");
 const WhatsAppEventLog = require("../models/WhatsAppEventLog");
 const cloudinary = require("../config/cloudinary");
 const streamifier = require("streamifier");
+const { loadWhatsAppMetaConnection } = require("./whatsappMetaConnectionService");
 const {
   getWalletSummary,
   reserveWalletAmount,
@@ -10,7 +11,6 @@ const {
   resolveTemplateChargeMinor,
 } = require("./whatsappWalletService");
 
-const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0";
 const FLOW_GRAPH_API_VERSION = "v19.0";
 const SUPPORTED_MEDIA_TYPES = ["image", "document", "audio", "video"];
 const SUPPORTED_INTERACTIVE_TYPES = ["button", "flow", "list", "product_list"];
@@ -387,8 +387,8 @@ const summarizeProductListPayload = (payload = {}) => {
   };
 };
 
-const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, retries = 3 }) => {
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+const sendGraphRequest = async ({ payload, accessToken, phoneNumberId, graphApiVersion = "v21.0", retries = 3 }) => {
+  const url = `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`;
   let lastError = null;
   const isListPayload = isListInteractivePayload(payload);
   const isProductListPayload = isProductListInteractivePayload(payload);
@@ -514,8 +514,8 @@ const sendFlowGraphRequest = async ({ payload, accessToken, phoneNumberId }) => 
   }
 };
 
-const getMediaMetadata = async ({ mediaId, accessToken }) => {
-  const response = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`, {
+const getMediaMetadata = async ({ mediaId, accessToken, graphApiVersion = "v21.0" }) => {
+  const response = await fetch(`https://graph.facebook.com/${graphApiVersion}/${mediaId}`, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -533,8 +533,8 @@ const getMediaMetadata = async ({ mediaId, accessToken }) => {
   return data;
 };
 
-const downloadMedia = async ({ mediaId, accessToken }) => {
-  const metadata = await getMediaMetadata({ mediaId, accessToken });
+const downloadMedia = async ({ mediaId, accessToken, graphApiVersion = "v21.0" }) => {
+  const metadata = await getMediaMetadata({ mediaId, accessToken, graphApiVersion });
   const response = await fetch(metadata.url, {
     method: "GET",
     headers: {
@@ -589,12 +589,13 @@ const getCloudinaryResourceType = (mimeType = "") => {
 };
 
 const cacheInboundMedia = async ({ mediaId, mimeType = "", filename = "" }) => {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const connection = await loadWhatsAppMetaConnection();
+  const accessToken = connection.accessToken;
   if (!accessToken || !mediaId) {
     throw new Error("Missing WhatsApp access token or media id");
   }
 
-  const downloaded = await downloadMedia({ mediaId, accessToken });
+  const downloaded = await downloadMedia({ mediaId, accessToken, graphApiVersion: connection.graphApiVersion });
   const uploadResult = await uploadBufferToCloudinary({
     buffer: downloaded.buffer,
     resourceType: getCloudinaryResourceType(mimeType || downloaded.metadata?.mime_type || ""),
@@ -612,8 +613,9 @@ const cacheInboundMedia = async ({ mediaId, mimeType = "", filename = "" }) => {
 };
 
 const sendMessage = async ({ to, type = "text", text, template, media, interactive, context = {} }) => {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const connection = await loadWhatsAppMetaConnection();
+  const accessToken = connection.accessToken;
+  const phoneNumberId = connection.phoneNumberId;
   let walletReservation = null;
   let walletChargeMinor = 0;
   let walletCurrency = "";
@@ -679,8 +681,8 @@ const sendMessage = async ({ to, type = "text", text, template, media, interacti
 
   try {
     const response = isFlowInteractivePayload(payload)
-      ? await sendFlowGraphRequest({ payload, accessToken, phoneNumberId })
-      : await sendGraphRequest({ payload, accessToken, phoneNumberId });
+      ? await sendFlowGraphRequest({ payload, accessToken, phoneNumberId, graphApiVersion: connection.graphApiVersion })
+      : await sendGraphRequest({ payload, accessToken, phoneNumberId, graphApiVersion: connection.graphApiVersion });
     let walletCommit = null;
     if (walletReservation?.reservationId) {
       try {

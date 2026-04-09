@@ -57,6 +57,20 @@ const adminUserSchema = new mongoose.Schema({
       address: { type: String, default: "" },
       verificationNote: { type: String, default: "" },
     },
+    whatsappMetaConnection: {
+      accessToken: { type: String, default: "" },
+      phoneNumberId: { type: String, default: "" },
+      businessAccountId: { type: String, default: "" },
+      appSecret: { type: String, default: "" },
+      webhookVerifyToken: { type: String, default: "" },
+      graphApiVersion: { type: String, default: "v21.0" },
+      appId: { type: String, default: "" },
+      catalogId: { type: String, default: "" },
+    },
+    whatsappAiIntentAutomation: {
+      enabled: { type: Boolean, default: false },
+      chargeMinor: { type: Number, default: 1 },
+    },
   },
 
   // Single active API key (simple approach)
