@@ -810,6 +810,108 @@ const executeVisualWorkflow = async ({ app, automation, conversation, contact, i
   return results;
 };
 
+const runAutomation = async ({ app, automation, conversation, contact, inboundMessage, context }) => {
+  const results = [];
+
+  try {
+    if (String(automation.builderMode || "linear") === "visual") {
+      const workflowResults = await executeVisualWorkflow({
+        app,
+        automation,
+        conversation,
+        contact,
+        inboundMessage,
+        context,
+      });
+      results.push(...workflowResults);
+    } else {
+      for (const [actionIndex, action] of (automation.actions || []).entries()) {
+        const summary = Number(action.delayMinutes || 0) > 0
+          ? await queueDelayedAction({
+              automation,
+              action,
+              actionIndex,
+              conversation,
+              contact,
+              inboundMessage,
+              contextSnapshot: context,
+            })
+          : await executeAutomationAction({
+              app,
+              automation,
+              action,
+              conversation,
+              contact,
+              inboundMessage,
+              context,
+            });
+
+        results.push({
+          automationId: toIdString(automation._id),
+          automationName: automation.name,
+          actionType: action.type,
+          summary,
+        });
+      }
+    }
+  } catch (error) {
+    results.push({
+      automationId: toIdString(automation._id),
+      automationName: automation.name,
+      actionType: "workflow",
+      error: error.message,
+    });
+
+    await WhatsAppAutomation.updateOne(
+      { _id: automation._id },
+      {
+        $inc: { errorCount: 1 },
+        $set: { lastTriggeredAt: new Date() },
+      }
+    );
+  }
+
+  await WhatsAppAutomation.updateOne(
+    { _id: automation._id },
+    {
+      $inc: { runCount: 1 },
+      $set: { lastTriggeredAt: new Date() },
+    }
+  );
+
+  return results;
+};
+
+const triggerAutomationById = async ({ app, automationId, conversation, contact, inboundMessage }) => {
+  if (!Types.ObjectId.isValid(String(automationId || ""))) {
+    const error = new Error("Invalid automation id");
+    error.status = 400;
+    throw error;
+  }
+
+  const automation = await WhatsAppAutomation.findById(automationId).lean();
+  if (!automation?.enabled) {
+    const error = new Error("Automation not found or disabled");
+    error.status = 404;
+    throw error;
+  }
+
+  const context = await buildExecutionContext({ conversation, contact, inboundMessage });
+  const results = await runAutomation({
+    app,
+    automation,
+    conversation,
+    contact,
+    inboundMessage,
+    context,
+  });
+
+  return {
+    automation,
+    results,
+  };
+};
+
 const processInboundAutomationEvent = async ({ app, conversation, contact, inboundMessage, isNewConversation = false }) => {
   const workflowContext = conversation?.workflowContext && typeof conversation.workflowContext === "object"
     ? conversation.workflowContext
@@ -882,71 +984,15 @@ const processInboundAutomationEvent = async ({ app, conversation, contact, inbou
       continue;
     }
 
-    try {
-      if (String(automation.builderMode || "linear") === "visual") {
-        const workflowResults = await executeVisualWorkflow({
-          app,
-          automation,
-          conversation,
-          contact,
-          inboundMessage,
-          context,
-        });
-        results.push(...workflowResults);
-      } else {
-        for (const [actionIndex, action] of (automation.actions || []).entries()) {
-          const summary = Number(action.delayMinutes || 0) > 0
-            ? await queueDelayedAction({
-                automation,
-                action,
-                actionIndex,
-                conversation,
-                contact,
-                inboundMessage,
-                contextSnapshot: context,
-              })
-            : await executeAutomationAction({
-                app,
-                automation,
-                action,
-                conversation,
-                contact,
-                inboundMessage,
-                context,
-              });
-
-          results.push({
-            automationId: toIdString(automation._id),
-            automationName: automation.name,
-            actionType: action.type,
-            summary,
-          });
-        }
-      }
-    } catch (error) {
-      results.push({
-        automationId: toIdString(automation._id),
-        automationName: automation.name,
-        actionType: "workflow",
-        error: error.message,
-      });
-
-      await WhatsAppAutomation.updateOne(
-        { _id: automation._id },
-        {
-          $inc: { errorCount: 1 },
-          $set: { lastTriggeredAt: new Date() },
-        }
-      );
-    }
-
-    await WhatsAppAutomation.updateOne(
-      { _id: automation._id },
-      {
-        $inc: { runCount: 1 },
-        $set: { lastTriggeredAt: new Date() },
-      }
-    );
+    const automationResults = await runAutomation({
+      app,
+      automation,
+      conversation,
+      contact,
+      inboundMessage,
+      context,
+    });
+    results.push(...automationResults);
   }
 
   return results;
@@ -1148,6 +1194,7 @@ module.exports = {
   toggleAutomation,
   deleteAutomation,
   processInboundAutomationEvent,
+  triggerAutomationById,
   startWhatsAppAutomationWorker,
   stopWhatsAppAutomationWorker,
 };

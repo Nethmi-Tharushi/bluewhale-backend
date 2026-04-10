@@ -1276,6 +1276,54 @@ const scheduleDelayedResponseWait = ({ config, previousState, nextState, inbound
   nextState.delayedResponse.resolvedAt = null;
 };
 
+const triggerBasicAutomation = async ({
+  app,
+  conversation,
+  contact,
+  inboundMessage = null,
+  automationKey,
+  dispatchAutomationMessage,
+} = {}) => {
+  const settings = await getBasicAutomationSettings();
+  const normalizedAutomationKey = trimString(automationKey);
+  const config = settings?.automations?.[normalizedAutomationKey];
+
+  if (!["welcome", "outOfOffice", "delayedResponse"].includes(normalizedAutomationKey)) {
+    const error = new Error("Unsupported basic automation key");
+    error.status = 400;
+    throw error;
+  }
+
+  if (!config?.enabled) {
+    return { status: "skipped", savedMessage: null, notes: ["Selected basic automation is disabled"] };
+  }
+
+  const result = await sendAutomationMessage({
+    app,
+    conversation,
+    contact,
+    automationKey: normalizedAutomationKey,
+    config,
+    dispatchAutomationMessage,
+  });
+
+  if (result.status === "sent" && result.savedMessage) {
+    if (normalizedAutomationKey === "welcome") {
+      await markWelcomeSent(conversation._id, result.savedMessage);
+    } else if (normalizedAutomationKey === "outOfOffice") {
+      await markOutOfOfficeSent(conversation._id, result.savedMessage);
+    } else if (normalizedAutomationKey === "delayedResponse") {
+      await markDelayedResponseSent(
+        conversation._id,
+        result.savedMessage,
+        inboundMessage?._id || conversation?.automationState?.delayedResponse?.pendingMessageId || null
+      );
+    }
+  }
+
+  return result;
+};
+
 const handleInboundAutomationEvent = async ({
   app,
   conversation,
@@ -1290,6 +1338,7 @@ const handleInboundAutomationEvent = async ({
   const previousState = cloneAutomationState(previousAutomationState);
   const nextState = cloneAutomationState(toObject(conversation.automationState));
   const eventTime = toDate(inboundMessage.timestamp) || new Date();
+  const results = [];
 
   nextState.lastCustomerMessageAt = eventTime;
   nextState.lastCustomerMessageId = inboundMessage._id;
@@ -1323,6 +1372,11 @@ const handleInboundAutomationEvent = async ({
 
     if (result.status === "sent" && result.savedMessage) {
       await markWelcomeSent(conversation._id, result.savedMessage);
+      results.push({
+        automationKey: "welcome",
+        status: result.status,
+        savedMessageId: result.savedMessage?._id || null,
+      });
     }
   }
 
@@ -1347,8 +1401,15 @@ const handleInboundAutomationEvent = async ({
 
     if (result.status === "sent" && result.savedMessage) {
       await markOutOfOfficeSent(conversation._id, result.savedMessage);
+      results.push({
+        automationKey: "outOfOffice",
+        status: result.status,
+        savedMessageId: result.savedMessage?._id || null,
+      });
     }
   }
+
+  return results;
 };
 
 const processDueDelayedResponseAutomations = async ({ app, dispatchAutomationMessage, limit = MAX_DELAYED_RESPONSE_BATCH } = {}) => {
@@ -1444,4 +1505,5 @@ module.exports = {
   handleInboundAutomationEvent,
   processDueDelayedResponseAutomations,
   sendBasicAutomationTestMessage,
+  triggerBasicAutomation,
 };
