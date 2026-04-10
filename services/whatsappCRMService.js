@@ -393,6 +393,11 @@ const saveInboundMessage = async ({ app, message }) => {
   const previousAutomationState = toPlainState(conversation.automationState);
 
   const externalMessageId = message.messageId || `inbound:${contact.phone}:${message.timestamp.toISOString()}`;
+  const existingMessage = await WhatsAppMessage.findOne({ externalMessageId });
+  if (existingMessage) {
+    return { contact, conversation, message: existingMessage, duplicate: true };
+  }
+
   const savedMessage = await WhatsAppMessage.findOneAndUpdate(
     { externalMessageId },
     {
@@ -458,8 +463,9 @@ const saveInboundMessage = async ({ app, message }) => {
   });
   emitMessageEvent(app, savedMessage.toObject ? savedMessage.toObject() : savedMessage);
   await emitConversationEvents(app, conversation._id);
+  let automationResults = [];
   try {
-    await processInboundAutomationEvent({
+    automationResults = await processInboundAutomationEvent({
       app,
       conversation,
       contact,
@@ -470,8 +476,9 @@ const saveInboundMessage = async ({ app, message }) => {
     console.error("Failed to process WhatsApp automations:", error);
   }
 
+  let basicAutomationResults = [];
   try {
-    await handleInboundAutomationEvent({
+    basicAutomationResults = await handleInboundAutomationEvent({
       app,
       conversation,
       contact,
@@ -483,6 +490,44 @@ const saveInboundMessage = async ({ app, message }) => {
     });
   } catch (error) {
     console.error("Failed to process inbound WhatsApp automations:", error);
+  }
+
+  let aiIntentResult = { status: "skipped", reason: "not_run" };
+  try {
+    const { processInboundAiIntentMatch } = require("./whatsappAiIntentMatchingService");
+    const hardRuleMatched =
+      (Array.isArray(automationResults) && automationResults.length > 0)
+      || (Array.isArray(basicAutomationResults) && basicAutomationResults.length > 0);
+
+    aiIntentResult = await processInboundAiIntentMatch({
+      app,
+      conversation,
+      contact,
+      inboundMessage: savedMessage,
+      hardRuleMatched,
+      adminId: conversation.agentId || null,
+    });
+  } catch (error) {
+    console.error("Failed to process WhatsApp AI intent matching:", error);
+  }
+
+  try {
+    const { processInboundWhatsAppAiAgent } = require("./whatsappAiAgentService");
+    const hardRuleMatched =
+      (Array.isArray(automationResults) && automationResults.length > 0)
+      || (Array.isArray(basicAutomationResults) && basicAutomationResults.length > 0);
+
+    await processInboundWhatsAppAiAgent({
+      app,
+      conversation,
+      contact,
+      inboundMessage: savedMessage,
+      hardRuleMatched,
+      aiIntentMatched: aiIntentResult?.status === "matched",
+      adminId: conversation.agentId || null,
+    });
+  } catch (error) {
+    console.error("Failed to process WhatsApp AI Agent:", error);
   }
 
   return { contact, conversation, message: savedMessage };

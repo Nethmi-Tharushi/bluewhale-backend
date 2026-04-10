@@ -84,6 +84,67 @@ const whatsAppDelayedResponseStateSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const whatsAppAiAgentQualificationStateSchema = new mongoose.Schema(
+  {
+    capturedFields: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    pendingField: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    lastAskedAt: {
+      type: Date,
+      default: null,
+    },
+    completedAt: {
+      type: Date,
+      default: null,
+    },
+    leadId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Lead",
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const whatsAppAiAgentStateSchema = new mongoose.Schema(
+  {
+    currentAgentType: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    lastHandledMessageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "WhatsAppMessage",
+      default: null,
+    },
+    handoffTriggered: {
+      type: Boolean,
+      default: false,
+    },
+    handoffReason: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    handoffTriggeredAt: {
+      type: Date,
+      default: null,
+    },
+    qualification: {
+      type: whatsAppAiAgentQualificationStateSchema,
+      default: () => ({}),
+    },
+  },
+  { _id: false }
+);
+
 const whatsAppAutomationStateSchema = new mongoose.Schema(
   {
     lastCustomerMessageAt: {
@@ -109,6 +170,10 @@ const whatsAppAutomationStateSchema = new mongoose.Schema(
     },
     delayedResponse: {
       type: whatsAppDelayedResponseStateSchema,
+      default: () => ({}),
+    },
+    aiAgent: {
+      type: whatsAppAiAgentStateSchema,
       default: () => ({}),
     },
   },

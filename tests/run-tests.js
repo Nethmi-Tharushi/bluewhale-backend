@@ -27,6 +27,14 @@ const testFiles = [
   "./whatsapp-profile-logo-upload.test.js",
   "./whatsapp-profile-validation.test.js",
   "./whatsapp-product-collection.test.js",
+  "./whatsapp-ai-agent-service.test.js",
+  "./whatsapp-ai-agent-controller.test.js",
+  "./whatsapp-ai-agent-routes.test.js",
+  "./whatsapp-ai-agent-runtime.test.js",
+  "./whatsapp-ai-intent-matching-service.test.js",
+  "./whatsapp-ai-intent-matching-controller.test.js",
+  "./whatsapp-ai-intent-matching-routes.test.js",
+  "./whatsapp-ai-intent-matching-runtime.test.js",
   "./whatsapp-webhook-service.test.js",
 ];
 
