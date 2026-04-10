@@ -8,6 +8,7 @@ const AdminUser = require("../models/AdminUser");
 const { sendMessage } = require("./whatsappService");
 const { reserveWalletAmount, commitWalletReservation, releaseWalletReservation } = require("./whatsappWalletService");
 const { loadWhatsAppAiIntentSettings } = require("./whatsappAiIntentService");
+const { getSemanticEmbedding, cosineSimilarity } = require("./whatsappAiEmbeddingService");
 
 const AUTOMATION_TRIGGER_TYPES = ["new_conversation", "any_inbound_message", "keyword_match"];
 const AUTOMATION_ACTION_TYPES = ["send_text", "send_template", "send_buttons", "send_list", "add_tag", "add_note", "set_status", "assign_agent"];
@@ -149,6 +150,20 @@ const resolveIntentOverlapScore = (keyword = "", messageText = "") => {
     intentPromptBonus;
 
   return Math.max(0, Math.min(1, weightedScore));
+};
+
+const resolveEmbeddingIntentScore = async (keyword = "", messageText = "", messageEmbedding = null) => {
+  try {
+    const keywordEmbedding = await getSemanticEmbedding(keyword, { role: "query" });
+    if (!keywordEmbedding) return 0;
+
+    const resolvedMessageEmbedding = messageEmbedding || (await getSemanticEmbedding(messageText, { role: "passage" }));
+    if (!resolvedMessageEmbedding) return 0;
+
+    return cosineSimilarity(keywordEmbedding, resolvedMessageEmbedding);
+  } catch (error) {
+    return 0;
+  }
 };
 
 const normalizeTimeValue = (value, fallback = "09:00") => {
@@ -396,7 +411,7 @@ const resolveBusinessHoursMatch = (triggerConfig = {}) => {
   return currentMinutes >= startMinutes || currentMinutes < endMinutes;
 };
 
-const resolveKeywordMatch = (messageText = "", triggerConfig = {}) => {
+const resolveKeywordMatch = async (messageText = "", triggerConfig = {}) => {
   const keywords = normalizeStringArray(triggerConfig.keywords).map((item) => item.toLowerCase());
   if (!keywords.length) return { matched: false, matchMode: "none", keyword: "", score: 0 };
 
@@ -421,17 +436,26 @@ const resolveKeywordMatch = (messageText = "", triggerConfig = {}) => {
     return { matched: false, matchMode: "none", keyword: "", score: 0 };
   }
 
+  const normalizedMessageEmbedding = await getSemanticEmbedding(normalizedMessage, { role: "passage" });
   let bestKeyword = "";
   let bestScore = 0;
   for (const keyword of keywords) {
-    const score = resolveIntentOverlapScore(keyword, normalizedMessage);
+    const ruleScore = resolveIntentOverlapScore(keyword, normalizedMessage);
+    const embeddingScore = normalizedMessageEmbedding
+      ? await resolveEmbeddingIntentScore(keyword, normalizedMessage, normalizedMessageEmbedding)
+      : 0;
+    const score = Math.max(ruleScore, embeddingScore);
     if (score > bestScore) {
       bestScore = score;
       bestKeyword = keyword;
     }
   }
 
-  if (bestScore >= AI_INTENT_MATCH_THRESHOLD) {
+  const threshold = Number.isFinite(Number(triggerConfig.matchThreshold))
+    ? Math.min(0.95, Math.max(0.1, Number(triggerConfig.matchThreshold)))
+    : AI_INTENT_MATCH_THRESHOLD;
+
+  if (bestScore >= threshold) {
     return { matched: true, matchMode: "intent", keyword: bestKeyword, score: bestScore };
   }
 
@@ -1005,6 +1029,7 @@ const processInboundAutomationEvent = async ({ app, conversation, contact, inbou
 
   const context = await buildExecutionContext({ conversation, contact, inboundMessage });
   const results = [];
+  const candidateAutomations = [];
 
   for (const automation of automations) {
     if (Array.isArray(automation.assignedAgentIds) && automation.assignedAgentIds.length) {
@@ -1022,9 +1047,10 @@ const processInboundAutomationEvent = async ({ app, conversation, contact, inbou
     const triggerType = String(automation.triggerType || "").toLowerCase();
     const inboundText = String(inboundMessage?.content || "");
     const keywordMatch = triggerType === "keyword_match"
-      ? resolveKeywordMatch(inboundText, {
+      ? await resolveKeywordMatch(inboundText, {
           ...(automation.triggerConfig || {}),
           aiIntentEnabled: Boolean(aiIntentSettings?.enabled),
+          matchThreshold: aiIntentSettings?.matchThreshold,
         })
       : null;
     const triggerMatches =
@@ -1035,6 +1061,50 @@ const processInboundAutomationEvent = async ({ app, conversation, contact, inbou
     if (!triggerMatches) {
       continue;
     }
+
+    candidateAutomations.push({
+      automation,
+      triggerType,
+      keywordMatch,
+    });
+  }
+
+  if (!candidateAutomations.length) {
+    return results;
+  }
+
+  const bestCandidate = (() => {
+    let best = null;
+    let bestScore = -1;
+    let bestPriority = -1;
+    for (const candidate of candidateAutomations) {
+      if (candidate.triggerType !== "keyword_match") {
+        if (!best || bestPriority < 3) {
+          best = candidate;
+          bestPriority = 3;
+          bestScore = 1;
+        }
+        continue;
+      }
+
+      const matchMode = candidate.keywordMatch?.matchMode || "none";
+      const priority = matchMode === "exact" ? 3 : matchMode === "contains" ? 2 : matchMode === "intent" ? 1 : 0;
+      const score = Number(candidate.keywordMatch?.score || 0);
+      if (priority > bestPriority || (priority === bestPriority && score > bestScore)) {
+        best = candidate;
+        bestPriority = priority;
+        bestScore = score;
+      }
+    }
+    return best;
+  })();
+
+  const automationsToRun = bestCandidate ? [bestCandidate] : [];
+
+  for (const candidate of automationsToRun) {
+    const automation = candidate.automation;
+    const triggerType = candidate.triggerType;
+    const keywordMatch = candidate.keywordMatch;
 
     let aiIntentReservation = null;
     try {
