@@ -24,6 +24,17 @@ const adminUserSchema = new mongoose.Schema({
     default: null,
     index: true,
   },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'AdminUser',
+    default: null,
+    index: true,
+  },
+  lastLogin: {
+    type: Date,
+    default: null,
+    index: true,
+  },
 
   // ✅ Settings Hub support (optional fields; safe defaults)
   settings: {

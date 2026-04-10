@@ -5,12 +5,27 @@ process.env.CLOUDINARY_KEY = process.env.CLOUDINARY_KEY || "test-key";
 process.env.CLOUDINARY_SECRET = process.env.CLOUDINARY_SECRET || "test-secret";
 
 const testFiles = [
+  "./admin-management-service.test.js",
+  "./admin-management-controller.test.js",
+  "./admin-auth-controller.test.js",
+  "./admin-routes.test.js",
+  "./role-permission-profile-service.test.js",
+  "./role-permission-profile-controller.test.js",
+  "./role-permission-profile-validation.test.js",
   "./whatsapp-basic-automation-service.test.js",
   "./whatsapp-basic-automation-controller.test.js",
   "./whatsapp-basic-automation-runtime.test.js",
   "./whatsapp-campaign-service.test.js",
   "./whatsapp-campaign-controller.test.js",
   "./whatsapp-campaign-runtime.test.js",
+  "./whatsapp-contact-hub-service.test.js",
+  "./whatsapp-contact-hub-controller.test.js",
+  "./whatsapp-contact-hub-routes.test.js",
+  "./whatsapp-profile-service.test.js",
+  "./whatsapp-profile-controller.test.js",
+  "./whatsapp-profile-routes.test.js",
+  "./whatsapp-profile-logo-upload.test.js",
+  "./whatsapp-profile-validation.test.js",
   "./whatsapp-product-collection.test.js",
   "./whatsapp-webhook-service.test.js",
 ];

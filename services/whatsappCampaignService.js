@@ -17,6 +17,13 @@ const {
   deleteCampaignJobs,
   __private: runtimePrivate = {},
 } = require("./whatsappCampaignRuntimeService");
+const {
+  listAllWhatsAppContactHubRecords,
+  inferContactOptIn,
+  resolveContactSource,
+  buildContactHubRecord,
+  normalizeTags: normalizeContactHubTags,
+} = require("./whatsappContactHubService");
 
 const WHATSAPP_CAMPAIGN_STATUS_OPTIONS = WhatsAppCampaign.WHATSAPP_CAMPAIGN_STATUS_OPTIONS || [
   "Draft",
@@ -414,99 +421,40 @@ const normalizeAudienceTags = (value) => {
   return normalized;
 };
 
-const inferAudienceOptIn = (contact = {}, linkedLead = null) => {
-  const negativeFlags = [
-    contact?.doNotContact,
-    contact?.profile?.doNotContact,
-    contact?.profile?.unsubscribed,
-    contact?.profile?.whatsappUnsubscribed,
-    linkedLead?.doNotContact,
-    linkedLead?.unsubscribed,
-  ];
+const inferAudienceOptIn = (contact = {}, linkedLead = null) => inferContactOptIn(contact, linkedLead);
 
-  if (negativeFlags.some((value) => normalizeBooleanLike(value) === true)) {
-    return false;
-  }
-
-  const directSignals = [
-    contact?.optedIn,
-    contact?.optIn,
-    contact?.whatsappOptIn,
-    contact?.whatsappOptedIn,
-    contact?.marketingOptIn,
-    contact?.marketingConsent,
-    contact?.profile?.optedIn,
-    contact?.profile?.optIn,
-    contact?.profile?.whatsappOptIn,
-    contact?.profile?.whatsappOptedIn,
-    contact?.profile?.marketingOptIn,
-    contact?.profile?.marketingConsent,
-    linkedLead?.optedIn,
-    linkedLead?.optIn,
-    linkedLead?.whatsappOptIn,
-    linkedLead?.whatsappOptedIn,
-    linkedLead?.marketingOptIn,
-    linkedLead?.marketingConsent,
-  ];
-
-  for (const signal of directSignals) {
-    const normalized = normalizeBooleanLike(signal);
-    if (normalized !== null) {
-      return normalized;
-    }
-  }
-
-  return true;
-};
-
-const resolveAudienceSourceLabel = (contact = {}, linkedLead = null) => {
-  const sourceCandidates = [
-    linkedLead?.source,
-    linkedLead?.sourceDetails,
-    contact?.source,
-    contact?.profile?.source,
-    contact?.profile?.sourceDetails,
-    contact?.profile?.leadSource,
-    contact?.profile?.channel,
-  ];
-
-  for (const candidate of sourceCandidates) {
-    const normalized = trimString(candidate);
-    if (normalized && normalized.toLowerCase() !== "nothing selected") {
-      return normalized;
-    }
-  }
-
-  return "WhatsApp";
-};
+const resolveAudienceSourceLabel = (contact = {}, linkedLead = null) => resolveContactSource(contact, linkedLead);
 
 const normalizeAudienceContactRecord = ({ contact = {}, conversation = null } = {}) => {
-  const linkedLead = conversation?.linkedLeadId && typeof conversation.linkedLeadId === "object"
-    ? conversation.linkedLeadId
-    : null;
-  const tags = normalizeAudienceTags(conversation?.tags);
-  const phone = trimString(contact.phone || contact.waId || linkedLead?.phone);
-
-  if (!phone) {
+  const record = buildContactHubRecord({ contact, conversation });
+  if (!record) {
     return null;
   }
 
   return {
-    id: trimString(contact._id || contact.id || conversation?._id),
-    name: trimString(contact.name || contact.profile?.name || linkedLead?.name || phone) || phone,
-    phone,
-    source: resolveAudienceSourceLabel(contact, linkedLead),
-    tag: tags[0] || "",
-    optedIn: inferAudienceOptIn(contact, linkedLead),
+    id: record.id,
+    name: record.name,
+    phone: record.phone,
+    source: record.source,
+    tag: record.tag,
+    optedIn: record.optedIn,
+    email: record.email,
+    tags: record.tags,
+    status: record.status,
+    accountOwner: record.accountOwner,
+    b2cConfirmation: record.b2cConfirmation,
+    city: record.city,
+    lastSeenAt: record.lastSeenAt,
+    totalMessages: record.totalMessages,
   };
 };
 
-const buildAudienceSegments = (conversations = []) => {
+const buildAudienceSegments = (contacts = []) => {
   const tagMap = new Map();
 
-  conversations.forEach((conversation) => {
-    const contactId = trimString(conversation.contactId?._id || conversation.contactId);
-    normalizeAudienceTags(conversation.tags).forEach((tag) => {
+  contacts.forEach((contact) => {
+    const contactId = trimString(contact.id || contact._id);
+    normalizeContactHubTags(contact.tags).forEach((tag) => {
       const dedupeKey = tag.toLowerCase();
       if (!tagMap.has(dedupeKey)) {
         tagMap.set(dedupeKey, {
@@ -533,44 +481,6 @@ const buildAudienceSegments = (conversations = []) => {
     .sort((left, right) => right.audienceSize - left.audienceSize || left.name.localeCompare(right.name));
 };
 
-const fetchWhatsAppAudienceBaseData = async () => {
-  const [contacts, conversations] = await Promise.all([
-    WhatsAppContact.find({})
-      .sort({ lastActivityAt: -1, _id: -1 })
-      .lean(),
-    WhatsAppConversation.find({ channel: "whatsapp" })
-      .select("contactId tags linkedLeadId")
-      .populate("linkedLeadId", "name source sourceDetails phone optedIn optIn whatsappOptIn whatsappOptedIn marketingOptIn marketingConsent doNotContact unsubscribed")
-      .lean(),
-  ]);
-
-  const conversationMap = new Map();
-  conversations.forEach((conversation) => {
-    const contactId = trimString(conversation.contactId?._id || conversation.contactId);
-    if (!contactId) return;
-
-    if (!conversationMap.has(contactId)) {
-      conversationMap.set(contactId, {
-        ...conversation,
-        tags: normalizeAudienceTags(conversation.tags),
-      });
-      return;
-    }
-
-    const existing = conversationMap.get(contactId);
-    existing.tags = normalizeAudienceTags([...(existing.tags || []), ...(conversation.tags || [])]);
-    if (!existing.linkedLeadId && conversation.linkedLeadId) {
-      existing.linkedLeadId = conversation.linkedLeadId;
-    }
-  });
-
-  return {
-    contacts: Array.isArray(contacts) ? contacts : [],
-    conversations,
-    conversationMap,
-  };
-};
-
 const filterAudienceContacts = (contacts = [], query = {}) => {
   const search = trimString(query.search);
   if (!search) {
@@ -587,15 +497,25 @@ const filterAudienceContacts = (contacts = [], query = {}) => {
 };
 
 const listWhatsAppCampaignAudienceResources = async () => {
-  const { contacts, conversations, conversationMap } = await fetchWhatsAppAudienceBaseData();
-
-  const normalizedContacts = contacts
-    .map((contact) => normalizeAudienceContactRecord({
-      contact,
-      conversation: conversationMap.get(trimString(contact._id || contact.id)) || null,
+  const normalizedContacts = (await listAllWhatsAppContactHubRecords({ sortBy: "createdAt:desc" }))
+    .map((record) => ({
+      id: record.id,
+      name: record.name,
+      phone: record.phone,
+      source: record.source,
+      tag: record.tag,
+      optedIn: record.optedIn,
+      email: record.email,
+      tags: record.tags,
+      status: record.status,
+      accountOwner: record.accountOwner,
+      b2cConfirmation: record.b2cConfirmation,
+      city: record.city,
+      lastSeenAt: record.lastSeenAt,
+      totalMessages: record.totalMessages,
     }))
     .filter(Boolean);
-  const segments = buildAudienceSegments(conversations);
+  const segments = buildAudienceSegments(normalizedContacts);
 
   return {
     contacts: normalizedContacts,

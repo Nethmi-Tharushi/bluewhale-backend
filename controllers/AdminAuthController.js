@@ -4,6 +4,12 @@ const cloudinary = require("../config/cloudinary");
 const AdminUser = require('../models/AdminUser');
 const { syncWhatsAppMetaConnectionCache } = require("../services/whatsappMetaConnectionService");
 const {
+  listAdminsForLegacyEndpoint,
+  createAdminRecord,
+  updateAdminRecord,
+  deleteAdminRecord,
+} = require("../services/adminManagementService");
+const {
   getWalletSummary,
   listWalletTransactions,
   topUpWallet,
@@ -96,37 +102,30 @@ const getGlobalRolePermissions = async () => {
   };
 };
 
+function handleAdminManagementError(res, err) {
+  if (err?.status) {
+    const payload = { message: err.message };
+    if (err.code) payload.code = err.code;
+    return res.status(err.status).json(payload);
+  }
+
+  if (err?.code === 11000) {
+    return res.status(400).json({ message: "Email already exists" });
+  }
+
+  return res.status(500).json({ message: err.message });
+}
+
 // REGISTER ADMIN USER
 exports.registerAdmin = async (req, res) => {
-  const { name, email, password, role, phone, reportsTo } = req.body;
-
   try {
-    if (req.admin?.role === "SalesAdmin" && role !== "SalesStaff") {
-      return res.status(403).json({ message: "SalesAdmin can only create SalesStaff users" });
-    }
-
-    const existing = await AdminUser.findOne({ email });
-    if (existing) return res.status(400).json({ message: 'Email already exists' });
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const payload = {
-      name,
-      email,
-      phone: phone || "",
-      password: hashedPassword,
-      role,
-    };
-
-    if (role === "SalesStaff") {
-      payload.reportsTo = req.admin?.role === "SalesAdmin" ? req.admin._id : reportsTo || null;
-    }
-
-    const admin = new AdminUser(payload);
-    await admin.save();
-
-    res.status(201).json({ message: 'Admin registered successfully' });
+    const admin = await createAdminRecord(req.body || {}, req.admin);
+    res.status(201).json({
+      message: 'Admin registered successfully',
+      admin,
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    handleAdminManagementError(res, err);
   }
 };
 
@@ -152,6 +151,7 @@ exports.loginAdmin = async (req, res) => {
       { expiresIn: '1d' }
     );
 
+    admin.lastLogin = new Date();
     pushAudit(admin, { what: 'Signed in', ip: getClientIp(req) });
     await admin.save();
 
@@ -172,43 +172,30 @@ exports.loginAdmin = async (req, res) => {
 // GET ALL ADMINS
 exports.getAllAdmins = async (req, res) => {
   try {
-    const admins = await AdminUser.find().select("-password");
+    const admins = await listAdminsForLegacyEndpoint(req.admin);
     res.json(admins);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    handleAdminManagementError(res, err);
   }
 };
 
 // UPDATE ADMIN (MainAdmin only existing)
 exports.updateAdmin = async (req, res) => {
   try {
-    const { name, email, role, phone, reportsTo } = req.body;
-    const admin = await AdminUser.findByIdAndUpdate(
-      req.params.id,
-      {
-        name,
-        email,
-        role,
-        phone,
-        reportsTo: role === "SalesStaff" ? reportsTo || null : null,
-      },
-      { new: true }
-    ).select("-password");
-    if (!admin) return res.status(404).json({ message: "Admin not found" });
+    const admin = await updateAdminRecord(req.params.id, req.body || {}, req.admin);
     res.json({ message: "Admin updated successfully", admin });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    handleAdminManagementError(res, err);
   }
 };
 
 // DELETE ADMIN
 exports.deleteAdmin = async (req, res) => {
   try {
-    const admin = await AdminUser.findByIdAndDelete(req.params.id);
-    if (!admin) return res.status(404).json({ message: "Admin not found" });
+    await deleteAdminRecord(req.params.id, req.admin);
     res.json({ message: "Admin deleted successfully" });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    handleAdminManagementError(res, err);
   }
 };
 
