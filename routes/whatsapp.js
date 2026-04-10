@@ -72,6 +72,7 @@ const {
   addConversationNote,
   updateConversationTags,
   setConversationLinkedLead,
+  resetConversation,
   sendOutgoingMessage,
 } = require("../controllers/whatsappController");
 const {
@@ -191,5 +192,6 @@ router.post("/conversations/:conversationId/status", protectAdmin, authorizeAdmi
 router.post("/conversations/:conversationId/notes", protectAdmin, authorizeAdmin(), addConversationNote);
 router.put("/conversations/:conversationId/tags", protectAdmin, authorizeAdmin(), updateConversationTags);
 router.patch("/conversations/:conversationId/link-lead", protectAdmin, authorizeAdmin(), setConversationLinkedLead);
+router.post("/conversations/:conversationId/reset", protectAdmin, authorizeAdmin(), resetConversation);
 
 module.exports = router;

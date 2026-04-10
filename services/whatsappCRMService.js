@@ -1,5 +1,6 @@
 const AdminUser = require("../models/AdminUser");
 const WhatsAppContact = require("../models/WhatsAppContact");
+const WhatsAppAiAgentLog = require("../models/WhatsAppAiAgentLog");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
 const { pickNextAgentRoundRobin } = require("./whatsappAssignmentService");
@@ -779,6 +780,71 @@ const linkConversationLead = async ({ conversationId, leadId }) => {
   return getConversationById(conversation._id);
 };
 
+const resetConversationHistory = async ({ conversationId }) => {
+  const conversation = await WhatsAppConversation.findById(conversationId);
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
+
+  const [messageDeleteResult, aiLogDeleteResult] = await Promise.all([
+    WhatsAppMessage.deleteMany({ conversationId: conversation._id }),
+    WhatsAppAiAgentLog.deleteMany({ conversationId: conversation._id }),
+  ]);
+
+  conversation.lastMessageAt = null;
+  conversation.lastIncomingAt = null;
+  conversation.lastOutgoingAt = null;
+  conversation.lastMessagePreview = "";
+  conversation.unreadCount = 0;
+  conversation.workflowStatus = "";
+  conversation.workflowContext = null;
+  conversation.automationState = {
+    lastCustomerMessageAt: null,
+    lastCustomerMessageId: null,
+    lastTeamReplyAt: null,
+    outOfOffice: {
+      lastSentAt: null,
+      lastSentMessageId: null,
+    },
+    welcome: {
+      lastSentAt: null,
+      lastSentMessageId: null,
+    },
+    delayedResponse: {
+      pendingSince: null,
+      dueAt: null,
+      pendingMessageId: null,
+      waitingForTeamReply: false,
+      lastSentAt: null,
+      lastSentMessageId: null,
+      lastSentForPendingMessageId: null,
+      cancelledAt: null,
+      resolvedAt: null,
+    },
+    aiAgent: {
+      currentAgentType: "",
+      lastHandledMessageId: null,
+      handoffTriggered: false,
+      handoffReason: "",
+      handoffTriggeredAt: null,
+      qualification: {
+        capturedFields: {},
+        pendingField: "",
+        lastAskedAt: null,
+        completedAt: null,
+        leadId: null,
+      },
+    },
+  };
+  await conversation.save();
+
+  return {
+    deletedMessagesCount: Number(messageDeleteResult?.deletedCount || 0),
+    deletedAiHistoryCount: Number(aiLogDeleteResult?.deletedCount || 0),
+    conversation: await getConversationById(conversation._id),
+  };
+};
+
 module.exports = {
   upsertContact,
   ensureConversation,
@@ -793,6 +859,7 @@ module.exports = {
   addConversationNote,
   replaceConversationTags,
   linkConversationLead,
+  resetConversationHistory,
   emitConversationEvents,
   getConversationById,
   formatConversation,

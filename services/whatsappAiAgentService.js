@@ -10,9 +10,12 @@ const WhatsAppAutomation = require("../models/WhatsAppAutomation");
 const WhatsAppBusinessProfile = require("../models/WhatsAppBusinessProfile");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppForm = require("../models/WhatsAppForm");
+const WhatsAppMessage = require("../models/WhatsAppMessage");
 const WhatsAppQuickReply = require("../models/WhatsAppQuickReply");
 const { listAvailableProductCollections } = require("./whatsappProductCollectionService");
 const { sendMessage } = require("./whatsappService");
+const { generateGroundedWhatsAppReply, generateOpenScopeWhatsAppReply, isOpenAiConfigured } = require("./openaiService");
+const { getQualificationFieldPrompt } = require("../prompts/whatsappAiAgentPrompts");
 
 const ROLLOUT_STATUS_OPTIONS = WhatsAppAiAgentSettings.ROLLOUT_STATUS_OPTIONS || ["draft", "interest_collected", "pilot", "live"];
 const AGENT_TYPE_OPTIONS = WhatsAppAiAgentSettings.AGENT_TYPE_OPTIONS || ["sales_agent", "faq_responder", "lead_qualifier"];
@@ -547,6 +550,71 @@ const buildSalesCatalogSource = async () => {
   );
 };
 
+const buildSalesKnowledgeEntries = (catalogItems = []) =>
+  (Array.isArray(catalogItems) ? catalogItems : [])
+    .map((item) => {
+      const details = [
+        trimString(item.title) ? `Option: ${trimString(item.title)}.` : "",
+        trimString(item.collectionName) ? `Collection: ${trimString(item.collectionName)}.` : "",
+        trimString(item.category) ? `Category: ${trimString(item.category)}.` : "",
+        trimString(item.description) ? `Details: ${trimString(item.description)}.` : "",
+        item.price !== undefined && item.price !== null ? `Price: ${item.price}.` : "",
+      ].filter(Boolean);
+
+      return {
+        destinationId: trimString(item.destinationId),
+        title: trimString(item.title),
+        answer: details.join(" "),
+        searchableText: trimString(item.searchableText),
+      };
+    })
+    .filter((item) => item.destinationId && item.title && item.answer);
+
+const didAssistantAskAboutCountry = (conversationHistory = []) => {
+  const lastAssistantMessage = (Array.isArray(conversationHistory) ? conversationHistory : [])
+    .slice()
+    .reverse()
+    .find((item) => item?.role === "assistant" && trimString(item?.text));
+
+  if (!lastAssistantMessage) {
+    return false;
+  }
+
+  return /\b(which country|what country|destination|interested in)\b/i.test(trimString(lastAssistantMessage.text));
+};
+
+const buildSalesClarificationReply = ({ country = "" } = {}) => {
+  const normalizedCountry = trimString(country);
+  if (normalizedCountry) {
+    return `Thanks for sharing. Are you looking for work, study, or migration support for ${normalizedCountry}?`;
+  }
+
+  return "Thanks for sharing. Are you looking for work, study, or migration support?";
+};
+
+const buildConversationHistory = async (conversation = null, limit = 15) => {
+  if (!conversation?._id) {
+    return [];
+  }
+
+  const normalizedLimit = clampPositiveInteger(limit, 15, 20);
+  const recentMessages = await WhatsAppMessage.find({ conversationId: conversation._id })
+    .select("direction sender content timestamp type")
+    .sort({ timestamp: -1, createdAt: -1 })
+    .limit(normalizedLimit)
+    .lean();
+
+  return recentMessages
+    .slice()
+    .reverse()
+    .filter((item) => trimString(item?.content))
+    .map((item) => ({
+      role: item.direction === "outbound" || item.sender === "agent" || item.sender === "system" ? "assistant" : "user",
+      text: trimString(item.content),
+      timestamp: item.timestamp ? new Date(item.timestamp).toISOString() : "",
+    }));
+};
+
 const buildFaqKnowledgeSource = async () => {
   const [quickReplies, businessProfile] = await Promise.all([
     WhatsAppQuickReply.find({ isActive: true }).select("_id title category folder content").sort({ updatedAt: -1, _id: -1 }).lean(),
@@ -609,9 +677,19 @@ const buildFaqKnowledgeSource = async () => {
       : null,
   ].filter(Boolean);
 
-  return [...quickReplyEntries, ...profileEntries];
+  return {
+    businessName: trimString(businessProfile?.businessName || ""),
+    knowledgeEntries: [...quickReplyEntries, ...profileEntries],
+  };
 };
 
+const getBusinessDisplayName = async () => {
+  const businessProfile = await WhatsAppBusinessProfile.findOne({ singletonKey: DEFAULT_SINGLETON_KEY })
+    .select("businessName")
+    .lean();
+
+  return trimString(businessProfile?.businessName || "");
+};
 const getAgentModeConfig = (settings, agentType) => {
   if (agentType === "sales_agent") return settings.salesAgent || DEFAULT_SETTINGS.salesAgent;
   if (agentType === "faq_responder") return settings.faqResponder || DEFAULT_SETTINGS.faqResponder;
@@ -662,7 +740,37 @@ const formatSuggestions = (items = []) =>
     price: item.price ?? null,
   }));
 
-const resolveSalesAgentResponse = async ({ message, settings } = {}) => {
+const tryOpenScopeAiReply = async ({ agentType, message, businessName = "", knowledgeEntries = [], conversationHistory = [], capturedContext = {}, pendingField = "", } = {}) => {
+  if (!isOpenAiConfigured()) {
+    return null;
+  }
+  try {
+    const aiReply = await generateOpenScopeWhatsAppReply({
+      agentType,
+      message,
+      knowledgeEntries,
+      businessName,
+      conversationHistory,
+      capturedContext,
+      pendingField,
+    });
+    if (!aiReply) {
+      return null;
+    }
+    return {
+      shouldAnswer: Boolean(aiReply.shouldAnswer),
+      answer: trimString(aiReply.answer),
+      confidence: Math.max(0, Math.min(1, Number(aiReply.confidence || 0))),
+      handoff: Boolean(aiReply.handoff),
+      reason: trimString(aiReply.reason),
+    };
+  } catch (error) {
+    console.warn(`Open-scope ${trimString(agentType) || "ai_agent"} reply failed, falling back to local logic: ${error.message}`);
+    return null;
+  }
+};
+
+const resolveSalesAgentResponse = async ({ message, settings, conversation = null, contact = null } = {}) => {
   const modeConfig = settings.salesAgent || DEFAULT_SETTINGS.salesAgent;
   if (!modeConfig.catalogEnabled) {
     return {
@@ -689,6 +797,39 @@ const resolveSalesAgentResponse = async ({ message, settings } = {}) => {
 
   const top = scored[0];
   if (!top || top.confidence < 0.42) {
+    const openScopeReply = await tryOpenScopeAiReply({
+      agentType: "sales_agent",
+      message,
+      businessName: await getBusinessDisplayName(),
+      knowledgeEntries: buildSalesKnowledgeEntries(catalogItems),
+      conversationHistory: [],
+      capturedContext: {},
+    });
+    if (openScopeReply?.shouldAnswer && openScopeReply.answer) {
+      return {
+        status: "preview",
+        reply: trimString(openScopeReply.answer),
+        responseSource: "ai",
+        confidence: Number(openScopeReply.confidence.toFixed(2)),
+        suggestions: [],
+        leadCapture: { needed: false, fields: [] },
+        handoffTriggered: false,
+        notes: [
+          "open_scope_ai_reply",
+          `match_reason=${openScopeReply.reason}`,
+        ].filter(Boolean),
+        matchedCatalogItemIds: [],
+        matchedKnowledgeArticleIds: [],
+      };
+    }
+    if (openScopeReply?.handoff) {
+      return {
+        status: "handoff",
+        suggestions: [],
+        leadCapture: { needed: false, fields: [] },
+        ...buildFallbackReply({ settings, agentType: "sales_agent", reason: "handoff_requested", handoffRequested: true }),
+      };
+    }
     return {
       status: "fallback",
       suggestions: [],
@@ -722,7 +863,7 @@ const resolveSalesAgentResponse = async ({ message, settings } = {}) => {
   };
 };
 
-const resolveFaqResponderResponse = async ({ message, settings } = {}) => {
+const resolveFaqResponderResponse = async ({ message, settings, conversation = null, contact = null } = {}) => {
   const modeConfig = settings.faqResponder || DEFAULT_SETTINGS.faqResponder;
   if (!modeConfig.knowledgeBaseEnabled) {
     return {
@@ -733,7 +874,7 @@ const resolveFaqResponderResponse = async ({ message, settings } = {}) => {
     };
   }
 
-  const knowledgeEntries = await buildFaqKnowledgeSource();
+  const { knowledgeEntries, businessName } = await buildFaqKnowledgeSource();
   if (!knowledgeEntries.length) {
     return {
       status: "fallback",
@@ -749,6 +890,31 @@ const resolveFaqResponderResponse = async ({ message, settings } = {}) => {
 
   const top = scored[0];
   if (!top || top.confidence < 0.46) {
+    const openScopeReply = await tryOpenScopeAiReply({
+      agentType: "faq_responder",
+      message,
+      businessName,
+      knowledgeEntries,
+      conversationHistory: [],
+      capturedContext: {},
+    });
+    if (openScopeReply?.shouldAnswer && openScopeReply.answer) {
+      return {
+        status: "preview",
+        reply: trimString(openScopeReply.answer),
+        responseSource: "ai",
+        confidence: Number(openScopeReply.confidence.toFixed(2)),
+        suggestions: [],
+        leadCapture: { needed: false, fields: [] },
+        handoffTriggered: false,
+        notes: [
+          "open_scope_ai_reply",
+          `match_reason=${openScopeReply.reason}`,
+        ].filter(Boolean),
+        matchedKnowledgeArticleIds: [],
+        matchedCatalogItemIds: [],
+      };
+    }
     return {
       status: "fallback",
       suggestions: [],
@@ -962,7 +1128,9 @@ const upsertQualifiedLead = async ({
         },
       },
     };
-    await conversation.save();
+    if (typeof conversation?.save === 'function') {
+      await conversation.save();
+    }
   }
 
   return lead;
@@ -1017,7 +1185,9 @@ const resolveLeadQualifierResponse = async ({
         },
       },
     };
-    await conversation.save();
+    if (typeof conversation?.save === 'function') {
+      await conversation.save();
+    }
   }
 
   if (missingFields.length) {
@@ -1719,7 +1889,9 @@ const persistConversationAgentState = async ({
       },
     },
   };
-  await conversation.save();
+  if (typeof conversation?.save === 'function') {
+    await conversation.save();
+  }
 };
 
 const isConversationEligibleForAiAgent = (conversation = {}) => {
@@ -1986,3 +2158,6 @@ module.exports = {
     upsertQualifiedLead,
   },
 };
+
+
+

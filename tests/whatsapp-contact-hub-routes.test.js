@@ -91,4 +91,8 @@ module.exports = async () => {
   const exportRoute = findRoute("get", "/contact-hub/export");
   assert.ok(exportRoute);
   assert.deepEqual(exportRoute.handlers[1].roles, ["MainAdmin", "SalesAdmin"]);
+
+  const resetConversationRoute = findRoute("post", "/conversations/:conversationId/reset");
+  assert.ok(resetConversationRoute);
+  assert.equal(resetConversationRoute.handlers[0], protectAdmin);
 };

@@ -18,6 +18,7 @@ const {
   addConversationNote: createConversationNote,
   replaceConversationTags,
   linkConversationLead,
+  resetConversationHistory,
   emitConversationEvents,
   ensureConversation,
   getConversationById,
@@ -1724,6 +1725,39 @@ const setConversationLinkedLead = async (req, res) => {
   }
 };
 
+const resetConversation = async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.conversationId)) {
+      return res.status(400).json({ message: "Invalid conversationId" });
+    }
+
+    const conversation = await WhatsAppConversation.findById(req.params.conversationId).select("_id agentId");
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (!canUpdateConversationStatus({ admin: req.admin, conversation })) {
+      return res.status(403).json({ message: "Access denied: you cannot reset this conversation" });
+    }
+
+    const result = await resetConversationHistory({
+      conversationId: req.params.conversationId,
+    });
+
+    await emitConversationEvents(req.app, result.conversation?._id || req.params.conversationId);
+
+    return res.json({
+      success: true,
+      conversation: result.conversation,
+      deletedMessagesCount: result.deletedMessagesCount,
+      deletedAiHistoryCount: result.deletedAiHistoryCount,
+    });
+  } catch (error) {
+    console.error("Failed to reset WhatsApp conversation history:", error);
+    return res.status(400).json({ message: error.message || "Failed to reset conversation history" });
+  }
+};
+
 const sendOutgoingMessage = async (req, res) => {
   try {
     const {
@@ -1955,5 +1989,6 @@ module.exports = {
   addConversationNote,
   updateConversationTags,
   setConversationLinkedLead,
+  resetConversation,
   sendOutgoingMessage,
 };
