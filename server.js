@@ -260,6 +260,7 @@ app.use("/api/utilities", require("./routes/utilities"));
 app.use("/api/meetings", require("./routes/meetings"));
 app.use("/api/activity-logs", require("./routes/activityLogs"));
 app.use("/api/reports", require("./routes/reports"));
+app.use("/api/sales-crm", require("./routes/salesCrm"));
 app.use("/api/whatsapp/ai-agent", require("./routes/whatsappAiAgent"));
 app.use("/api/whatsapp/ai-intent-matching", require("./routes/whatsappAiIntentMatching"));
 app.use("/api/whatsapp", require("./routes/whatsapp"));

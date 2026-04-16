@@ -83,9 +83,9 @@ const buildDefaultRolePermissions = () => ({
     internalChat: true,
     invoices: false,
     targets: true,
-    leads: false,
+    leads: true,
     projects: false,
-    reports: false,
+    reports: true,
     settings: false,
     wallet: false,
     userManagement: false,
@@ -93,12 +93,46 @@ const buildDefaultRolePermissions = () => ({
   },
 });
 
+const mergeRolePermissionDefaults = (existingPermissions = {}) => {
+  const defaults = buildDefaultRolePermissions();
+  const source = existingPermissions && typeof existingPermissions === "object" ? existingPermissions : {};
+  const merged = { ...source };
+
+  Object.entries(defaults).forEach(([roleKey, defaultPermissions]) => {
+    const current = source[roleKey];
+    merged[roleKey] = {
+      ...defaultPermissions,
+      ...(current && typeof current === "object" ? current : {}),
+    };
+  });
+
+  return merged;
+};
+
+const mergeRolePermissionPatch = (existingPermissions = {}, patchPermissions = {}) => {
+  const base = mergeRolePermissionDefaults(existingPermissions);
+  const patch = patchPermissions && typeof patchPermissions === "object" ? patchPermissions : {};
+  const merged = { ...base };
+
+  Object.entries(patch).forEach(([roleKey, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      merged[roleKey] = {
+        ...(base[roleKey] && typeof base[roleKey] === "object" ? base[roleKey] : {}),
+        ...value,
+      };
+      return;
+    }
+
+    merged[roleKey] = value;
+  });
+
+  return mergeRolePermissionDefaults(merged);
+};
+
 const getGlobalRolePermissions = async () => {
   const mainAdmin = await AdminUser.findOne({ role: "MainAdmin" }).select("settings.rolePermissions");
   return {
-    rolePermissions: (mainAdmin?.settings?.rolePermissions && typeof mainAdmin.settings.rolePermissions === "object")
-      ? mainAdmin.settings.rolePermissions
-      : buildDefaultRolePermissions(),
+    rolePermissions: mergeRolePermissionDefaults(mainAdmin?.settings?.rolePermissions || {}),
   };
 };
 
@@ -213,9 +247,10 @@ exports.getMyAdminProfile = async (req, res) => {
     // Backfill defaults for older admin records
     let touched = false;
     if (!admin.settings) { admin.settings = undefined; touched = true; }
-    if (!admin.settings?.rolePermissions) {
+    const normalizedRolePermissions = mergeRolePermissionDefaults(admin.settings?.rolePermissions || {});
+    if (JSON.stringify(normalizedRolePermissions) !== JSON.stringify(admin.settings?.rolePermissions || {})) {
       admin.settings = admin.settings || {};
-      admin.settings.rolePermissions = buildDefaultRolePermissions();
+      admin.settings.rolePermissions = normalizedRolePermissions;
       touched = true;
     }
     if (!admin.settings?.whatsappProfile) {
@@ -307,10 +342,7 @@ exports.updateMyAdminProfile = async (req, res) => {
         };
       }
       if (settings.rolePermissions && typeof settings.rolePermissions === 'object') {
-        admin.settings.rolePermissions = {
-          ...(admin.settings.rolePermissions || buildDefaultRolePermissions()),
-          ...settings.rolePermissions,
-        };
+        admin.settings.rolePermissions = mergeRolePermissionPatch(admin.settings.rolePermissions || {}, settings.rolePermissions);
       }
       if (settings.whatsappProfile && typeof settings.whatsappProfile === "object") {
         admin.settings.whatsappProfile = {
@@ -453,7 +485,15 @@ exports.getMyWallet = async (req, res) => {
     const wallet = await getWalletSummary();
     const limit = Math.min(parseInt(req.query.limit || "20", 10) || 20, 100);
     const transactions = await listWalletTransactions({ limit });
-    res.json({ success: true, wallet, transactions });
+    res.json({
+      success: true,
+      wallet,
+      transactions,
+      data: {
+        wallet,
+        transactions,
+      },
+    });
   } catch (err) {
     res.status(err.status || 500).json({ message: err.message });
   }

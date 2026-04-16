@@ -99,7 +99,8 @@ const {
   prepareTemplateMessage,
 } = require("../services/whatsappTemplateService");
 const { verifyMetaSignature, parseWebhookPayload, normalizePhone } = require("../services/whatsappWebhookService");
-const { SALES_ROLES, buildOwnedFilter } = require("../utils/salesScope");
+const { SALES_ROLES } = require("../utils/salesScope");
+const { buildLeadAccessFilter } = require("../utils/leadSupport");
 
 const inferMediaMessageType = (file) => {
   if (!file?.mimetype) return null;
@@ -308,7 +309,7 @@ const extractTemplateDraft = (template) => {
 const findAccessibleLead = async (req, leadId) => {
   const query =
     req.admin && SALES_ROLES.includes(req.admin.role)
-      ? { _id: leadId, ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin") }
+      ? { _id: leadId, ...buildLeadAccessFilter(req) }
       : { _id: leadId };
 
   return Lead.findOne(query).select("_id");
