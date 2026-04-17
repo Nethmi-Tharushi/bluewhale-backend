@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const cloudinary = require("../config/cloudinary");
 const AdminUser = require('../models/AdminUser');
-const { syncWhatsAppMetaConnectionCache } = require("../services/whatsappMetaConnectionService");
+const { loadWhatsAppMetaConnection, syncWhatsAppMetaConnectionCache } = require("../services/whatsappMetaConnectionService");
 const {
   listAdminsForLegacyEndpoint,
   createAdminRecord,
@@ -692,6 +692,209 @@ exports.exchangeEmbeddedSignupCode = async (req, res) => {
     console.error("Failed to exchange Meta embedded signup code:", err);
     return res.status(err.status || 500).json({
       message: err.message || "Failed to complete Meta embedded signup",
+      ...(err.code ? { code: err.code } : {}),
+      ...(err.details ? { details: err.details } : {}),
+    });
+  }
+};
+
+const isMetaTokenExpiredError = (error = {}) => {
+  const message = trimString(error?.message).toLowerCase();
+  return (
+    Number(error?.code || 0) === 190 ||
+    message.includes("access token") ||
+    message.includes("session has expired")
+  );
+};
+
+// POST /api/admins/me/whatsapp-meta/disconnect
+exports.disconnectMetaConnection = async (req, res) => {
+  try {
+    if (String(req.admin?.role || "") !== "MainAdmin") {
+      return res.status(403).json({ message: "Only MainAdmin can disconnect Meta connection" });
+    }
+
+    const adminId = req.admin?._id;
+    const mode = trimString(req.body?.mode || "session_only").toLowerCase();
+    const admin = await AdminUser.findById(adminId);
+    if (!admin) {
+      return res.status(404).json({ message: "Admin not found" });
+    }
+
+    admin.settings = admin.settings || {};
+    const currentConnection = admin.settings.whatsappMetaConnection || {};
+    const nextConnection = {
+      ...currentConnection,
+      accessToken: "",
+      connectionMethod: "manual",
+      lastEmbeddedSignupAt: null,
+    };
+
+    if (mode === "reset_account") {
+      nextConnection.phoneNumberId = "";
+      nextConnection.businessAccountId = "";
+      nextConnection.catalogId = "";
+    } else if (mode !== "session_only") {
+      return res.status(400).json({
+        message: "Unsupported disconnect mode. Use session_only or reset_account",
+      });
+    }
+
+    admin.settings.whatsappMetaConnection = nextConnection;
+    pushAudit(admin, {
+      what: mode === "reset_account" ? "Disconnected Meta account and reset WhatsApp IDs" : "Disconnected Meta session token",
+      ip: getClientIp(req),
+    });
+    await admin.save();
+    syncWhatsAppMetaConnectionCache(nextConnection);
+
+    return res.json({
+      success: true,
+      message:
+        mode === "reset_account"
+          ? "Meta connection reset completed"
+          : "Meta session disconnected successfully",
+      connection: nextConnection,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message || "Failed to disconnect Meta connection" });
+  }
+};
+
+// GET /api/admins/me/whatsapp-meta/health
+exports.getMetaConnectionHealth = async (req, res) => {
+  try {
+    if (String(req.admin?.role || "") !== "MainAdmin") {
+      return res.status(403).json({ message: "Only MainAdmin can view Meta connection health" });
+    }
+
+    const connection = await loadWhatsAppMetaConnection({ refresh: true });
+    const graphApiVersion = trimString(connection?.graphApiVersion || "v21.0") || "v21.0";
+    const hasAccessToken = Boolean(trimString(connection?.accessToken));
+    const hasPhoneNumberId = Boolean(trimString(connection?.phoneNumberId));
+    const hasBusinessAccountId = Boolean(trimString(connection?.businessAccountId));
+    const hasAppId = Boolean(trimString(connection?.appId));
+    const hasAppSecret = Boolean(trimString(connection?.appSecret));
+    const hasWebhookVerifyToken = Boolean(trimString(connection?.webhookVerifyToken));
+
+    const checks = {
+      config: {
+        status: hasAccessToken && hasPhoneNumberId ? "ok" : "warning",
+        message: hasAccessToken && hasPhoneNumberId
+          ? "Access token and phone number ID are present."
+          : "Missing required fields. Access token and phone number ID are required.",
+      },
+      token: {
+        status: hasAccessToken ? "unknown" : "warning",
+        message: hasAccessToken ? "Token check pending." : "Access token is not configured.",
+      },
+      phoneNumber: {
+        status: hasPhoneNumberId ? "unknown" : "warning",
+        message: hasPhoneNumberId ? "Phone profile check pending." : "Phone number ID is not configured.",
+      },
+      webhook: {
+        status: hasWebhookVerifyToken ? "ok" : "warning",
+        message: hasWebhookVerifyToken ? "Webhook verify token is configured." : "Webhook verify token is not configured.",
+      },
+    };
+
+    const diagnostics = [];
+
+    if (hasAccessToken) {
+      try {
+        const tokenResult = await graphJsonRequest(
+          buildGraphUrl(graphApiVersion, "me", {
+            access_token: connection.accessToken,
+            fields: "id,name",
+          })
+        );
+        checks.token = {
+          status: "ok",
+          message: `Token is valid for ${trimString(tokenResult?.name || "Meta account")}.`,
+        };
+      } catch (error) {
+        const metaError = error?.details || {};
+        const tokenExpired = isMetaTokenExpiredError(metaError);
+        checks.token = {
+          status: tokenExpired ? "failed" : "warning",
+          message: tokenExpired
+            ? "WhatsApp access token is invalid or expired. Reconnect Meta account."
+            : trimString(error?.message || "Token check failed"),
+        };
+        diagnostics.push({
+          check: "token",
+          code: trimString(metaError?.code),
+          subcode: trimString(metaError?.error_subcode),
+          type: trimString(metaError?.type),
+        });
+      }
+    }
+
+    if (hasAccessToken && hasPhoneNumberId) {
+      try {
+        const phoneResult = await graphJsonRequest(
+          buildGraphUrl(graphApiVersion, connection.phoneNumberId, {
+            access_token: connection.accessToken,
+            fields: "id,display_phone_number,verified_name,quality_rating",
+          })
+        );
+        checks.phoneNumber = {
+          status: "ok",
+          message: `Phone ${trimString(phoneResult?.display_phone_number || phoneResult?.verified_name || connection.phoneNumberId)} is reachable.`,
+        };
+      } catch (error) {
+        const metaError = error?.details || {};
+        checks.phoneNumber = {
+          status: isMetaTokenExpiredError(metaError) ? "failed" : "warning",
+          message: trimString(error?.message || "Phone number check failed"),
+        };
+        diagnostics.push({
+          check: "phoneNumber",
+          code: trimString(metaError?.code),
+          subcode: trimString(metaError?.error_subcode),
+          type: trimString(metaError?.type),
+        });
+      }
+    }
+
+    const statusOrder = { failed: 3, warning: 2, unknown: 1, ok: 0 };
+    const overallStatus = Object.values(checks).reduce((current, check) =>
+      statusOrder[check.status] > statusOrder[current] ? check.status : current, "ok");
+
+    const data = {
+      status: overallStatus,
+      checkedAt: new Date().toISOString(),
+      connection: {
+        source: connection?.source || "unknown",
+        connectionMethod: connection?.connectionMethod || "manual",
+        graphApiVersion,
+        lastEmbeddedSignupAt: connection?.lastEmbeddedSignupAt || null,
+      },
+      checks,
+      flags: {
+        hasAccessToken,
+        hasPhoneNumberId,
+        hasBusinessAccountId,
+        hasAppId,
+        hasAppSecret,
+        hasWebhookVerifyToken,
+      },
+      diagnostics,
+    };
+
+    return res.json({
+      success: true,
+      health: data,
+      message:
+        overallStatus === "ok"
+          ? "Meta connection is healthy"
+          : overallStatus === "failed"
+            ? "Meta connection has critical issues"
+            : "Meta connection has warnings",
+    });
+  } catch (err) {
+    return res.status(err.status || 500).json({
+      message: err.message || "Failed to check Meta connection health",
       ...(err.code ? { code: err.code } : {}),
       ...(err.details ? { details: err.details } : {}),
     });

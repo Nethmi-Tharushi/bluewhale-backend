@@ -53,6 +53,7 @@ const normalizeWhatsAppApiError = (error) => {
   if (!error || typeof error !== "object") return error;
   if (isWhatsAppTokenError(error)) {
     error.status = 503;
+    error.code = "WHATSAPP_TOKEN_EXPIRED";
   }
   return error;
 };

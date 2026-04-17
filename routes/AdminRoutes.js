@@ -18,6 +18,8 @@ const {
   getRolePermissions,
   uploadMyWhatsAppProfileLogo,
   exchangeEmbeddedSignupCode,
+  disconnectMetaConnection,
+  getMetaConnectionHealth,
 } = require('../controllers/AdminAuthController');
 const {
   getAgentSettings,
@@ -67,6 +69,8 @@ router.get('/me/role-permissions', protectAdmin, getRolePermissions);
 router.put('/me', protectAdmin, updateMyAdminProfile);
 router.post('/me/whatsapp-profile/logo', protectAdmin, upload.single("photo"), uploadMyWhatsAppProfileLogo);
 router.post('/me/whatsapp-meta/embedded-signup/exchange', protectAdmin, authorizeAdmin('MainAdmin'), exchangeEmbeddedSignupCode);
+router.post('/me/whatsapp-meta/disconnect', protectAdmin, authorizeAdmin('MainAdmin'), disconnectMetaConnection);
+router.get('/me/whatsapp-meta/health', protectAdmin, authorizeAdmin('MainAdmin'), getMetaConnectionHealth);
 router.put('/me/password', protectAdmin, changeMyAdminPassword);
 router.post('/me/api-key', protectAdmin, regenerateMyApiKey);
 router.get('/me/audit-logs', protectAdmin, getMyAuditLogs);
