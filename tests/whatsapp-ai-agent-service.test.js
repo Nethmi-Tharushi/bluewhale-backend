@@ -26,6 +26,9 @@ const createQuery = (value) => ({
 });
 
 module.exports = async () => {
+  process.env.OPENAI_API_KEY = "";
+  process.env.GROQ_API_KEY = "";
+
   const defaultService = loadWithMocks(path.resolve(__dirname, "../services/whatsappAiAgentService.js"), {
     "../models/ActivityLog": { create: async () => ({}) },
     "../models/AdminUser": { findById: () => createQuery(null) },
@@ -219,6 +222,217 @@ module.exports = async () => {
   assert.equal(Array.isArray(salesResult.suggestions), true);
   assert.equal(salesResult.suggestions.length > 0, true);
 
+  let capturedSalesAiPayload = null;
+  const aiSalesService = loadWithMocks(path.resolve(__dirname, "../services/whatsappAiAgentService.js"), {
+    "../models/ActivityLog": { create: async () => ({}) },
+    "../models/AdminUser": { findById: () => createQuery(null) },
+    "../models/Lead": {
+      findById: async () => null,
+      findOne: async () => null,
+      countDocuments: async () => 0,
+      create: async (payload) => ({ _id: "lead_1", ...payload }),
+    },
+    "../models/WhatsAppAiAgentInterest": {
+      INTEREST_STATUS_OPTIONS: ["new", "contacted", "qualified", "closed"],
+      create: async (payload) => payload,
+      find: () => createQuery([]),
+      countDocuments: async () => 0,
+    },
+    "../models/WhatsAppAiAgentLog": {
+      RESPONSE_SOURCE_OPTIONS: ["ai", "knowledge_base", "catalog", "qualification_flow", "handoff", "fallback"],
+      create: async (payload) => payload,
+      find: () => createQuery([]),
+      countDocuments: async () => 0,
+    },
+    "../models/WhatsAppAiAgentSettings": {
+      ROLLOUT_STATUS_OPTIONS: ["draft", "interest_collected", "pilot", "live"],
+      AGENT_TYPE_OPTIONS: ["sales_agent", "faq_responder", "lead_qualifier"],
+      findOne: () => createQuery(null),
+      create: async (payload) => payload,
+    },
+    "../models/WhatsAppAutomation": { countDocuments: async () => 0 },
+    "../models/WhatsAppBusinessProfile": {
+      findOne: () => createQuery({ businessName: "Blue Whale Migration" }),
+    },
+    "../models/WhatsAppConversation": { findById: () => createQuery(null) },
+    "../models/WhatsAppForm": { countDocuments: async () => 0 },
+    "../models/WhatsAppMessage": {
+      find: () => createQuery([
+        {
+          direction: "inbound",
+          sender: "customer",
+          content: "Australia",
+          timestamp: new Date("2026-04-09T10:01:00.000Z"),
+          type: "text",
+        },
+        {
+          direction: "outbound",
+          sender: "system",
+          content: "Which country are you interested in?",
+          timestamp: new Date("2026-04-09T10:00:00.000Z"),
+          type: "text",
+        },
+      ]),
+    },
+    "../models/WhatsAppQuickReply": {
+      countDocuments: async () => 0,
+      find: () => createQuery([]),
+    },
+    "./openaiService": {
+      isOpenAiConfigured: () => true,
+      generateGroundedWhatsAppReply: async (payload) => {
+        capturedSalesAiPayload = payload;
+        return {
+          shouldAnswer: true,
+          answer: "For Australia, the skilled migration package is the best starting point. I can also guide you on the documents needed for that pathway.",
+          confidence: 0.88,
+          matchedIds: ["visa_1"],
+          handoff: false,
+          reason: "history_context",
+        };
+      },
+      generateOpenScopeWhatsAppReply: async (payload) => {
+        capturedSalesAiPayload = payload;
+        return {
+          shouldAnswer: true,
+          answer: "For Australia, the skilled migration package is the best starting point. I can also guide you on the documents needed for that pathway.",
+          confidence: 0.88,
+          handoff: false,
+          reason: "open_scope_fallback",
+        };
+      },
+    },
+    "./whatsappProductCollectionService": {
+      listAvailableProductCollections: async () => [
+        {
+          id: "collection_1",
+          name: "Australia Migration",
+          description: "Migration help for Australia",
+          category: "migration",
+          itemCount: 1,
+          items: [{ id: "visa_1", title: "What Documents Should I Upload for Skilled Migration", description: "Support for skilled migration applications including document upload guidance" }],
+        },
+      ],
+    },
+    "./whatsappService": {
+      sendMessage: async () => ({ payload: {}, response: { messages: [{ id: "wamid.test" }] } }),
+    },
+  });
+
+  const aiSalesResult = await aiSalesService.resolveWhatsAppAiAgentResponse(
+    "What documents should I upload?",
+    {
+      conversation: { _id: "507f1f77bcf86cd799439030" },
+      contact: { phone: "+15550001", name: "Nethmi" },
+    },
+    {
+      settings: {
+        ...overview,
+        enabled: true,
+        defaultAgentType: "sales_agent",
+        salesAgent: { enabled: true, catalogEnabled: true, handoffEnabled: true, fallbackMessage: "" },
+      },
+    }
+  );
+  assert.equal(aiSalesResult.responseSource, "catalog");
+  assert.match(aiSalesResult.reply, /Australia/i);
+  assert.deepEqual(aiSalesResult.matchedCatalogItemIds, ["visa_1"]);
+  assert.equal(Array.isArray(capturedSalesAiPayload.conversationHistory), true);
+  assert.equal(capturedSalesAiPayload.conversationHistory.length, 2);
+  assert.equal(capturedSalesAiPayload.conversationHistory[0].role, "assistant");
+  assert.equal(capturedSalesAiPayload.conversationHistory[1].text, "Australia");
+
+  const salesCountryFollowUpService = loadWithMocks(path.resolve(__dirname, "../services/whatsappAiAgentService.js"), {
+    "../models/ActivityLog": { create: async () => ({}) },
+    "../models/AdminUser": { findById: () => createQuery(null) },
+    "../models/Lead": {
+      findById: async () => null,
+      findOne: async () => null,
+      countDocuments: async () => 0,
+      create: async (payload) => ({ _id: "lead_1", ...payload }),
+    },
+    "../models/WhatsAppAiAgentInterest": {
+      INTEREST_STATUS_OPTIONS: ["new", "contacted", "qualified", "closed"],
+      create: async (payload) => payload,
+      find: () => createQuery([]),
+      countDocuments: async () => 0,
+    },
+    "../models/WhatsAppAiAgentLog": {
+      RESPONSE_SOURCE_OPTIONS: ["ai", "knowledge_base", "catalog", "qualification_flow", "handoff", "fallback"],
+      create: async (payload) => payload,
+      find: () => createQuery([]),
+      countDocuments: async () => 0,
+    },
+    "../models/WhatsAppAiAgentSettings": {
+      ROLLOUT_STATUS_OPTIONS: ["draft", "interest_collected", "pilot", "live"],
+      AGENT_TYPE_OPTIONS: ["sales_agent", "faq_responder", "lead_qualifier"],
+      findOne: () => createQuery(null),
+      create: async (payload) => payload,
+    },
+    "../models/WhatsAppAutomation": { countDocuments: async () => 0 },
+    "../models/WhatsAppBusinessProfile": { findOne: () => createQuery({ businessName: "Blue Whale Migration" }) },
+    "../models/WhatsAppConversation": { findById: () => createQuery(null) },
+    "../models/WhatsAppForm": { countDocuments: async () => 0 },
+    "../models/WhatsAppMessage": {
+      find: () => createQuery([
+        {
+          direction: "inbound",
+          sender: "customer",
+          content: "I need help choosing the right migration package",
+          timestamp: new Date("2026-04-09T10:00:00.000Z"),
+          type: "text",
+        },
+        {
+          direction: "outbound",
+          sender: "system",
+          content: "Which country are you interested in?",
+          timestamp: new Date("2026-04-09T10:01:00.000Z"),
+          type: "text",
+        },
+      ]),
+    },
+    "../models/WhatsAppQuickReply": { countDocuments: async () => 0, find: () => createQuery([]) },
+    "./openaiService": {
+      isOpenAiConfigured: () => false,
+      generateGroundedWhatsAppReply: async () => null,
+    },
+    "./whatsappProductCollectionService": {
+      listAvailableProductCollections: async () => [
+        {
+          id: "collection_1",
+          name: "Migration Packages",
+          description: "Migration help",
+          category: "migration",
+          itemCount: 1,
+          items: [{ id: "pkg_1", title: "General Migration Package", description: "Migration support package" }],
+        },
+      ],
+    },
+    "./whatsappService": {
+      sendMessage: async () => ({ payload: {}, response: { messages: [{ id: "wamid.test" }] } }),
+    },
+  });
+
+  const japanFollowUpResult = await salesCountryFollowUpService.resolveWhatsAppAiAgentResponse(
+    "Japan",
+    {
+      conversation: { _id: "507f1f77bcf86cd799439031" },
+      contact: { phone: "+15550001", name: "Nethmi" },
+    },
+    {
+      settings: {
+        ...overview,
+        enabled: true,
+        defaultAgentType: "sales_agent",
+        salesAgent: { enabled: true, catalogEnabled: true, handoffEnabled: true, fallbackMessage: "" },
+      },
+    }
+  );
+  assert.equal(japanFollowUpResult.responseSource, "catalog");
+  assert.equal(japanFollowUpResult.handoffTriggered, false);
+  assert.match(japanFollowUpResult.reply, /Japan/i);
+  assert.match(japanFollowUpResult.reply, /work, study, or migration support/i);
+
   const faqService = loadWithMocks(path.resolve(__dirname, "../services/whatsappAiAgentService.js"), {
     "../models/ActivityLog": { create: async () => ({}) },
     "../models/AdminUser": { findById: () => createQuery(null) },
@@ -381,6 +595,46 @@ module.exports = async () => {
   assert.equal(qualifiedResult.leadCaptured, true);
   assert.equal(String(qualifiedResult.leadId), "lead_7");
 
+  const countryConversation = {
+    agentId: "admin_1",
+    linkedLeadId: null,
+    automationState: {
+      aiAgent: {
+        qualification: {
+          capturedFields: { name: "Nethmi", budget: "1000000" },
+          pendingField: "country",
+        },
+      },
+    },
+    async save() {
+      return this;
+    },
+  };
+
+  const countryResult = await leadService.resolveWhatsAppAiAgentResponse(
+    "australia",
+    { conversation: countryConversation, contact: { phone: "+15550001", name: "Nethmi" } },
+    {
+      settings: {
+        ...overview,
+        enabled: true,
+        defaultAgentType: "lead_qualifier",
+        leadQualifier: {
+          enabled: true,
+          qualificationFields: ["name", "budget", "country", "timeline"],
+          crmSyncTarget: "crm_leads",
+          handoffEnabled: true,
+          fallbackMessage: "",
+        },
+      },
+      agentType: "lead_qualifier",
+      actorId: "admin_1",
+    }
+  );
+  assert.equal(countryResult.responseSource, "qualification_flow");
+  assert.equal(countryResult.leadCapture.needed, true);
+  assert.equal(countryResult.leadCapture.fields[0], "timeline");
+
   const handoffResult = await defaultService.resolveWhatsAppAiAgentResponse(
     "I want to speak to a human agent",
     {},
@@ -395,6 +649,44 @@ module.exports = async () => {
   );
   assert.equal(handoffResult.responseSource, "handoff");
   assert.equal(handoffResult.handoffTriggered, true);
+  assert.equal(
+    defaultService.__private.shouldPersistHandoffBlock({
+      handoffTriggered: true,
+      handoffReason: "Customer requested a human handoff",
+    }),
+    true
+  );
+  assert.equal(
+    defaultService.__private.shouldPersistHandoffBlock({
+      handoffTriggered: true,
+      handoffReason: "Low confidence triggered human handoff",
+    }),
+    false
+  );
+  assert.equal(
+    defaultService.__private.isConversationEligibleForAiAgent({
+      automationState: {
+        aiAgent: {
+          handoffTriggered: true,
+          handoffReason: "Low confidence triggered human handoff",
+        },
+      },
+      workflowContext: {},
+    }),
+    true
+  );
+  assert.equal(
+    defaultService.__private.isConversationEligibleForAiAgent({
+      automationState: {
+        aiAgent: {
+          handoffTriggered: true,
+          handoffReason: "Customer requested a human handoff",
+        },
+      },
+      workflowContext: {},
+    }),
+    false
+  );
 
   const history = await faqService.listWhatsAppAiAgentHistory({ page: 1, limit: 20 });
   assert.equal(history.items.length, 1);

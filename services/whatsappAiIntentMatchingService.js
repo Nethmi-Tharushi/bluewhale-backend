@@ -24,6 +24,20 @@ const MATCH_THRESHOLD_BY_MODE = Object.freeze({
   aggressive: 0.6,
 });
 const REQUIRED_CONFIDENCE_MARGIN = 0.08;
+const MINIMUM_MARGIN_WITH_HIGH_CONFIDENCE = 0.06;
+
+const resolveConfidenceMargin = (topConfidence, threshold) => {
+  if (topConfidence >= Math.min(0.92, threshold + 0.15)) {
+    return MINIMUM_MARGIN_WITH_HIGH_CONFIDENCE;
+  }
+
+  if (topConfidence >= Math.min(0.8, threshold + 0.08)) {
+    return MINIMUM_MARGIN_WITH_HIGH_CONFIDENCE;
+  }
+
+  return REQUIRED_CONFIDENCE_MARGIN;
+};
+
 const MIN_MESSAGE_LENGTH = 2;
 const STOP_WORDS = new Set([
   "a",
@@ -1384,6 +1398,7 @@ const resolveAiIntentMatch = async (message, _workspaceContext = {}, options = {
   const topMatch = topTwo[0] || null;
   const topConfidence = Number(topMatch?.confidence || 0);
   const confidenceGap = topConfidence - secondConfidence;
+  const requiredMargin = resolveConfidenceMargin(topConfidence, threshold);
   const serializedCandidates = ranked.slice(0, 5).map((item) => ({
     intentLabel: item.candidate.intentLabel,
     destinationType: item.candidate.destinationType,
@@ -1394,15 +1409,15 @@ const resolveAiIntentMatch = async (message, _workspaceContext = {}, options = {
     signals: Array.isArray(item.signals) ? item.signals : [],
   }));
 
-  if (!topMatch || topConfidence < threshold || confidenceGap < REQUIRED_CONFIDENCE_MARGIN) {
+  if (!topMatch || topConfidence < threshold || confidenceGap < requiredMargin) {
     if (topConfidence < threshold) {
       notes.push("below_threshold");
       notes.push(`Top confidence ${topConfidence.toFixed(2)} is below ${matchMode} threshold ${threshold.toFixed(2)}`);
     }
-    if (topMatch && confidenceGap < REQUIRED_CONFIDENCE_MARGIN) {
+    if (topMatch && confidenceGap < requiredMargin) {
       notes.push("below_margin");
       notes.push("ambiguous_candidates");
-      notes.push(`Top candidate margin ${confidenceGap.toFixed(2)} is below required safety margin ${REQUIRED_CONFIDENCE_MARGIN.toFixed(2)}`);
+      notes.push(`Top candidate margin ${confidenceGap.toFixed(2)} is below required safety margin ${requiredMargin.toFixed(2)}`);
     }
     if (settings.lowConfidenceAction === "fallback_to_team") {
       notes.push("fallback_to_team");

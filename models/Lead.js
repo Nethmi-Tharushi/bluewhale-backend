@@ -35,6 +35,7 @@ const leadSchema = new mongoose.Schema(
       type: String,
       default: "Nothing selected",
       trim: true,
+      index: true,
     },
     sourceDetails: {
       type: String,
@@ -119,11 +120,13 @@ const leadSchema = new mongoose.Schema(
     lastContactAt: {
       type: Date,
       default: Date.now,
+      index: true,
     },
   },
   { timestamps: true }
 );
 
 leadSchema.index({ teamAdmin: 1, ownerAdmin: 1, createdAt: -1 });
+leadSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model("Lead", leadSchema);

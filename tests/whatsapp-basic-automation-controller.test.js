@@ -129,7 +129,7 @@ const buildSettings = () => ({
   updatedAt: new Date("2026-04-03T09:00:00.000Z"),
 });
 
-const buildController = ({ settings, preview, history, testSendResult, onWelcomeUpdate } = {}) => {
+const buildController = ({ settings, preview, history, testSendResult, onWelcomeUpdate, conversationRecord, resetConversationResult } = {}) => {
   const resolvedSettings = settings || buildSettings();
   const resolvedPreview = preview || {
     mode: "custom",
@@ -166,7 +166,11 @@ const buildController = ({ settings, preview, history, testSendResult, onWelcome
     "../models/AdminUser": {},
     "../models/Lead": {},
     "../models/WhatsAppEventLog": { create: async () => ({ save: async () => {} }) },
-    "../models/WhatsAppConversation": { findById: async () => null },
+    "../models/WhatsAppConversation": {
+      findById: () => ({
+        select: async () => conversationRecord || null,
+      }),
+    },
     "../models/WhatsAppContact": { findById: async () => null },
     "../models/WhatsAppMessage": { findById: async () => null, updateOne: async () => ({}) },
     "../services/whatsappAssignmentService": { getAvailableAgents: async () => [] },
@@ -184,6 +188,7 @@ const buildController = ({ settings, preview, history, testSendResult, onWelcome
       addConversationNote: async () => ({}),
       replaceConversationTags: async () => ({}),
       linkConversationLead: async () => ({}),
+      resetConversationHistory: async () => resetConversationResult || ({}),
       emitConversationEvents: async () => ({}),
       ensureConversation: async () => ({}),
       getConversationById: async () => ({}),
@@ -470,4 +475,26 @@ module.exports = async () => {
     lastUpdatedAt: "2026-04-03T09:00:00.000Z",
     lastUpdatedBy: { _id: "admin_1", name: "Ava Admin", email: "ava@example.com" },
   });
+
+  const resetController = buildController({
+    conversationRecord: { _id: "507f1f77bcf86cd799439020", agentId: "admin_42" },
+    resetConversationResult: {
+      conversation: { _id: "507f1f77bcf86cd799439020", lastMessage: "" },
+      deletedMessagesCount: 4,
+      deletedAiHistoryCount: 2,
+    },
+  });
+  const resetRes = createResponse();
+  await resetController.resetConversation(
+    {
+      params: { conversationId: "507f1f77bcf86cd799439020" },
+      admin: { _id: "admin_42", role: "SalesStaff" },
+      app: { get: () => null },
+    },
+    resetRes
+  );
+  assert.equal(resetRes.statusCode, 200);
+  assert.equal(resetRes.body.success, true);
+  assert.equal(resetRes.body.deletedMessagesCount, 4);
+  assert.equal(resetRes.body.deletedAiHistoryCount, 2);
 };
