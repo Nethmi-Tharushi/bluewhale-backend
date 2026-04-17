@@ -13,6 +13,14 @@ const { getSemanticEmbedding, cosineSimilarity } = require("./whatsappAiEmbeddin
 const AUTOMATION_TRIGGER_TYPES = ["new_conversation", "any_inbound_message", "keyword_match"];
 const AUTOMATION_ACTION_TYPES = ["send_text", "send_template", "send_buttons", "send_list", "add_tag", "add_note", "set_status", "assign_agent"];
 const AI_INTENT_MATCH_THRESHOLD = 0.58;
+const AI_INTENT_STOP_WORDS = new Set([
+  "a", "an", "the", "to", "for", "of", "in", "on", "at", "is", "are", "was", "were",
+  "be", "been", "being", "with", "and", "or", "but", "if", "then", "so", "as", "by",
+  "i", "me", "my", "we", "our", "you", "your", "he", "she", "they", "them", "their",
+  "it", "this", "that", "these", "those", "please", "hi", "hello", "hey", "thanks",
+  "thank", "can", "could", "would", "should", "want", "need", "need", "like", "get",
+  "give", "tell", "show", "know"
+]);
 const AI_INTENT_CONCEPT_MAP = [
   { concept: "order", terms: ["order", "purchase", "booking", "invoice", "bill"] },
   { concept: "tracking", terms: ["track", "tracking", "status", "delivery", "shipment", "shipping", "parcel", "courier", "dispatch", "where", "update", "updates"] },
@@ -70,7 +78,10 @@ const normalizeIntentToken = (token = "") => {
 };
 
 const buildIntentTokenSet = (value = "") => {
-  const tokens = tokenizeIntentText(value).map(normalizeIntentToken).filter(Boolean);
+  const tokens = tokenizeIntentText(value)
+    .map(normalizeIntentToken)
+    .filter(Boolean)
+    .filter((token) => !AI_INTENT_STOP_WORDS.has(token));
   return new Set(tokens);
 };
 
@@ -132,7 +143,8 @@ const resolveIntentOverlapScore = (keyword = "", messageText = "") => {
     if (messageConcepts.has(concept)) conceptOverlap += 1;
   }
 
-  const keywordTokenOverlap = countSetOverlap(keywordTokens, messageTokens) / Math.max(1, keywordTokens.size);
+  const tokenOverlapCount = countSetOverlap(keywordTokens, messageTokens);
+  const keywordTokenOverlap = tokenOverlapCount / Math.max(1, keywordTokens.size);
   const keywordPhraseOverlap = countSetOverlap(keywordPhrases, messagePhrases) / Math.max(1, keywordPhrases.size);
   const conceptScore = conceptOverlap / Math.max(1, keywordConcepts.size);
 
@@ -143,9 +155,12 @@ const resolveIntentOverlapScore = (keyword = "", messageText = "") => {
   const messageHasQuestionIntent = messageTokens.has("how") || messageTokens.has("what") || messageTokens.has("when") || messageTokens.has("where");
   const intentPromptBonus = keywordHasQuestionIntent && messageHasQuestionIntent ? 0.05 : 0;
 
+  const hasAnyContentOverlap = tokenOverlapCount > 0 || keywordPhraseOverlap > 0 || conceptScore > 0;
+  if (!hasAnyContentOverlap) return 0;
+
   const weightedScore =
-    (conceptScore * 0.55) +
-    (keywordTokenOverlap * 0.3) +
+    (conceptScore * 0.5) +
+    (keywordTokenOverlap * 0.35) +
     (keywordPhraseOverlap * 0.15) +
     intentPromptBonus;
 
@@ -436,10 +451,26 @@ const resolveKeywordMatch = async (messageText = "", triggerConfig = {}) => {
     return { matched: false, matchMode: "none", keyword: "", score: 0 };
   }
 
+  const messageTokens = tokenizeIntentText(normalizedMessage)
+    .map(normalizeIntentToken)
+    .filter(Boolean)
+    .filter((token) => !AI_INTENT_STOP_WORDS.has(token));
+  if (messageTokens.length < 3) {
+    return { matched: false, matchMode: "none", keyword: "", score: 0 };
+  }
+
   const normalizedMessageEmbedding = await getSemanticEmbedding(normalizedMessage, { role: "passage" });
   let bestKeyword = "";
   let bestScore = 0;
   for (const keyword of keywords) {
+    const keywordTokens = tokenizeIntentText(keyword)
+      .map(normalizeIntentToken)
+      .filter(Boolean)
+      .filter((token) => !AI_INTENT_STOP_WORDS.has(token));
+    if (keywordTokens.length < 2) {
+      continue;
+    }
+
     const ruleScore = resolveIntentOverlapScore(keyword, normalizedMessage);
     const embeddingScore = normalizedMessageEmbedding
       ? await resolveEmbeddingIntentScore(keyword, normalizedMessage, normalizedMessageEmbedding)
@@ -455,11 +486,14 @@ const resolveKeywordMatch = async (messageText = "", triggerConfig = {}) => {
     ? Math.min(0.95, Math.max(0.1, Number(triggerConfig.matchThreshold)))
     : AI_INTENT_MATCH_THRESHOLD;
 
-  if (bestScore >= threshold) {
-    return { matched: true, matchMode: "intent", keyword: bestKeyword, score: bestScore };
+  const shortMessagePenalty = messageTokens.length < 5 ? 0.05 : 0;
+  const adjustedScore = Math.max(0, bestScore - shortMessagePenalty);
+
+  if (adjustedScore >= threshold) {
+    return { matched: true, matchMode: "intent", keyword: bestKeyword, score: adjustedScore };
   }
 
-  return { matched: false, matchMode: "none", keyword: "", score: bestScore };
+  return { matched: false, matchMode: "none", keyword: "", score: adjustedScore };
 };
 
 const applyTemplateVariables = (template, context) => {

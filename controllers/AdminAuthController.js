@@ -39,6 +39,99 @@ function generateApiKey() {
 }
 
 const canManageWallet = (admin) => ["MainAdmin", "SalesAdmin"].includes(String(admin?.role || ""));
+const trimString = (value) => String(value || "").trim();
+const getEmbeddedSignupConfigId = () =>
+  trimString(
+    process.env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID ||
+      process.env.META_EMBEDDED_SIGNUP_CONFIG_ID ||
+      process.env.WHATSAPP_EMBEDDED_CONFIG_ID ||
+      process.env.EMBEDDED_SIGNUP_CONFIG_ID ||
+      ""
+  );
+
+const encodeQuery = (params = {}) =>
+  Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+    .join("&");
+
+const buildGraphUrl = (version = "v21.0", path = "", params = {}) => {
+  const normalizedVersion = trimString(version || "v21.0") || "v21.0";
+  const normalizedPath = String(path || "").replace(/^\/+/, "");
+  const query = encodeQuery(params);
+  return `https://graph.facebook.com/${normalizedVersion}/${normalizedPath}${query ? `?${query}` : ""}`;
+};
+
+const graphJsonRequest = async (url) => {
+  const response = await fetch(url);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.error) {
+    const message = data?.error?.message || `Meta Graph request failed (${response.status})`;
+    const err = new Error(message);
+    err.status = 400;
+    err.code = "META_GRAPH_REQUEST_FAILED";
+    err.details = data?.error || data;
+    throw err;
+  }
+  return data;
+};
+
+const resolveWhatsAppAssetsFromToken = async ({ accessToken, graphApiVersion = "v21.0" }) => {
+  const resolved = {
+    businessAccountId: "",
+    phoneNumberId: "",
+  };
+
+  if (!accessToken) return resolved;
+
+  // First try direct WABA list.
+  try {
+    const directData = await graphJsonRequest(
+      buildGraphUrl(graphApiVersion, "me/whatsapp_business_accounts", {
+        access_token: accessToken,
+        fields: "id,name,phone_numbers{id,display_phone_number,verified_name}",
+        limit: 10,
+      })
+    );
+    const firstWaba = Array.isArray(directData?.data) ? directData.data[0] : null;
+    const firstPhone = Array.isArray(firstWaba?.phone_numbers) ? firstWaba.phone_numbers[0] : null;
+    if (firstWaba?.id) {
+      resolved.businessAccountId = trimString(firstWaba.id);
+      resolved.phoneNumberId = trimString(firstPhone?.id);
+      return resolved;
+    }
+  } catch (_) {
+    // fallback below
+  }
+
+  // Fallback through business accounts.
+  try {
+    const businesses = await graphJsonRequest(
+      buildGraphUrl(graphApiVersion, "me/businesses", {
+        access_token: accessToken,
+        fields: "id,name,owned_whatsapp_business_accounts{id,name,phone_numbers{id,display_phone_number,verified_name}}",
+        limit: 10,
+      })
+    );
+
+    const businessList = Array.isArray(businesses?.data) ? businesses.data : [];
+    for (const business of businessList) {
+      const wabas = Array.isArray(business?.owned_whatsapp_business_accounts)
+        ? business.owned_whatsapp_business_accounts
+        : [];
+      const firstWaba = wabas[0];
+      if (!firstWaba?.id) continue;
+      const firstPhone = Array.isArray(firstWaba.phone_numbers) ? firstWaba.phone_numbers[0] : null;
+      resolved.businessAccountId = trimString(firstWaba.id);
+      resolved.phoneNumberId = trimString(firstPhone?.id);
+      break;
+    }
+  } catch (_) {
+    // leave resolved empty
+  }
+
+  return resolved;
+};
 const buildDefaultRolePermissions = () => ({
   MainAdmin: {
     fullAccess: true,
@@ -240,12 +333,30 @@ exports.getMyAdminProfile = async (req, res) => {
         accessToken: "",
         phoneNumberId: "",
         businessAccountId: "",
-        appSecret: "",
+        appSecret: process.env.WHATSAPP_APP_SECRET || "",
         webhookVerifyToken: "",
         graphApiVersion: process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0",
-        appId: "",
+        appId: process.env.WHATSAPP_APP_ID || process.env.META_APP_ID || "",
         catalogId: "",
+        embeddedSignupConfigId: getEmbeddedSignupConfigId(),
+        connectionMethod: "manual",
+        lastEmbeddedSignupAt: null,
       };
+      touched = true;
+    }
+    const envAppId = process.env.WHATSAPP_APP_ID || process.env.META_APP_ID || "";
+    const envAppSecret = process.env.WHATSAPP_APP_SECRET || "";
+    const envEmbeddedConfigId = getEmbeddedSignupConfigId();
+    if (envAppId && admin.settings.whatsappMetaConnection.appId !== envAppId) {
+      admin.settings.whatsappMetaConnection.appId = envAppId;
+      touched = true;
+    }
+    if (envAppSecret && admin.settings.whatsappMetaConnection.appSecret !== envAppSecret) {
+      admin.settings.whatsappMetaConnection.appSecret = envAppSecret;
+      touched = true;
+    }
+    if (envEmbeddedConfigId && admin.settings.whatsappMetaConnection.embeddedSignupConfigId !== envEmbeddedConfigId) {
+      admin.settings.whatsappMetaConnection.embeddedSignupConfigId = envEmbeddedConfigId;
       touched = true;
     }
     if (!admin.settings?.whatsappAiIntentAutomation) {
@@ -444,6 +555,114 @@ exports.uploadMyWhatsAppProfileLogo = async (req, res) => {
     res.json({ success: true, admin: sanitized, logoUrl: admin.settings.whatsappProfile.logoUrl });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/admins/me/whatsapp-meta/embedded-signup/exchange
+exports.exchangeEmbeddedSignupCode = async (req, res) => {
+  try {
+    if (String(req.admin?.role || "") !== "MainAdmin") {
+      return res.status(403).json({ message: "Only MainAdmin can complete Meta embedded signup" });
+    }
+
+    const adminId = req.admin?._id;
+    const code = trimString(req.body?.code);
+    const redirectUri = trimString(req.body?.redirectUri);
+    const state = trimString(req.body?.state);
+    const phoneNumberIdHint = trimString(req.body?.phoneNumberId);
+    const businessAccountIdHint = trimString(req.body?.businessAccountId);
+
+    if (!code) {
+      return res.status(400).json({ message: "Missing authorization code from Meta signup callback" });
+    }
+
+    const admin = await AdminUser.findById(adminId);
+    if (!admin) {
+      return res.status(404).json({ message: "Admin not found" });
+    }
+
+    const connection = admin.settings?.whatsappMetaConnection || {};
+    const graphApiVersion = trimString(connection.graphApiVersion || process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0") || "v21.0";
+    const appId = trimString(connection.appId || process.env.WHATSAPP_APP_ID || process.env.META_APP_ID);
+    const appSecret = trimString(connection.appSecret || process.env.WHATSAPP_APP_SECRET);
+
+    if (!appId || !appSecret) {
+      return res.status(400).json({
+        message: "App ID and App Secret are required before using Meta embedded signup",
+        code: "META_EMBEDDED_SIGNUP_MISSING_APP_CREDENTIALS",
+      });
+    }
+
+    const shortTokenResponse = await graphJsonRequest(
+      buildGraphUrl(graphApiVersion, "oauth/access_token", {
+        client_id: appId,
+        client_secret: appSecret,
+        ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+        code,
+      })
+    );
+
+    let accessToken = trimString(shortTokenResponse?.access_token);
+    if (!accessToken) {
+      return res.status(400).json({ message: "Meta code exchange did not return access token" });
+    }
+
+    // Exchange for long-lived token where possible.
+    try {
+      const longTokenResponse = await graphJsonRequest(
+        buildGraphUrl(graphApiVersion, "oauth/access_token", {
+          grant_type: "fb_exchange_token",
+          client_id: appId,
+          client_secret: appSecret,
+          fb_exchange_token: accessToken,
+        })
+      );
+      const longToken = trimString(longTokenResponse?.access_token);
+      if (longToken) accessToken = longToken;
+    } catch (_) {
+      // Keep short-lived token if long-lived exchange fails.
+    }
+
+    const resolvedAssets = await resolveWhatsAppAssetsFromToken({
+      accessToken,
+      graphApiVersion,
+    });
+
+    admin.settings = admin.settings || {};
+    admin.settings.whatsappMetaConnection = {
+      ...(admin.settings.whatsappMetaConnection || {}),
+      accessToken,
+      appId,
+      appSecret,
+      graphApiVersion,
+      phoneNumberId: phoneNumberIdHint || resolvedAssets.phoneNumberId || trimString(admin.settings?.whatsappMetaConnection?.phoneNumberId),
+      businessAccountId:
+        businessAccountIdHint ||
+        resolvedAssets.businessAccountId ||
+        trimString(admin.settings?.whatsappMetaConnection?.businessAccountId),
+      connectionMethod: "embedded_signup",
+      lastEmbeddedSignupAt: new Date(),
+    };
+
+    pushAudit(admin, {
+      what: `Connected Meta WhatsApp via embedded signup${state ? ` (state: ${state})` : ""}`,
+      ip: getClientIp(req),
+    });
+    await admin.save();
+    syncWhatsAppMetaConnectionCache(admin.settings.whatsappMetaConnection);
+
+    return res.json({
+      success: true,
+      message: "Meta embedded signup connected successfully",
+      connection: admin.settings.whatsappMetaConnection,
+    });
+  } catch (err) {
+    console.error("Failed to exchange Meta embedded signup code:", err);
+    return res.status(err.status || 500).json({
+      message: err.message || "Failed to complete Meta embedded signup",
+      ...(err.code ? { code: err.code } : {}),
+      ...(err.details ? { details: err.details } : {}),
+    });
   }
 };
 

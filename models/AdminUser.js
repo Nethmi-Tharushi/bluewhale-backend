@@ -77,6 +77,9 @@ const adminUserSchema = new mongoose.Schema({
       graphApiVersion: { type: String, default: "v21.0" },
       appId: { type: String, default: "" },
       catalogId: { type: String, default: "" },
+      embeddedSignupConfigId: { type: String, default: "" },
+      connectionMethod: { type: String, default: "manual" },
+      lastEmbeddedSignupAt: { type: Date, default: null },
     },
     whatsappAiIntentAutomation: {
       enabled: { type: Boolean, default: false },

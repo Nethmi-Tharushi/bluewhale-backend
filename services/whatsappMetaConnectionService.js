@@ -1,6 +1,14 @@
 const AdminUser = require("../models/AdminUser");
 
 const trimString = (value) => String(value || "").trim();
+const getEmbeddedSignupConfigId = () =>
+  trimString(
+    process.env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID ||
+      process.env.META_EMBEDDED_SIGNUP_CONFIG_ID ||
+      process.env.WHATSAPP_EMBEDDED_CONFIG_ID ||
+      process.env.EMBEDDED_SIGNUP_CONFIG_ID ||
+      ""
+  );
 
 const buildFallbackConnection = () => ({
   accessToken: trimString(process.env.WHATSAPP_ACCESS_TOKEN),
@@ -11,6 +19,9 @@ const buildFallbackConnection = () => ({
   graphApiVersion: trimString(process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0") || "v21.0",
   appId: trimString(process.env.WHATSAPP_APP_ID || process.env.META_APP_ID || ""),
   catalogId: trimString(process.env.WHATSAPP_CATALOG_ID || ""),
+  embeddedSignupConfigId: getEmbeddedSignupConfigId(),
+  connectionMethod: "manual",
+  lastEmbeddedSignupAt: null,
   source: "environment",
 });
 
@@ -26,6 +37,9 @@ const normalizeConnection = (value = {}) => {
     graphApiVersion: trimString(saved.graphApiVersion) || fallback.graphApiVersion,
     appId: trimString(saved.appId) || fallback.appId,
     catalogId: trimString(saved.catalogId) || fallback.catalogId,
+    embeddedSignupConfigId: trimString(saved.embeddedSignupConfigId) || fallback.embeddedSignupConfigId,
+    connectionMethod: trimString(saved.connectionMethod) || fallback.connectionMethod,
+    lastEmbeddedSignupAt: saved.lastEmbeddedSignupAt || null,
   };
 
   return {

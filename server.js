@@ -33,6 +33,22 @@ const AdminUser = require("./models/AdminUser");
 const app = express();
 const server = http.createServer(app);
 
+const isNgrokOrigin = (origin = "") =>
+  /\.ngrok-free\.app$/i.test(origin) ||
+  /\.ngrok\.io$/i.test(origin) ||
+  /\.ngrok\.app$/i.test(origin);
+
+const isAllowedOrigin = (origin = "") => {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  try {
+    const { hostname } = new URL(origin);
+    return isNgrokOrigin(hostname);
+  } catch {
+    return false;
+  }
+};
+
 const allowedOrigins = [
   process.env.CLIENT_URL,
   "http://localhost:5173",
@@ -50,7 +66,7 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
     return callback(new Error(`CORS blocked for origin: ${origin}`));
@@ -110,7 +126,10 @@ mongoose
 // --- Socket.IO Setup ---
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) return callback(null, true);
+      return callback(new Error(`Socket CORS blocked for origin: ${origin}`));
+    },
     methods: ["GET", "POST"],
     credentials: true,
   },
