@@ -11,7 +11,6 @@ const whatsAppWalletTransactionSchema = new mongoose.Schema(
     reservationId: {
       type: String,
       default: "",
-      index: true,
     },
     type: {
       type: String,

@@ -11,8 +11,6 @@ const salesTeamSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "AdminUser",
       required: true,
-      unique: true,
-      index: true,
     },
     members: [
       {

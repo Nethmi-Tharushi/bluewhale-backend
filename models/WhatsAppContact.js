@@ -34,8 +34,6 @@ const whatsAppContactSchema = new mongoose.Schema(
     normalizedPhone: {
       type: String,
       default: "",
-      index: true,
-      sparse: true,
     },
     name: {
       type: String,

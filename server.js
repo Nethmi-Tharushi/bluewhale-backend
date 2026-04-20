@@ -2,8 +2,10 @@
 const path = require("path");
 const dotenv = require("dotenv");
 
+const isProductionRuntime = process.env.NODE_ENV === "production";
+
 // load correct .env file based on environment
-if (process.env.NODE_ENV === "production") {
+if (isProductionRuntime) {
   dotenv.config({ path: path.resolve(__dirname, ".env.production") });
   console.log("Using production environment variables");
 } else {
@@ -287,7 +289,7 @@ app.use("/api/whatsapp-automations", require("./routes/whatsappAutomation"));
 app.use("/", require("./routes/whatsapp"));
 
 // --- Serve frontend in production ---
-if (process.env.NODE_ENV === "production") {
+if (isProductionRuntime) {
   app.use(express.static(path.join(__dirname, "../jobportal/dist")));
 
   app.get(/^(?!\/api).*/, (req, res) => {
@@ -296,8 +298,75 @@ if (process.env.NODE_ENV === "production") {
 }
 
 // --- Start server ---
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+const PORT = Number(process.env.PORT) || 5000;
+const isProduction = isProductionRuntime;
+const configuredDevHost = process.env.DEV_HOST || process.env.HOST;
+const HOST = isProduction
+  ? (process.env.HOST || "0.0.0.0")
+  : (!configuredDevHost || configuredDevHost === "0.0.0.0" || configuredDevHost === "::"
+      ? "127.0.0.1"
+      : configuredDevHost);
+const defaultDevFallbackPort = PORT === 3001 ? 3101 : PORT + 100;
+const DEV_FALLBACK_PORT = Number(process.env.DEV_FALLBACK_PORT) || defaultDevFallbackPort;
+const portsToTry = isProduction ? [PORT] : [...new Set([PORT, DEV_FALLBACK_PORT, 0])];
+let currentPort = portsToTry[0];
+let isServerStarted = false;
+let isRetryScheduled = false;
+
+const startListening = () => {
+  server.listen(currentPort, HOST, () => {
+    if (isServerStarted) return;
+    isServerStarted = true;
+    isRetryScheduled = false;
+    const address = server.address();
+    const activePort = address && typeof address === "object" ? address.port : currentPort;
+    startWhatsAppAutomationWorker(app);
+    startWhatsAppCampaignWorker(app);
+    console.log(`ðŸš€ Server running on port ${activePort}`.blue.bold);
+    console.log(`ðŸ“¡ Socket.IO enabled for real-time chat`.cyan);
+  });
+};
+
+server.on("error", (error) => {
+  if (isServerStarted) return;
+
+  if (!isProduction && (error.code === "EACCES" || error.code === "EADDRINUSE")) {
+    const currentIndex = portsToTry.indexOf(currentPort);
+    const nextPort = portsToTry[currentIndex + 1];
+
+    if (nextPort !== undefined && !isRetryScheduled) {
+      const reason = error.code === "EADDRINUSE" ? "already in use" : "permission was denied";
+      const nextPortLabel = nextPort === 0 ? "an open fallback port" : nextPort;
+      console.warn(`Port ${currentPort} is unavailable on ${HOST} (${reason}). Retrying on ${nextPortLabel}...`.yellow);
+      currentPort = nextPort;
+      isRetryScheduled = true;
+      setImmediate(() => {
+        isRetryScheduled = false;
+        startListening();
+      });
+      return;
+    }
+  }
+
+  if (error.code === "EACCES") {
+    console.error(`Server cannot listen on ${HOST}:${currentPort}. Permission was denied.`.red.bold);
+    if (!isProduction) {
+      console.error("In local development, binding to 127.0.0.1 avoids Windows interface permission issues.".yellow);
+      console.error("Set DEV_HOST=127.0.0.1 or change PORT in .env if you want to make that explicit.".yellow);
+    }
+    process.exit(1);
+  }
+
+  if (error.code === "EADDRINUSE") {
+    console.error(`Server cannot listen on ${HOST}:${currentPort}. The address is already in use.`.red.bold);
+    process.exit(1);
+  }
+
+  console.error("Server startup failed:".red.bold, error);
+  process.exit(1);
+});
+
+startListening(); if (false) server.listen(PORT, HOST, () => {
   startWhatsAppAutomationWorker(app);
   startWhatsAppCampaignWorker(app);
   console.log(`🚀 Server running on port ${PORT}`.blue.bold);
