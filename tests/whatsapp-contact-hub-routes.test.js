@@ -72,6 +72,11 @@ module.exports = async () => {
   assert.equal(readRoute.handlers[0], protectAdmin);
   assert.deepEqual(readRoute.handlers[1].roles, ["MainAdmin", "SalesAdmin", "SalesStaff"]);
 
+  const profileRoute = findRoute("get", "/contact-hub/:id");
+  assert.ok(profileRoute);
+  assert.equal(profileRoute.handlers[0], protectAdmin);
+  assert.deepEqual(profileRoute.handlers[1].roles, ["MainAdmin", "SalesAdmin", "SalesStaff"]);
+
   const metaRoute = findRoute("get", "/contact-hub/meta");
   assert.ok(metaRoute);
   assert.deepEqual(metaRoute.handlers[1].roles, ["MainAdmin", "SalesAdmin", "SalesStaff"]);

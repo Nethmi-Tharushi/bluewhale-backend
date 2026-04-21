@@ -6,6 +6,7 @@ const {
   bulkUpdateWhatsAppContactHub,
   exportWhatsAppContactHubCsv,
   getWhatsAppContactHubMeta,
+  getWhatsAppContactHubProfile,
 } = require("../services/whatsappContactHubService");
 
 const trimString = (value) => String(value || "").trim();
@@ -27,6 +28,16 @@ const listContactHub = async (req, res) => {
   } catch (error) {
     console.error("Failed to fetch WhatsApp contact hub:", error);
     return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to fetch WhatsApp contact hub"));
+  }
+};
+
+const getContactHubProfile = async (req, res) => {
+  try {
+    const result = await getWhatsAppContactHubProfile(req.params.id);
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp contact hub profile:", error);
+    return res.status(error.status || 400).json(buildStructuredErrorPayload(error, "Failed to fetch WhatsApp contact hub profile"));
   }
 };
 
@@ -107,6 +118,7 @@ const getContactHubMeta = async (_req, res) => {
 
 module.exports = {
   listContactHub,
+  getContactHubProfile,
   createContactHubRecord,
   updateContactHubRecord,
   updateContactHubStatus,

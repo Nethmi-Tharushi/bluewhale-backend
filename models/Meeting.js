@@ -41,6 +41,84 @@ const meetingSchema = new mongoose.Schema({
   },
   managedCandidateId: {
     type: String, // managed candidate ID
+  },
+  // CRM linking fields
+  linkedLeadId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Lead',
+    default: null,
+    index: true,
+  },
+  conversationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'WhatsAppConversation',
+    default: null,
+    index: true,
+  },
+  // Contact information fields (for matching and display)
+  email: {
+    type: String,
+    default: '',
+    trim: true,
+    lowercase: true,
+  },
+  phone: {
+    type: String,
+    default: '',
+    trim: true,
+  },
+  customerEmail: {
+    type: String,
+    default: '',
+    trim: true,
+    lowercase: true,
+  },
+  customerPhone: {
+    type: String,
+    default: '',
+    trim: true,
+  },
+  customerName: {
+    type: String,
+    default: '',
+    trim: true,
+  },
+  // Additional metadata
+  assignee: {
+    type: String,
+    default: '',
+    trim: true,
+  },
+  assignedPerson: {
+    type: String,
+    default: '',
+    trim: true,
+  },
+  meetingDate: {
+    type: Date,
+    default: null,
+  },
+  scheduledAt: {
+    type: Date,
+    default: null,
+  },
+  meetingTime: {
+    type: String,
+    default: '',
+    trim: true,
+  },
+  // CRM context wrapper
+  crmContext: {
+    linkedLeadId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Lead',
+      default: null,
+    },
+    conversationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'WhatsAppConversation',
+      default: null,
+    },
   }
 }, { timestamps: true });
 
