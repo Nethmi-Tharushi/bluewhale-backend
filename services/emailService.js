@@ -232,6 +232,57 @@ const sendPasswordResetEmail = async (email, resetToken, userType, options = {})
   }
 };
 
+const sendAdminLoginOtpEmail = async ({ to, name, otpCode, expiresInMinutes = 5, ip = "", device = "" }) => {
+  try {
+    assertEmailConfigured();
+    const fromAddress = getFromAddress();
+    const safeName = String(name || "there").trim() || "there";
+    const subject = "Your Blue Whale CRM login verification code";
+    const html = `
+      <div style="font-family: Arial, sans-serif; padding: 20px; background: #f4f7fb;">
+        <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 24px; border: 1px solid #e5e7eb;">
+          <h2 style="margin: 0 0 12px; color: #1e3a8a;">Login verification</h2>
+          <p style="margin: 0 0 16px; color: #334155;">Hi ${safeName}, use this one-time code to complete your sign in:</p>
+          <div style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0f172a; text-align: center; background: #eff6ff; border-radius: 10px; padding: 12px 0; margin-bottom: 16px;">
+            ${String(otpCode || "")}
+          </div>
+          <p style="margin: 0 0 8px; color: #475569;">This code expires in ${Number(expiresInMinutes) || 5} minutes.</p>
+          ${ip ? `<p style="margin: 0 0 6px; color: #64748b;">IP: ${String(ip)}</p>` : ""}
+          ${device ? `<p style="margin: 0; color: #64748b;">Device: ${String(device)}</p>` : ""}
+          <p style="margin: 16px 0 0; color: #64748b; font-size: 13px;">If you did not try to sign in, please reset your password.</p>
+        </div>
+      </div>
+    `;
+
+    const resend = getResendClient();
+    if (resend) {
+      const { data, error } = await resend.emails.send({
+        from: fromAddress,
+        to,
+        subject,
+        html,
+      });
+      if (error) {
+        throw new Error(error.message || "Resend failed to send OTP email");
+      }
+      return { success: true, messageId: data?.id, provider: "resend" };
+    }
+
+    const transporter = createTransporter();
+    const info = await transporter.sendMail({
+      from: `"Blue Whale CRM" <${fromAddress}>`,
+      to,
+      subject,
+      html,
+    });
+    return { success: true, messageId: info?.messageId, provider: "smtp" };
+  } catch (error) {
+    const err = new Error(error?.message || "Failed to send OTP email");
+    err.statusCode = error?.statusCode || 500;
+    throw err;
+  }
+};
+
 // Meeting reminder function
 const sendMeetingReminderEmail = async (user, meeting) => {
   try {
@@ -437,5 +488,6 @@ module.exports = {
   sendPasswordResetEmail,
   sendMeetingReminderEmail,
   sendInquiryResponseEmail,
-  sendInvoiceEmail
+  sendInvoiceEmail,
+  sendAdminLoginOtpEmail,
 };

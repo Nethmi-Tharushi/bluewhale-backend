@@ -35,6 +35,47 @@ const adminUserSchema = new mongoose.Schema({
     default: null,
     index: true,
   },
+  security: {
+    twoFactor: {
+      enabled: { type: Boolean, default: true },
+      deliveryPreference: {
+        type: String,
+        enum: ["email", "whatsapp"],
+        default: "email",
+      },
+      requireOnFirstLogin: { type: Boolean, default: true },
+      requireOnNewDevice: { type: Boolean, default: true },
+      requireOnIpChange: { type: Boolean, default: true },
+      lastLoginIp: { type: String, default: "" },
+      lastLoginAt: { type: Date, default: null },
+      lastVerifiedAt: { type: Date, default: null },
+      trustedDevices: [
+        {
+          fingerprint: { type: String, default: "" },
+          label: { type: String, default: "" },
+          lastIp: { type: String, default: "" },
+          lastUsedAt: { type: Date, default: null },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      pendingChallenge: {
+        challengeId: { type: String, default: "" },
+        codeHash: { type: String, default: "" },
+        expiresAt: { type: Date, default: null },
+        attempts: { type: Number, default: 0 },
+        maxAttempts: { type: Number, default: 5 },
+        deliveryChannel: {
+          type: String,
+          enum: ["email", "whatsapp"],
+          default: "email",
+        },
+        destinationHint: { type: String, default: "" },
+        lastSentAt: { type: Date, default: null },
+        requestIp: { type: String, default: "" },
+        deviceFingerprint: { type: String, default: "" },
+      },
+    },
+  },
 
   // ✅ Settings Hub support (optional fields; safe defaults)
   settings: {

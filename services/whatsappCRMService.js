@@ -70,6 +70,17 @@ const buildContactPayload = (contact) => {
     name: String(contact.name || profile.name || "").trim(),
     phone: String(contact.phone || contact.waId || "").trim(),
     email: String(contact.email || profile.email || "").trim(),
+    avatarUrl: String(
+      contact.avatarUrl ||
+      contact.profilePictureUrl ||
+      contact.photoUrl ||
+      contact.picture ||
+      profile.avatarUrl ||
+      profile.profilePictureUrl ||
+      profile.profile_picture_url ||
+      profile.photoUrl ||
+      ""
+    ).trim(),
   };
 };
 

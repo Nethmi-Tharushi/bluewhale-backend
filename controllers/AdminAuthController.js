@@ -1,8 +1,11 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const crypto = require("crypto");
 const cloudinary = require("../config/cloudinary");
 const AdminUser = require('../models/AdminUser');
 const { loadWhatsAppMetaConnection, syncWhatsAppMetaConnectionCache } = require("../services/whatsappMetaConnectionService");
+const { sendAdminLoginOtpEmail } = require("../services/emailService");
+const { sendMessage: sendWhatsAppMessage } = require("../services/whatsappService");
 const {
   listAdminsForLegacyEndpoint,
   createAdminRecord,
@@ -132,6 +135,170 @@ const resolveWhatsAppAssetsFromToken = async ({ accessToken, graphApiVersion = "
 
   return resolved;
 };
+
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const TRUSTED_DEVICE_LIMIT = 10;
+
+const hashOtpCode = (adminId, otpCode) =>
+  crypto
+    .createHash("sha256")
+    .update(`${String(adminId)}:${String(otpCode || "")}`)
+    .digest("hex");
+
+const createOtpCode = () => String(Math.floor(100000 + Math.random() * 900000));
+const createChallengeId = () => crypto.randomBytes(16).toString("hex");
+
+const maskEmailAddress = (email = "") => {
+  const value = trimString(email).toLowerCase();
+  const parts = value.split("@");
+  if (parts.length !== 2) return "";
+  const [user, domain] = parts;
+  if (!user || !domain) return "";
+  if (user.length <= 2) return `${user[0] || "*"}*@${domain}`;
+  return `${user[0]}${"*".repeat(Math.max(user.length - 2, 1))}${user[user.length - 1]}@${domain}`;
+};
+
+const maskPhoneNumber = (phone = "") => {
+  const digits = String(phone || "").replace(/[^\d+]/g, "");
+  if (!digits) return "";
+  if (digits.length <= 4) return `${"*".repeat(Math.max(digits.length - 1, 0))}${digits.slice(-1)}`;
+  return `${digits.slice(0, 2)}${"*".repeat(Math.max(digits.length - 4, 1))}${digits.slice(-2)}`;
+};
+
+const normalizeDeviceFingerprint = (value = "", req = null) => {
+  const candidate = trimString(value);
+  if (candidate) return candidate.slice(0, 191);
+  const userAgent = trimString(req?.headers?.["user-agent"] || "unknown-device");
+  return crypto.createHash("sha1").update(userAgent).digest("hex").slice(0, 40);
+};
+
+const getDeviceLabel = (req = null) => {
+  const userAgent = trimString(req?.headers?.["user-agent"] || "");
+  return userAgent ? userAgent.slice(0, 120) : "Unknown device";
+};
+
+const getTwoFactorState = (admin) => {
+  admin.security = admin.security || {};
+  admin.security.twoFactor = admin.security.twoFactor || {};
+  const twoFactor = admin.security.twoFactor;
+
+  if (typeof twoFactor.enabled !== "boolean") twoFactor.enabled = true;
+  if (!trimString(twoFactor.deliveryPreference)) twoFactor.deliveryPreference = "email";
+  if (typeof twoFactor.requireOnFirstLogin !== "boolean") twoFactor.requireOnFirstLogin = true;
+  if (typeof twoFactor.requireOnNewDevice !== "boolean") twoFactor.requireOnNewDevice = true;
+  if (typeof twoFactor.requireOnIpChange !== "boolean") twoFactor.requireOnIpChange = true;
+  if (!Array.isArray(twoFactor.trustedDevices)) twoFactor.trustedDevices = [];
+  twoFactor.pendingChallenge = twoFactor.pendingChallenge || {};
+
+  return twoFactor;
+};
+
+const upsertTrustedDevice = ({ twoFactor, fingerprint, ip, label }) => {
+  if (!twoFactor || !fingerprint) return;
+  const now = new Date();
+  const trustedDevices = Array.isArray(twoFactor.trustedDevices) ? twoFactor.trustedDevices : [];
+  const existing = trustedDevices.find((item) => trimString(item?.fingerprint) === fingerprint);
+  if (existing) {
+    existing.lastIp = ip || existing.lastIp || "";
+    existing.lastUsedAt = now;
+    if (label) existing.label = label;
+    twoFactor.trustedDevices = trustedDevices;
+    return;
+  }
+
+  trustedDevices.unshift({
+    fingerprint,
+    label: label || "Trusted device",
+    lastIp: ip || "",
+    createdAt: now,
+    lastUsedAt: now,
+  });
+  twoFactor.trustedDevices = trustedDevices.slice(0, TRUSTED_DEVICE_LIMIT);
+};
+
+const clearPendingChallenge = (twoFactor) => {
+  if (!twoFactor) return;
+  twoFactor.pendingChallenge = {
+    challengeId: "",
+    codeHash: "",
+    expiresAt: null,
+    attempts: 0,
+    maxAttempts: OTP_MAX_ATTEMPTS,
+    deliveryChannel: "email",
+    destinationHint: "",
+    lastSentAt: null,
+    requestIp: "",
+    deviceFingerprint: "",
+  };
+};
+
+const sendLoginOtp = async ({ admin, otpCode, channel, ip, deviceLabel }) => {
+  const preferredChannel = channel === "whatsapp" ? "whatsapp" : "email";
+  const destination = {
+    channel: "email",
+    hint: maskEmailAddress(admin.email),
+  };
+
+  if (preferredChannel === "whatsapp") {
+    const to = trimString(admin.phone || admin.settings?.whatsappProfile?.contactPhone);
+    if (to) {
+      try {
+        await sendWhatsAppMessage({
+          to,
+          type: "text",
+          text: {
+            body: `Your Blue Whale CRM verification code is ${otpCode}. It expires in 5 minutes.`,
+          },
+          context: {
+            skipWallet: true,
+            source: "admin_login_otp",
+          },
+        });
+        destination.channel = "whatsapp";
+        destination.hint = maskPhoneNumber(to);
+        return destination;
+      } catch (_) {
+        // Fallback to email below.
+      }
+    }
+  }
+
+  await sendAdminLoginOtpEmail({
+    to: admin.email,
+    name: admin.name,
+    otpCode,
+    expiresInMinutes: 5,
+    ip,
+    device: deviceLabel,
+  });
+  return destination;
+};
+
+const shouldRequireTwoFactor = ({ admin, twoFactor, ip, fingerprint }) => {
+  if (!twoFactor?.enabled) return false;
+  const trustedDevices = Array.isArray(twoFactor.trustedDevices) ? twoFactor.trustedDevices : [];
+  const deviceKnown = Boolean(fingerprint && trustedDevices.some((item) => trimString(item?.fingerprint) === fingerprint));
+  const hasVerifiedLogin = Boolean(twoFactor.lastVerifiedAt);
+  const lastIp = trimString(twoFactor.lastLoginIp);
+  const currentIp = trimString(ip);
+
+  if (twoFactor.requireOnFirstLogin && !hasVerifiedLogin) return true;
+  if (twoFactor.requireOnNewDevice && !deviceKnown) return true;
+  if (twoFactor.requireOnIpChange && hasVerifiedLogin && lastIp && currentIp && lastIp !== currentIp) return true;
+  return false;
+};
+
+const buildAuthPayload = (admin, token) => ({
+  token,
+  user: {
+    id: admin._id,
+    name: admin.name,
+    email: admin.email,
+    role: admin.role,
+  },
+});
 const buildDefaultRolePermissions = () => ({
   MainAdmin: {
     fullAccess: true,
@@ -259,7 +426,6 @@ exports.registerAdmin = async (req, res) => {
 // LOGIN ADMIN USER
 exports.loginAdmin = async (req, res) => {
   const { email, password, role } = req.body;
-  console.log("Login request body:", req.body);
 
   if (!email || !password || !role) {
     return res.status(400).json({ message: 'Email, password, and role are required' });
@@ -282,17 +448,167 @@ exports.loginAdmin = async (req, res) => {
     pushAudit(admin, { what: 'Signed in', ip: getClientIp(req) });
     await admin.save();
 
-    res.json({
-      token,
-      user: {
-        id: admin._id,
-        name: admin.name,
-        email: admin.email,
-        role: admin.role,
-      },
-    });
+    res.json(buildAuthPayload(admin, token));
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/admins/login/otp/resend
+exports.resendAdminLoginOtp = async (req, res) => {
+  try {
+    const email = trimString(req.body?.email).toLowerCase();
+    const role = trimString(req.body?.role);
+    const challengeId = trimString(req.body?.challengeId);
+    if (!email || !role || !challengeId) {
+      return res.status(400).json({ message: "email, role, and challengeId are required" });
+    }
+
+    const admin = await AdminUser.findOne({ email, role });
+    if (!admin) return res.status(404).json({ message: "User not found" });
+
+    const twoFactor = getTwoFactorState(admin);
+    if (!twoFactor?.enabled) {
+      return res.status(400).json({ message: "Two-factor login is not enabled for this account" });
+    }
+
+    const pending = twoFactor.pendingChallenge || {};
+    if (!pending?.challengeId || pending.challengeId !== challengeId) {
+      return res.status(400).json({ message: "Login verification session not found. Start login again." });
+    }
+
+    const now = Date.now();
+    const expiresAt = pending?.expiresAt ? new Date(pending.expiresAt).getTime() : 0;
+    if (!expiresAt || expiresAt <= now) {
+      clearPendingChallenge(twoFactor);
+      await admin.save();
+      return res.status(400).json({ message: "Verification session expired. Please sign in again." });
+    }
+
+    const lastSent = pending?.lastSentAt ? new Date(pending.lastSentAt).getTime() : 0;
+    if (lastSent && now - lastSent < OTP_RESEND_COOLDOWN_MS) {
+      return res.status(429).json({
+        message: "Please wait before requesting another OTP.",
+        retryAfterSeconds: Math.ceil((OTP_RESEND_COOLDOWN_MS - (now - lastSent)) / 1000),
+      });
+    }
+
+    const clientIp = getClientIp(req);
+    const otpCode = createOtpCode();
+    const destination = await sendLoginOtp({
+      admin,
+      otpCode,
+      channel: pending.deliveryChannel || twoFactor.deliveryPreference || "email",
+      ip: clientIp,
+      deviceLabel: getDeviceLabel(req),
+    });
+
+    twoFactor.pendingChallenge = {
+      ...pending,
+      codeHash: hashOtpCode(admin._id, otpCode),
+      deliveryChannel: destination.channel,
+      destinationHint: destination.hint,
+      lastSentAt: new Date(),
+      requestIp: clientIp,
+    };
+    pushAudit(admin, { what: `Resent login OTP via ${destination.channel}`, ip: clientIp });
+    await admin.save();
+
+    return res.json({
+      success: true,
+      message: "Verification code resent",
+      deliveryChannel: destination.channel,
+      destinationHint: destination.hint,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message || "Failed to resend OTP" });
+  }
+};
+
+// POST /api/admins/login/otp/verify
+exports.verifyAdminLoginOtp = async (req, res) => {
+  try {
+    const email = trimString(req.body?.email).toLowerCase();
+    const role = trimString(req.body?.role);
+    const challengeId = trimString(req.body?.challengeId);
+    const otpCode = trimString(req.body?.otp);
+    const trustDevice = Boolean(req.body?.trustDevice ?? true);
+    const deviceFingerprint = normalizeDeviceFingerprint(req.body?.deviceFingerprint, req);
+    const deviceLabel = getDeviceLabel(req);
+
+    if (!email || !role || !challengeId || !otpCode) {
+      return res.status(400).json({ message: "email, role, challengeId, and otp are required" });
+    }
+
+    const admin = await AdminUser.findOne({ email, role });
+    if (!admin) return res.status(404).json({ message: "User not found" });
+
+    const twoFactor = getTwoFactorState(admin);
+    const pending = twoFactor.pendingChallenge || {};
+    if (!pending?.challengeId || pending.challengeId !== challengeId) {
+      return res.status(400).json({ message: "Verification session not found. Please sign in again." });
+    }
+
+    const now = Date.now();
+    const expiresAt = pending?.expiresAt ? new Date(pending.expiresAt).getTime() : 0;
+    if (!expiresAt || expiresAt <= now) {
+      clearPendingChallenge(twoFactor);
+      await admin.save();
+      return res.status(400).json({ message: "Verification code expired. Please sign in again." });
+    }
+
+    const maxAttempts = Number(pending?.maxAttempts || OTP_MAX_ATTEMPTS);
+    const attempts = Number(pending?.attempts || 0);
+    if (attempts >= maxAttempts) {
+      clearPendingChallenge(twoFactor);
+      await admin.save();
+      return res.status(429).json({ message: "Maximum OTP attempts exceeded. Please sign in again." });
+    }
+
+    const expectedHash = trimString(pending?.codeHash);
+    const actualHash = hashOtpCode(admin._id, otpCode);
+    if (!expectedHash || expectedHash !== actualHash) {
+      twoFactor.pendingChallenge = {
+        ...pending,
+        attempts: attempts + 1,
+      };
+      await admin.save();
+      return res.status(400).json({
+        message: "Invalid verification code",
+        remainingAttempts: Math.max(maxAttempts - (attempts + 1), 0),
+      });
+    }
+
+    const clientIp = getClientIp(req);
+    if (trustDevice) {
+      upsertTrustedDevice({
+        twoFactor,
+        fingerprint: deviceFingerprint,
+        ip: clientIp,
+        label: deviceLabel,
+      });
+    }
+
+    twoFactor.lastLoginIp = clientIp;
+    twoFactor.lastLoginAt = new Date();
+    twoFactor.lastVerifiedAt = new Date();
+    clearPendingChallenge(twoFactor);
+    admin.lastLogin = new Date();
+    pushAudit(admin, { what: "Signed in with 2FA verification", ip: clientIp });
+    await admin.save();
+
+    const token = jwt.sign(
+      { id: admin._id, role: admin.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    return res.json({
+      ...buildAuthPayload(admin, token),
+      twoFactorVerified: true,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message || "Failed to verify OTP" });
   }
 };
 

@@ -1,6 +1,7 @@
 const AdminUser = require("../models/AdminUser");
 const SalesTeam = require("../models/SalesTeam");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
+const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
 
 const toId = (value) => (value ? String(value) : "");
@@ -135,6 +136,12 @@ const buildAgentMetrics = (agent) => ({
   name: String(agent?.name || "Unknown"),
   email: String(agent?.email || ""),
   role: String(agent?.role || ""),
+  team: {
+    teamId: "",
+    teamName: "Unassigned",
+    ownerId: "",
+    ownerName: "Unassigned",
+  },
   workload: {
     totalAssignedConversations: 0,
     activeConversations: 0,
@@ -157,6 +164,9 @@ const buildAgentMetrics = (agent) => ({
   efficiency: {
     score: 0,
     label: "Needs attention",
+  },
+  drillDown: {
+    recentConversations: [],
   },
 });
 
@@ -213,6 +223,7 @@ const getWhatsAppAgentAnalytics = async ({ admin, query = {} }) => {
         averageEfficiencyScore: 0,
       },
       agents: [],
+      teams: [],
       trends: [],
       availableAgents: visibleAgents.map((agent) => ({
         _id: agent._id,
@@ -223,9 +234,67 @@ const getWhatsAppAgentAnalytics = async ({ admin, query = {} }) => {
     };
   }
 
+  const selectedAgentIdSet = new Set(selectedAgentIds);
+  const teams = await SalesTeam.find({
+    $or: [
+      { ownerAdmin: { $in: selectedAgentIds } },
+      { members: { $in: selectedAgentIds } },
+    ],
+  })
+    .select("_id name ownerAdmin members")
+    .lean();
+
+  const teamByMemberId = new Map();
+  const ownerIds = new Set();
+  teams.forEach((team) => {
+    const ownerId = toId(team?.ownerAdmin);
+    if (ownerId) ownerIds.add(ownerId);
+
+    const members = Array.isArray(team?.members) ? team.members : [];
+    members.forEach((memberId) => {
+      const normalizedMemberId = toId(memberId);
+      if (!normalizedMemberId || !selectedAgentIdSet.has(normalizedMemberId)) return;
+      if (!teamByMemberId.has(normalizedMemberId)) {
+        teamByMemberId.set(normalizedMemberId, team);
+      }
+    });
+  });
+
+  selectedAgents.forEach((agent) => {
+    const reportsToId = toId(agent?.reportsTo);
+    if (reportsToId) ownerIds.add(reportsToId);
+  });
+
+  const ownerDocs = ownerIds.size
+    ? await AdminUser.find({
+      _id: { $in: Array.from(ownerIds) },
+      role: "SalesAdmin",
+    })
+      .select("_id name email")
+      .lean()
+    : [];
+  const ownerMap = new Map(ownerDocs.map((owner) => [toId(owner?._id), owner]));
+
   const agentMetricsMap = new Map(selectedAgents.map((agent) => [toId(agent._id), buildAgentMetrics(agent)]));
+  selectedAgents.forEach((agent) => {
+    const agentId = toId(agent?._id);
+    if (!agentId || !agentMetricsMap.has(agentId)) return;
+
+    const team = teamByMemberId.get(agentId) || null;
+    const ownerId = team ? toId(team?.ownerAdmin) : toId(agent?.reportsTo);
+    const owner = ownerMap.get(ownerId) || null;
+    const metrics = agentMetricsMap.get(agentId);
+
+    metrics.team = {
+      teamId: toId(team?._id),
+      teamName: String(team?.name || owner?.name || "Unassigned"),
+      ownerId,
+      ownerName: String(owner?.name || "Unassigned"),
+    };
+  });
+
   const conversationDocs = await WhatsAppConversation.find({ agentId: { $in: selectedAgentIds } })
-    .select("_id agentId status createdAt lastMessageAt")
+    .select("_id agentId contactId status createdAt lastMessageAt")
     .lean();
 
   const conversationToAgentMap = new Map();
@@ -246,6 +315,43 @@ const getWhatsAppAgentAnalytics = async ({ admin, query = {} }) => {
       metrics.workload.closedConversations += 1;
     }
   });
+
+  const contactIds = Array.from(
+    new Set(
+      conversationDocs
+        .map((conversation) => toId(conversation?.contactId))
+        .filter(Boolean)
+    )
+  );
+  const contactDocs = contactIds.length
+    ? await WhatsAppContact.find({ _id: { $in: contactIds } })
+      .select("_id name phone")
+      .lean()
+    : [];
+  const contactMap = new Map(contactDocs.map((contact) => [toId(contact?._id), contact]));
+
+  const recentConversationsByAgent = new Map(selectedAgentIds.map((agentId) => [agentId, []]));
+  [...conversationDocs]
+    .sort((left, right) => {
+      const leftTime = new Date(left?.lastMessageAt || left?.createdAt || 0).getTime();
+      const rightTime = new Date(right?.lastMessageAt || right?.createdAt || 0).getTime();
+      return rightTime - leftTime;
+    })
+    .forEach((conversation) => {
+      const agentId = toId(conversation?.agentId);
+      if (!agentId || !recentConversationsByAgent.has(agentId)) return;
+      const bucket = recentConversationsByAgent.get(agentId);
+      if (bucket.length >= 5) return;
+      bucket.push({
+        conversationId: toId(conversation?._id),
+        contactId: toId(conversation?.contactId),
+        contactName: String(contactMap.get(toId(conversation?.contactId))?.name || "").trim(),
+        contactPhone: String(contactMap.get(toId(conversation?.contactId))?.phone || "").trim(),
+        status: String(conversation?.status || "").toLowerCase() || "open",
+        lastMessageAt: conversation?.lastMessageAt || null,
+        createdAt: conversation?.createdAt || null,
+      });
+    });
 
   const trendMap = new Map();
   const getTrendRow = (dateKey) => {
@@ -358,6 +464,9 @@ const getWhatsAppAgentAnalytics = async ({ admin, query = {} }) => {
         score: efficiencyScore,
         label: getEfficiencyLabel(efficiencyScore),
       },
+      drillDown: {
+        recentConversations: recentConversationsByAgent.get(metrics.agentId) || [],
+      },
     };
   });
 
@@ -417,6 +526,71 @@ const getWhatsAppAgentAnalytics = async ({ admin, query = {} }) => {
       respondedCount: row.respondedCount,
     }));
 
+  const teamAccumulatorMap = new Map();
+  agentRows.forEach((row) => {
+    const ownerId = toId(row?.team?.ownerId) || "unassigned";
+    if (!teamAccumulatorMap.has(ownerId)) {
+      teamAccumulatorMap.set(ownerId, {
+        teamOwnerId: ownerId === "unassigned" ? "" : ownerId,
+        teamOwnerName: String(row?.team?.ownerName || "Unassigned"),
+        teamId: String(row?.team?.teamId || ""),
+        teamName: String(row?.team?.teamName || "Unassigned"),
+        memberCount: 0,
+        totalAssignedConversations: 0,
+        activeConversations: 0,
+        totalInboundMessages: 0,
+        totalOutboundMessages: 0,
+        respondedCount: 0,
+        responseSecondsTotal: 0,
+        fastResponsesWithin5m: 0,
+        efficiencyScoreTotal: 0,
+        workloadIndexTotal: 0,
+      });
+    }
+
+    const teamRow = teamAccumulatorMap.get(ownerId);
+    teamRow.memberCount += 1;
+    teamRow.totalAssignedConversations += Number(row?.workload?.totalAssignedConversations || 0);
+    teamRow.activeConversations += Number(row?.workload?.activeConversations || 0);
+    teamRow.totalInboundMessages += Number(row?.messaging?.inboundMessages || 0);
+    teamRow.totalOutboundMessages += Number(row?.messaging?.outboundMessages || 0);
+    teamRow.respondedCount += Number(row?.response?.respondedCount || 0);
+    teamRow.responseSecondsTotal += Number(row?.response?.avgResponseSeconds || 0) * Number(row?.response?.respondedCount || 0);
+    teamRow.fastResponsesWithin5m += Number(row?.response?.fastResponsesWithin5m || 0);
+    teamRow.efficiencyScoreTotal += Number(row?.efficiency?.score || 0);
+    teamRow.workloadIndexTotal += Number(row?.workload?.workloadIndex || 0);
+  });
+
+  const teamRows = Array.from(teamAccumulatorMap.values())
+    .map((teamRow) => {
+      const averageResponseSeconds = teamRow.respondedCount
+        ? roundTo(teamRow.responseSecondsTotal / teamRow.respondedCount, 1)
+        : null;
+      const sla5mRate = roundTo(safeDivide(teamRow.fastResponsesWithin5m, teamRow.respondedCount) * 100, 2);
+      const responseRate = roundTo(
+        safeDivide(teamRow.respondedCount, teamRow.totalInboundMessages) * 100,
+        2
+      );
+      const averageEfficiencyScore = teamRow.memberCount
+        ? roundTo(teamRow.efficiencyScoreTotal / teamRow.memberCount, 0)
+        : 0;
+
+      return {
+        ...teamRow,
+        averageResponseSeconds,
+        averageResponseMinutes: averageResponseSeconds !== null ? roundTo(averageResponseSeconds / 60, 2) : null,
+        sla5mRate,
+        responseRate,
+        averageEfficiencyScore,
+      };
+    })
+    .sort((left, right) => {
+      if (right.workloadIndexTotal !== left.workloadIndexTotal) {
+        return right.workloadIndexTotal - left.workloadIndexTotal;
+      }
+      return String(left.teamOwnerName || "").localeCompare(String(right.teamOwnerName || ""));
+    });
+
   return {
     range: {
       key: range.range,
@@ -442,6 +616,7 @@ const getWhatsAppAgentAnalytics = async ({ admin, query = {} }) => {
         : 0,
     },
     agents: agentRows,
+    teams: teamRows,
     trends,
     availableAgents: visibleAgents.map((agent) => ({
       _id: agent._id,
