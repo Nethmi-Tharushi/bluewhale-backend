@@ -8,6 +8,7 @@ const {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getAgentAnalytics,
   getRoundRobinSettings,
   saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
@@ -115,6 +116,7 @@ router.get("/messages/:messageId/media", protectAdmin, authorizeAdmin(), getMess
 router.get("/messages/:conversationId", protectAdmin, authorizeAdmin(), getConversationMessages);
 
 router.get("/agents", protectAdmin, authorizeAdmin(), getAgents);
+router.get("/agent-analytics", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), getAgentAnalytics);
 router.get("/assignment-settings", protectAdmin, authorizeAdmin(), getRoundRobinSettings);
 router.put("/assignment-settings", protectAdmin, authorizeAdmin(), saveRoundRobinSettings);
 router.get("/profile", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), getWhatsAppProfile);

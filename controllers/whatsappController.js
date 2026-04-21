@@ -84,6 +84,7 @@ const {
   getProductCollectionProviderConfig,
 } = require("../services/whatsappProductCollectionService");
 const { loadWhatsAppMetaConnection } = require("../services/whatsappMetaConnectionService");
+const { getWhatsAppAgentAnalytics } = require("../services/whatsappAgentAnalyticsService");
 const {
   listTemplates,
   syncTemplatesFromMeta,
@@ -558,6 +559,24 @@ const getAgents = async (_req, res) => {
   } catch (error) {
     console.error("Failed to fetch WhatsApp agents:", error);
     return res.status(500).json({ message: "Failed to fetch agents" });
+  }
+};
+
+const getAgentAnalytics = async (req, res) => {
+  try {
+    if (!canManageAssignments(req.admin)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const analytics = await getWhatsAppAgentAnalytics({
+      admin: req.admin,
+      query: req.query || {},
+    });
+
+    return res.json({ success: true, data: analytics });
+  } catch (error) {
+    console.error("Failed to fetch WhatsApp agent analytics:", error);
+    return res.status(error.status || 500).json({ message: error.message || "Failed to fetch agent analytics" });
   }
 };
 
@@ -1926,6 +1945,7 @@ module.exports = {
   getConversationMessages,
   getMessageMedia,
   getAgents,
+  getAgentAnalytics,
   getRoundRobinSettings,
   saveRoundRobinSettings,
   getWhatsAppBasicAutomations,
