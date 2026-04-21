@@ -616,7 +616,9 @@ const createMeeting = async (req, res) => {
     const populatedMeeting = await Meeting.findById(meeting._id)
       .populate('candidate', 'name email phone userType')
       .populate('salesAdmin', 'name email')
-      .populate('mainAdmin', 'name email');
+      .populate('mainAdmin', 'name email')
+      .populate('linkedLeadId', '_id name email phone')
+      .populate('conversationId', '_id');
 
     const formattedMeeting = await formatMeetingResponse(populatedMeeting, {
       managedCandidateData:
@@ -652,6 +654,8 @@ const getMeetings = async (req, res) => {
       .populate('candidate', 'name email phone userType')
       .populate('salesAdmin', 'name email')
       .populate('mainAdmin', 'name email')
+      .populate('linkedLeadId', '_id name email phone')
+      .populate('conversationId', '_id')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -696,7 +700,9 @@ const updateMeeting = async (req, res) => {
       )
         .populate('candidate', 'name email phone userType')
         .populate('salesAdmin', 'name email')
-        .populate('mainAdmin', 'name email');
+        .populate('mainAdmin', 'name email')
+        .populate('linkedLeadId', '_id name email phone')
+        .populate('conversationId', '_id');
 
       if (!meeting) {
         return res.status(404).json({ message: 'Meeting not found or not yours' });
@@ -706,7 +712,9 @@ const updateMeeting = async (req, res) => {
       meeting = await Meeting.findByIdAndUpdate(id, updates, { new: true })
         .populate('candidate', 'name email phone userType')
         .populate('salesAdmin', 'name email')
-        .populate('mainAdmin', 'name email');
+        .populate('mainAdmin', 'name email')
+        .populate('linkedLeadId', '_id name email phone')
+        .populate('conversationId', '_id');
 
       if (!meeting) return res.status(404).json({ message: 'Meeting not found' });
     }

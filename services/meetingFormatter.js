@@ -153,6 +153,17 @@ async function formatMeetingResponse(meeting, options = {}) {
   const normalizedCandidate = normalizeCandidate(candidate, rawMeeting?.clientName);
   const dateParts = formatDateParts(rawMeeting?.date);
 
+  // Build CRM context
+  const crmContext = {};
+  if (rawMeeting?.linkedLeadId || rawMeeting?.conversationId) {
+    if (rawMeeting.linkedLeadId) {
+      crmContext.linkedLeadId = String(rawMeeting.linkedLeadId._id || rawMeeting.linkedLeadId);
+    }
+    if (rawMeeting.conversationId) {
+      crmContext.conversationId = String(rawMeeting.conversationId._id || rawMeeting.conversationId);
+    }
+  }
+
   return {
     _id: rawMeeting._id,
     title: rawMeeting.title,
@@ -163,11 +174,31 @@ async function formatMeetingResponse(meeting, options = {}) {
     date: dateParts.date,
     time: dateParts.time,
     scheduledAt: dateParts.scheduledAt,
+    // Alternative date/time fields for API compatibility
+    dateTime: dateParts.scheduledAt,
+    meetingDate: rawMeeting.meetingDate || rawMeeting.date,
+    meetingTime: rawMeeting.meetingTime || dateParts.time,
     notes: rawMeeting.notes || "",
     clientName: rawMeeting.clientName || normalizedCandidate?.name || null,
+    customerName: rawMeeting.customerName || rawMeeting.clientName || normalizedCandidate?.name || null,
     candidateType: rawMeeting.candidateType || "B2C",
     managedCandidateId: rawMeeting.managedCandidateId || null,
     candidate: normalizedCandidate,
+    // Contact information
+    email: rawMeeting.email || normalizedCandidate?.email || "",
+    phone: rawMeeting.phone || normalizedCandidate?.phone || "",
+    customerEmail: rawMeeting.customerEmail || rawMeeting.email || normalizedCandidate?.email || "",
+    customerPhone: rawMeeting.customerPhone || rawMeeting.phone || normalizedCandidate?.phone || "",
+    // Assignment information
+    assignee: rawMeeting.assignee || rawMeeting.assignedPerson || "",
+    assignedPerson: rawMeeting.assignedPerson || rawMeeting.assignee || "",
+    assignedTo: rawMeeting.salesAdmin
+      ? {
+          _id: rawMeeting.salesAdmin._id,
+          name: rawMeeting.salesAdmin.name,
+          email: rawMeeting.salesAdmin.email || null,
+        }
+      : null,
     participants: buildParticipants({
       candidate: normalizedCandidate,
       salesAdmin: rawMeeting.salesAdmin,
@@ -195,6 +226,10 @@ async function formatMeetingResponse(meeting, options = {}) {
           email: agent.email || null,
         }
       : null,
+    // CRM linking fields
+    linkedLeadId: rawMeeting.linkedLeadId ? String(rawMeeting.linkedLeadId._id || rawMeeting.linkedLeadId) : null,
+    conversationId: rawMeeting.conversationId ? String(rawMeeting.conversationId._id || rawMeeting.conversationId) : null,
+    crmContext: Object.keys(crmContext).length > 0 ? crmContext : null,
     createdAt: rawMeeting.createdAt || null,
     updatedAt: rawMeeting.updatedAt || null,
   };

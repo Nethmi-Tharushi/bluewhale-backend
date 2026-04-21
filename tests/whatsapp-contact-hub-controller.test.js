@@ -33,6 +33,14 @@ const loadController = (serviceOverrides = {}) =>
         pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
         summary: { totalContacts: 0, optedInContacts: 0, newLeadCount: 0, qualifiedCount: 0 },
       }),
+      getWhatsAppContactHubProfile: async () => ({
+        contact: { id: "507f1f77bcf86cd799439011", name: "Alice", phone: "94770000001" },
+        conversation: { id: "507f1f77bcf86cd799439101" },
+        messages: [],
+        latestTask: null,
+        latestMeeting: null,
+        summary: { touchpoints: 0, messageCount: 0, noteCount: 0, taskCount: 0, meetingCount: 0 },
+      }),
       createWhatsAppContactHubRecord: async () => ({
         created: true,
         item: { id: "507f1f77bcf86cd799439011", name: "Alice", phone: "94770000001" },
@@ -83,6 +91,12 @@ module.exports = async () => {
   assert.match(exportRes.headers["Content-Disposition"], /whatsapp-contact-hub\.csv/);
   assert.match(exportRes.body, /Alice/);
 
+  const profileRes = createResponse();
+  await controller.getContactHubProfile({ params: { id: "507f1f77bcf86cd799439011" } }, profileRes);
+  assert.equal(profileRes.statusCode, 200);
+  assert.equal(profileRes.body.success, true);
+  assert.equal(profileRes.body.data.contact.name, "Alice");
+
   const errorController = loadController({
     listWhatsAppContactHub: async () => {
       const error = new Error("sortBy must be one of: createdAt:desc, lastSeenAt:desc, name:asc, status:asc");
@@ -97,4 +111,19 @@ module.exports = async () => {
   assert.equal(errorRes.statusCode, 400);
   assert.equal(errorRes.body.success, false);
   assert.equal(errorRes.body.code, "INVALID_SORT");
+
+  const notFoundController = loadController({
+    getWhatsAppContactHubProfile: async () => {
+      const error = new Error("WhatsApp customer not found for the provided contact id or phone");
+      error.status = 404;
+      error.code = "CONTACT_HUB_NOT_FOUND";
+      throw error;
+    },
+  });
+
+  const notFoundRes = createResponse();
+  await notFoundController.getContactHubProfile({ params: { id: "unknown" } }, notFoundRes);
+  assert.equal(notFoundRes.statusCode, 404);
+  assert.equal(notFoundRes.body.success, false);
+  assert.equal(notFoundRes.body.code, "CONTACT_HUB_NOT_FOUND");
 };

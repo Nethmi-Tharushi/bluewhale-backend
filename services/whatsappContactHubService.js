@@ -1,5 +1,7 @@
 const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
+const Meeting = require("../models/Meeting");
+const Task = require("../models/Task");
 const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
@@ -25,9 +27,17 @@ const CONTACT_HUB_SORT_OPTIONS = new Set([
   "status:asc",
 ]);
 const CONTACT_HUB_ALLOWED_OWNER_ROLES = ["MainAdmin", "SalesAdmin", "SalesStaff"];
+const CONTACT_HUB_PROFILE_MESSAGE_LIMIT = 100;
+const PHONE_LOOKUP_PATTERN = /^[\d\s+().-]+$/;
 
 const trimString = (value) => String(value || "").trim();
 const hasOwnProperty = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
+const toIdString = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && value._id) return String(value._id);
+  return String(value);
+};
 const toObject = (value) => {
   if (!value) return {};
   if (typeof value.toObject === "function") return value.toObject();
@@ -48,6 +58,15 @@ const createHttpError = (message, status = 400, extras = {}) => {
   error.status = status;
   Object.assign(error, extras);
   return error;
+};
+const getLatestDateValue = (...values) => {
+  const candidates = values
+    .map((value) => toDateOrNull(value))
+    .filter(Boolean)
+    .map((value) => value.getTime());
+
+  if (!candidates.length) return null;
+  return new Date(Math.max(...candidates));
 };
 
 const normalizePhoneOrThrow = (value, fieldLabel = "phone") => {
@@ -183,6 +202,168 @@ const escapeCsvValue = (value) => {
     return `"${stringValue.replace(/"/g, '""')}"`;
   }
   return stringValue;
+};
+const isPhoneLikeLookupValue = (value = "") => {
+  const raw = trimString(value);
+  if (!raw || !PHONE_LOOKUP_PATTERN.test(raw)) return false;
+
+  const normalized = normalizePhone(raw);
+  return normalized.length >= 8 && normalized.length <= 15;
+};
+const normalizeHubMessageType = (value = "") => {
+  const type = trimString(value).toLowerCase();
+  if (type === "image") return "image";
+  if (type === "document") return "document";
+  if (["audio", "video", "unknown"].includes(type)) return "attachment";
+  return "text";
+};
+const resolveConversationActivityAt = (conversation = {}) =>
+  getLatestDateValue(
+    conversation.lastMessageAt,
+    conversation.lastIncomingAt,
+    conversation.lastOutgoingAt,
+    conversation.updatedAt,
+    conversation.createdAt
+  );
+const sortByLatestDateDescending = (items = [], resolveDate) =>
+  [...items].sort((left, right) => {
+    const leftTime = resolveDate(left)?.getTime?.() || 0;
+    const rightTime = resolveDate(right)?.getTime?.() || 0;
+
+    if (leftTime === rightTime) {
+      return toIdString(right._id || right.id).localeCompare(toIdString(left._id || left.id));
+    }
+
+    return rightTime - leftTime;
+  });
+const buildLinkedLeadProfile = (lead) => {
+  const base = toObject(lead);
+  if (!toIdString(base._id || base.id)) return null;
+
+  return {
+    id: toIdString(base._id || base.id),
+    name: trimString(base.name),
+    phone: trimString(base.phone),
+    email: trimString(base.email).toLowerCase(),
+    stage: trimString(base.status),
+  };
+};
+const buildConversationNotePayload = (note) => {
+  const base = toObject(note);
+  if (!base || (!trimString(base.text) && !toIdString(base._id))) return null;
+
+  const authorSource =
+    base.authorId && typeof base.authorId === "object"
+      ? base.authorId
+      : null;
+  const authorId = toIdString(authorSource?._id || base.authorId);
+  const authorName = trimString(base.authorName || authorSource?.name);
+
+  return {
+    id: toIdString(base._id),
+    text: trimString(base.text),
+    author: authorName,
+    authorId,
+    authorName,
+    createdAt: toIsoStringOrNull(base.createdAt),
+  };
+};
+const buildHubMessagePayload = (message) => {
+  const base = toObject(message);
+
+  return {
+    id: toIdString(base._id || base.id),
+    direction: trimString(base.direction).toLowerCase() === "outbound" ? "outbound" : "inbound",
+    text: trimString(base.content || base.text),
+    type: normalizeHubMessageType(base.type),
+    status: trimString(base.status),
+    timestamp: toIsoStringOrNull(base.timestamp || base.createdAt),
+  };
+};
+const buildHubTaskPayload = (task) => {
+  const base = toObject(task);
+  if (!toIdString(base._id || base.id)) return null;
+
+  const assignedBy =
+    base.assignedBy && typeof base.assignedBy === "object"
+      ? base.assignedBy
+      : null;
+  const agent =
+    base.agent && typeof base.agent === "object"
+      ? base.agent
+      : null;
+
+  return {
+    id: toIdString(base._id || base.id),
+    title: trimString(base.title),
+    dueDate: toIsoStringOrNull(base.dueDate),
+    priority: trimString(base.priority),
+    assignedTo: trimString(agent?.name || assignedBy?.name || assignedBy?.email),
+  };
+};
+const buildHubMeetingPayload = (meeting) => {
+  const base = toObject(meeting);
+  if (!toIdString(base._id || base.id)) return null;
+
+  const salesAdmin =
+    base.salesAdmin && typeof base.salesAdmin === "object"
+      ? base.salesAdmin
+      : null;
+
+  return {
+    id: toIdString(base._id || base.id),
+    title: trimString(base.title),
+    meetingDate: toIsoStringOrNull(base.meetingDate || base.date || base.scheduledAt),
+    meetingTime: trimString(base.meetingTime),
+    assignedPerson: trimString(base.assignedPerson || base.assignee || salesAdmin?.name || salesAdmin?.email),
+  };
+};
+const buildHubConversationPayload = ({ conversation = null, taskCount = 0, meetingCount = 0 } = {}) => {
+  const source = toObject(conversation);
+  const notes = Array.isArray(source.notes)
+    ? source.notes.map(buildConversationNotePayload).filter(Boolean)
+    : [];
+  const linkedLead = buildLinkedLeadProfile(source.linkedLeadId);
+
+  if (!toIdString(source._id || source.id)) {
+    return {
+      id: "",
+      backendConversationId: "",
+      workflowStatus: "",
+      backendStatus: "",
+      assignedTo: "",
+      assigneeId: "",
+      lastMessage: "",
+      lastMessageAt: null,
+      tags: [],
+      notes: [],
+      linkedLead: null,
+      relatedCounts: {
+        notes: 0,
+        tasks: Number(taskCount || 0),
+        meetings: Number(meetingCount || 0),
+      },
+    };
+  }
+
+  return {
+    id: toIdString(source._id || source.id),
+    backendConversationId: toIdString(source._id || source.id),
+    workflowStatus: trimString(source.status).toLowerCase() === "closed" ? "Closed" : "Open",
+    backendStatus: trimString(source.status),
+    assignedTo: trimString(source.agentId?.name),
+    assigneeId: toIdString(source.agentId),
+    lastMessage: trimString(source.lastMessagePreview),
+    lastMessageAt: toIsoStringOrNull(source.lastMessageAt),
+    tags: normalizeTags(source.tags),
+    notes,
+    linkedLead,
+    relatedCounts: {
+      notes: notes.length,
+      tasks: Number(taskCount || 0),
+      meetings: Number(meetingCount || 0),
+    },
+  };
 };
 
 const normalizeLeadStatusToContactHubStatus = (value) => {
@@ -725,6 +906,34 @@ const buildPhoneLookupFilter = (normalizedPhone, excludeId = null) => {
 
   return filter;
 };
+const buildTaskLookupFilter = ({ conversationId = "", linkedLeadId = "" } = {}) => {
+  const or = [];
+
+  if (conversationId) {
+    or.push({ conversationId });
+  }
+
+  if (linkedLeadId) {
+    or.push({ linkedLeadId });
+  }
+
+  return or.length ? { $or: or } : null;
+};
+const buildMeetingLookupFilter = ({ conversationId = "", linkedLeadId = "" } = {}) => {
+  const or = [];
+
+  if (conversationId) {
+    or.push({ conversationId });
+    or.push({ "crmContext.conversationId": conversationId });
+  }
+
+  if (linkedLeadId) {
+    or.push({ linkedLeadId });
+    or.push({ "crmContext.linkedLeadId": linkedLeadId });
+  }
+
+  return or.length ? { $or: or } : null;
+};
 
 const saveContactDocument = async (contact, updates = {}) => {
   Object.entries(updates).forEach(([key, value]) => {
@@ -748,6 +957,127 @@ const getContactDocumentOrThrow = async (id) => {
   }
 
   return contact;
+};
+const resolveContactByHubLookup = async (lookupValue) => {
+  const rawLookup = trimString(lookupValue);
+  if (!rawLookup) {
+    throw createHttpError("WhatsApp customer not found for the provided contact id or phone", 404, {
+      code: "CONTACT_HUB_NOT_FOUND",
+    });
+  }
+
+  let contact = null;
+  if (Types.ObjectId.isValid(rawLookup)) {
+    contact = await WhatsAppContact.findById(rawLookup);
+  }
+
+  if (!contact && isPhoneLikeLookupValue(rawLookup)) {
+    contact = await WhatsAppContact.findOne(buildPhoneLookupFilter(normalizePhone(rawLookup)));
+  }
+
+  if (!contact) {
+    throw createHttpError("WhatsApp customer not found for the provided contact id or phone", 404, {
+      code: "CONTACT_HUB_NOT_FOUND",
+    });
+  }
+
+  return contact;
+};
+const resolveMostRelevantConversation = async (contactId) => {
+  const conversations = await WhatsAppConversation.find({ contactId, channel: "whatsapp" })
+    .populate(
+      "linkedLeadId",
+      "name email phone status source sourceDetails city tags optedIn optIn whatsappOptIn whatsappOptedIn marketingOptIn marketingConsent doNotContact unsubscribed"
+    )
+    .populate("agentId", "_id name email role")
+    .populate("notes.authorId", "_id name email role")
+    .lean();
+
+  return sortByLatestDateDescending(conversations, resolveConversationActivityAt)[0] || null;
+};
+const resolveLatestTaskDate = (task = {}) =>
+  getLatestDateValue(task.dueDate, task.updatedAt, task.createdAt);
+const resolveLatestMeetingDate = (meeting = {}) =>
+  getLatestDateValue(meeting.meetingDate, meeting.date, meeting.scheduledAt, meeting.updatedAt, meeting.createdAt);
+const resolveAccountOwnerName = async (contact = {}) => {
+  const currentName = trimString(contact.accountOwner);
+  if (currentName) return currentName;
+
+  const accountOwnerId = toIdString(contact.accountOwnerId);
+  if (!Types.ObjectId.isValid(accountOwnerId)) return "";
+
+  const owner = await AdminUser.findById(accountOwnerId).select("_id name email role");
+  return trimString(owner?.name || owner?.email);
+};
+const getWhatsAppContactHubProfile = async (lookupValue) => {
+  const contactDoc = await resolveContactByHubLookup(lookupValue);
+  const contact = toObject(contactDoc);
+  const conversation = await resolveMostRelevantConversation(contactDoc._id);
+  const conversationId = toIdString(conversation?._id);
+  const linkedLeadId = toIdString(conversation?.linkedLeadId);
+  const taskFilter = buildTaskLookupFilter({ conversationId, linkedLeadId });
+  const meetingFilter = buildMeetingLookupFilter({ conversationId, linkedLeadId });
+
+  const [accountOwner, recentMessagesRaw, messageCount, tasks, meetings] = await Promise.all([
+    resolveAccountOwnerName(contact),
+    WhatsAppMessage.find(conversationId ? { conversationId } : { contactId: contactDoc._id })
+      .sort({ timestamp: -1, createdAt: -1 })
+      .limit(CONTACT_HUB_PROFILE_MESSAGE_LIMIT)
+      .lean(),
+    WhatsAppMessage.countDocuments({ contactId: contactDoc._id }),
+    taskFilter
+      ? Task.find(taskFilter)
+        .populate("assignedBy", "_id name email role")
+        .populate("agent", "_id name email")
+        .lean()
+      : Promise.resolve([]),
+    meetingFilter
+      ? Meeting.find(meetingFilter)
+        .populate("salesAdmin", "_id name email role")
+        .lean()
+      : Promise.resolve([]),
+  ]);
+
+  const sortedRecentMessages = [...recentMessagesRaw].reverse();
+  const messages = sortedRecentMessages.map(buildHubMessagePayload);
+  const latestMessageAt = toIsoStringOrNull(recentMessagesRaw[0]?.timestamp || recentMessagesRaw[0]?.createdAt);
+  const sortedTasks = sortByLatestDateDescending(tasks, resolveLatestTaskDate);
+  const sortedMeetings = sortByLatestDateDescending(meetings, resolveLatestMeetingDate);
+  const latestTask = buildHubTaskPayload(sortedTasks[0]);
+  const latestMeeting = buildHubMeetingPayload(sortedMeetings[0]);
+  const noteCount = Array.isArray(conversation?.notes) ? conversation.notes.length : 0;
+  const taskCount = tasks.length;
+  const meetingCount = meetings.length;
+  const normalizedContact = {
+    ...contact,
+    accountOwner,
+  };
+
+  return {
+    contact: buildContactHubRecord({
+      contact: normalizedContact,
+      conversation,
+      messageStats: {
+        totalMessages: messageCount,
+        lastSeenAt: latestMessageAt,
+      },
+    }),
+    conversation: buildHubConversationPayload({
+      conversation,
+      taskCount,
+      meetingCount,
+    }),
+    messages,
+    latestTask: latestTask || null,
+    latestMeeting: latestMeeting || null,
+    summary: {
+      touchpoints: messageCount + noteCount + taskCount + meetingCount,
+      messageCount,
+      noteCount,
+      taskCount,
+      meetingCount,
+    },
+  };
 };
 
 const toApiContactRecord = async (contactDoc) => {
@@ -982,6 +1312,7 @@ module.exports = {
   bulkUpdateWhatsAppContactHub,
   exportWhatsAppContactHubCsv,
   getWhatsAppContactHubMeta,
+  getWhatsAppContactHubProfile,
   buildContactHubRecord,
   buildContactHubSummary,
   inferContactOptIn,
@@ -994,5 +1325,8 @@ module.exports = {
     buildLatestConversationMap,
     buildMessageStatsMap,
     normalizeLeadStatusToContactHubStatus,
+    isPhoneLikeLookupValue,
+    buildHubConversationPayload,
+    buildHubMessagePayload,
   },
 };

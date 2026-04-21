@@ -74,5 +74,7 @@ whatsAppMessageSchema.index(
   { externalMessageId: 1 },
   { unique: true, partialFilterExpression: { externalMessageId: { $type: "string", $ne: "" } } }
 );
+whatsAppMessageSchema.index({ contactId: 1, timestamp: -1, createdAt: -1 });
+whatsAppMessageSchema.index({ conversationId: 1, timestamp: -1, createdAt: -1 });
 
 module.exports = mongoose.model("WhatsAppMessage", whatsAppMessageSchema);

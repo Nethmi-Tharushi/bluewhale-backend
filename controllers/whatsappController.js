@@ -24,6 +24,7 @@ const {
   getConversationById,
   upsertContact,
 } = require("../services/whatsappCRMService");
+const { formatMessages } = require("../services/whatsappMessageFormatter");
 const { sendMessage, downloadMedia, cacheInboundMedia, SUPPORTED_MEDIA_TYPES } = require("../services/whatsappService");
 const {
   listQuickReplies,
@@ -459,11 +460,13 @@ const getConversationMessages = async (req, res) => {
       admin: req.admin,
     });
     const hydratedMessages = await Promise.all(messages.map((message) => hydrateMediaMessage(message)));
+    const formattedMessages = formatMessages(hydratedMessages);
     const conversationData = await getConversationById(req.params.conversationId);
 
     return res.json({
       success: true,
-      data: hydratedMessages,
+      data: formattedMessages,
+      messages: formattedMessages,
       conversation: conversationData,
     });
   } catch (error) {

@@ -78,6 +78,7 @@ const {
 } = require("../controllers/whatsappController");
 const {
   listContactHub,
+  getContactHubProfile,
   createContactHubRecord,
   updateContactHubRecord,
   updateContactHubStatus,
@@ -125,6 +126,7 @@ router.post("/profile/logo", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdm
 router.delete("/profile/logo", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), removeWhatsAppProfileLogo);
 router.get("/contact-hub/meta", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getContactHubMeta);
 router.get("/contact-hub/export", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), exportContactHubCsv);
+router.get("/contact-hub/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getContactHubProfile);
 router.get("/contact-hub", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listContactHub);
 router.post("/contact-hub", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), validateCreateBody, createContactHubRecord);
 router.post("/contact-hub/bulk", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), validateBulkBody, bulkUpdateContactHub);
