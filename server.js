@@ -25,6 +25,7 @@ const { Server } = require("socket.io");
 require("./jobs/meetingReminderJob");
 const { startWhatsAppAutomationWorker } = require("./services/whatsappAutomationService");
 const { startWhatsAppCampaignWorker } = require("./services/whatsappCampaignRuntimeService");
+const { startMetaLeadAdsPollingWorker } = require("./services/metaLeadAdsPollingService");
 
 const Message = require("./models/Message");
 const User = require("./models/User");
@@ -119,11 +120,39 @@ app.use(apiRateLimit);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/backups", express.static(path.join(__dirname, "backups")));
 
-// --- MongoDB Connection ---
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB Connected".green))
-  .catch((err) => console.error("MongoDB connection error:".red, err));
+const defaultMongoUri = isProductionRuntime ? "" : "mongodb://127.0.0.1:27017/bluewhale-crm";
+const mongoUri = process.env.MONGO_URI || defaultMongoUri;
+
+const logMongoConnectionError = (err) => {
+  console.error("MongoDB connection error:".red, err);
+
+  const isSrvDnsFailure = err?.code === "ECONNREFUSED" && err?.syscall === "querySrv";
+  if (!isSrvDnsFailure) {
+    return;
+  }
+
+  console.error(
+    `MongoDB SRV lookup failed for ${err.hostname || "the configured Atlas host"}.`.yellow
+  );
+
+  if (!isProductionRuntime) {
+    console.error(
+      "Your local DNS/network is not resolving MongoDB Atlas SRV records right now.".yellow
+    );
+    console.error(
+      "For local development, either fix DNS/VPN/firewall access to Atlas or switch MONGO_URI to mongodb://127.0.0.1:27017/bluewhale-crm and run MongoDB locally.".yellow
+    );
+  }
+};
+
+const connectToDatabase = async () => {
+  if (!mongoUri) {
+    throw new Error("MONGO_URI is not configured.");
+  }
+
+  await mongoose.connect(mongoUri);
+  console.log("MongoDB Connected".green);
+};
 
 // --- Socket.IO Setup ---
 const io = new Server(server, {
@@ -146,6 +175,9 @@ io.on("connection", (socket) => {
   socket.on("joinRoom", ({ userId, role }) => {
     if (!userId) return;
     socket.join(userId.toString());
+    if (role) {
+      socket.join(`role:${role}`);
+    }
     console.log(`✅ ${role || "client"} joined room ${userId}`);
   });
 
@@ -284,9 +316,11 @@ app.use("/api/reports", require("./routes/reports"));
 app.use("/api/search", require("./routes/search"));
 app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/sales-crm", require("./routes/salesCrm"));
+app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/whatsapp/ai-agent", require("./routes/whatsappAiAgent"));
 app.use("/api/whatsapp/ai-intent-matching", require("./routes/whatsappAiIntentMatching"));
 app.use("/api/whatsapp", require("./routes/whatsapp"));
+app.use("/api/meta-lead-ads", require("./routes/metaLeadAds"));
 app.use("/api/whatsapp-automations", require("./routes/whatsappAutomation"));
 app.use("/", require("./routes/whatsapp"));
 
@@ -324,6 +358,9 @@ const startListening = () => {
     const activePort = address && typeof address === "object" ? address.port : currentPort;
     startWhatsAppAutomationWorker(app);
     startWhatsAppCampaignWorker(app);
+    Promise.resolve(startMetaLeadAdsPollingWorker(app)).catch((error) => {
+      console.error("Failed to start Meta Lead Ads polling worker:", error.message || error);
+    });
     console.log(`ðŸš€ Server running on port ${activePort}`.blue.bold);
     console.log(`ðŸ“¡ Socket.IO enabled for real-time chat`.cyan);
   });
@@ -368,7 +405,19 @@ server.on("error", (error) => {
   process.exit(1);
 });
 
-startListening(); if (false) server.listen(PORT, HOST, () => {
+const bootstrap = async () => {
+  try {
+    await connectToDatabase();
+    startListening();
+  } catch (err) {
+    logMongoConnectionError(err);
+    process.exit(1);
+  }
+};
+
+bootstrap();
+
+if (false) server.listen(PORT, HOST, () => {
   startWhatsAppAutomationWorker(app);
   startWhatsAppCampaignWorker(app);
   console.log(`🚀 Server running on port ${PORT}`.blue.bold);

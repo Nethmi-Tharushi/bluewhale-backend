@@ -4,7 +4,7 @@ const normalizePhone = (phone) => String(phone || "").replace(/[^\d]/g, "");
 
 const verifyMetaSignature = ({ rawBody, signatureHeader, appSecret }) => {
   if (!appSecret) {
-    throw new Error("Missing WHATSAPP_APP_SECRET environment variable");
+    throw new Error("Missing Meta app secret");
   }
 
   if (!rawBody || !signatureHeader) return false;

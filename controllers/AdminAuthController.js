@@ -7,6 +7,11 @@ const { loadWhatsAppMetaConnection, syncWhatsAppMetaConnectionCache } = require(
 const { sendAdminLoginOtpEmail } = require("../services/emailService");
 const { sendMessage: sendWhatsAppMessage } = require("../services/whatsappService");
 const {
+  normalizeMetaLeadAdsConnection,
+  prepareMetaLeadAdsConnectionForPersistence,
+  syncMetaLeadAdsConnectionCache,
+} = require("../services/metaLeadAdsConnectionService");
+const {
   listAdminsForLegacyEndpoint,
   createAdminRecord,
   updateAdminRecord,
@@ -20,6 +25,7 @@ const {
 } = require("../services/whatsappWalletService");
 const { syncWhatsAppAiIntentSettingsCache } = require("../services/whatsappAiIntentService");
 const { mergeInAppNotificationSettings } = require("../utils/notificationSettings");
+const { restartMetaLeadAdsPollingWorker } = require("../services/metaLeadAdsPollingService");
 
 function getClientIp(req) {
   const xfwd = req.headers['x-forwarded-for'];
@@ -729,6 +735,11 @@ exports.getMyAdminProfile = async (req, res) => {
       };
       touched = true;
     }
+    if (!admin.settings?.metaLeadAdsConnection) {
+      admin.settings = admin.settings || {};
+      admin.settings.metaLeadAdsConnection = normalizeMetaLeadAdsConnection({});
+      touched = true;
+    }
     if (!admin.apiKey) { admin.apiKey = generateApiKey(); touched = true; }
     if (!admin.billing) { admin.billing = undefined; touched = true; }
     if (!admin.auditLogs) { admin.auditLogs = []; touched = true; }
@@ -757,6 +768,7 @@ exports.updateMyAdminProfile = async (req, res) => {
   try {
     const adminId = req.admin?._id;
     const { name, email, settings, billing } = req.body;
+    let metaLeadAdsSettingsUpdated = false;
 
     const admin = await AdminUser.findById(adminId);
     if (!admin) return res.status(404).json({ message: 'Admin not found' });
@@ -808,6 +820,13 @@ exports.updateMyAdminProfile = async (req, res) => {
           ...settings.whatsappAiIntentAutomation,
         };
       }
+      if (settings.metaLeadAdsConnection && typeof settings.metaLeadAdsConnection === "object") {
+        admin.settings.metaLeadAdsConnection = prepareMetaLeadAdsConnectionForPersistence({
+          ...(admin.settings.metaLeadAdsConnection || {}),
+          ...settings.metaLeadAdsConnection,
+        });
+        metaLeadAdsSettingsUpdated = true;
+      }
     }
 
     if (billing && typeof billing === 'object') {
@@ -821,6 +840,12 @@ exports.updateMyAdminProfile = async (req, res) => {
     }
     if (admin?.settings?.whatsappAiIntentAutomation) {
       syncWhatsAppAiIntentSettingsCache(admin.settings.whatsappAiIntentAutomation);
+    }
+    if (admin?.settings?.metaLeadAdsConnection) {
+      syncMetaLeadAdsConnectionCache(normalizeMetaLeadAdsConnection(admin.settings.metaLeadAdsConnection));
+    }
+    if (metaLeadAdsSettingsUpdated) {
+      await restartMetaLeadAdsPollingWorker().catch(() => null);
     }
 
     const sanitized = await AdminUser.findById(adminId).select('-password');

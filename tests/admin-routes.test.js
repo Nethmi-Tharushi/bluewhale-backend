@@ -24,6 +24,10 @@ const createRouterMock = () => {
       pushRoute("put", routePath, handlers);
       return this;
     },
+    patch(routePath, ...handlers) {
+      pushRoute("patch", routePath, handlers);
+      return this;
+    },
     delete(routePath, ...handlers) {
       pushRoute("delete", routePath, handlers);
       return this;
@@ -44,12 +48,14 @@ module.exports = async () => {
     "../controllers/adminManagementController": new Proxy({}, { get: () => () => {} }),
     "../controllers/rolePermissionProfileController": new Proxy({}, { get: () => () => {} }),
     "../controllers/meetingController": new Proxy({}, { get: () => () => {} }),
+    "../controllers/metaLeadAdsController": new Proxy({}, { get: () => () => {} }),
     "../middlewares/AdminAuth": {
       protectAdmin,
       authorizeAdmin,
     },
     "../middlewares/adminManagementValidation": new Proxy({}, { get: () => () => {} }),
     "../middlewares/rolePermissionProfileValidation": new Proxy({}, { get: () => () => {} }),
+    "../middlewares/metaLeadAdsValidation": new Proxy({}, { get: () => () => {} }),
   });
 
   const findRoute = (method, routePath) =>
@@ -96,4 +102,41 @@ module.exports = async () => {
   const deleteRoute = findRoute("delete", "/:id");
   assert.ok(deleteRoute);
   assert.deepEqual(deleteRoute.handlers[1].roles, ["MainAdmin", "SalesAdmin"]);
+
+  const leadAdsStatusRoute = findRoute("get", "/me/meta-lead-ads/status");
+  assert.ok(leadAdsStatusRoute);
+  assert.equal(leadAdsStatusRoute.handlers[0], protectAdmin);
+  assert.deepEqual(leadAdsStatusRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsExchangeRoute = findRoute("post", "/me/meta-lead-ads/exchange");
+  assert.ok(leadAdsExchangeRoute);
+  assert.deepEqual(leadAdsExchangeRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsSyncRoute = findRoute("post", "/me/meta-lead-ads/sync");
+  assert.ok(leadAdsSyncRoute);
+  assert.deepEqual(leadAdsSyncRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsLeadSyncRoute = findRoute("post", "/me/meta-lead-ads/leads/sync");
+  assert.ok(leadAdsLeadSyncRoute);
+  assert.deepEqual(leadAdsLeadSyncRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsCampaignsRoute = findRoute("get", "/me/meta-lead-ads/campaigns");
+  assert.ok(leadAdsCampaignsRoute);
+  assert.deepEqual(leadAdsCampaignsRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsLogsRoute = findRoute("get", "/me/meta-lead-ads/logs");
+  assert.ok(leadAdsLogsRoute);
+  assert.deepEqual(leadAdsLogsRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsCampaignsSyncRoute = findRoute("post", "/me/meta-lead-ads/campaigns/sync");
+  assert.ok(leadAdsCampaignsSyncRoute);
+  assert.deepEqual(leadAdsCampaignsSyncRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsRetryRoute = findRoute("post", "/me/meta-lead-ads/retry-failed-syncs");
+  assert.ok(leadAdsRetryRoute);
+  assert.deepEqual(leadAdsRetryRoute.handlers[1].roles, ["MainAdmin"]);
+
+  const leadAdsDisconnectRoute = findRoute("post", "/me/meta-lead-ads/disconnect");
+  assert.ok(leadAdsDisconnectRoute);
+  assert.deepEqual(leadAdsDisconnectRoute.handlers[1].roles, ["MainAdmin"]);
 };
