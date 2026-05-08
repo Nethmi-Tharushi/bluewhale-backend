@@ -55,8 +55,12 @@ const leadSchema = new mongoose.Schema(
     },
     integrationKey: {
       type: String,
-      default: "",
+      default: undefined,
       trim: true,
+      set: (value) => {
+        const normalized = String(value || "").trim();
+        return normalized || undefined;
+      },
       index: true,
       sparse: true,
       unique: true,
