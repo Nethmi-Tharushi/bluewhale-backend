@@ -2,6 +2,7 @@ const asyncHandler = require("express-async-handler");
 const AdminUser = require("../models/AdminUser");
 const Campaign = require("../models/Campaign");
 const Lead = require("../models/Lead");
+const { notifyLeadEvent } = require("../services/notificationService");
 const { getSalesScope } = require("../utils/salesScope");
 const {
   CANONICAL_LEAD_STATUSES,
@@ -18,6 +19,13 @@ const {
 const LEAD_SOURCES = ["Nothing selected", "Campaign", "Website", "Referral", "Social Media", "Walk In", "Job Portal", "Old Data"];
 const DEFAULT_COUNTRIES = ["United Arab Emirates", "Sri Lanka", "India", "Qatar", "Kuwait", "Saudi Arabia", "Germany", "Poland", "Norway"];
 const DEFAULT_LANGUAGES = ["System Default", "English", "Arabic", "Hindi", "Tamil", "Sinhala"];
+
+const toIdString = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (value._id) return String(value._id);
+  return String(value);
+};
 
 const parseLeadValue = (value, fallback = 0) => {
   if (value === undefined) {
@@ -160,6 +168,30 @@ const createLead = asyncHandler(async (req, res) => {
     .populate("ownerAdmin", "name email role")
     .lean();
 
+  await notifyLeadEvent({
+    req,
+    eventType: "lead_created",
+    lead: populated,
+    title: "Lead created",
+    message: `${req.admin?.name || "Admin"} created lead "${populated.name}"`,
+    metadata: {
+      status: populated.status,
+      source: populated.source,
+    },
+  });
+
+  await notifyLeadEvent({
+    req,
+    eventType: "lead_assigned",
+    lead: populated,
+    title: "Lead assigned",
+    message: `"${populated.name}" assigned to ${populated.assignedTo?.name || "selected user"}`,
+    metadata: {
+      assignedTo: toIdString(populated.assignedTo),
+      assignedToName: populated.assignedTo?.name || "",
+    },
+  });
+
   res.status(201).json({ success: true, data: formatLeadForApi(populated) });
 });
 
@@ -171,6 +203,8 @@ const updateLead = asyncHandler(async (req, res) => {
 
   const scope = getSalesScope(req);
   const body = req.body || {};
+  const previousAssignedTo = toIdString(lead.assignedTo);
+  const previousStatus = lead.status;
 
   if (body.status !== undefined && !isSupportedLeadStatus(body.status)) {
     return res.status(400).json({ message: "Invalid lead status" });
@@ -229,6 +263,36 @@ const updateLead = asyncHandler(async (req, res) => {
     .populate("ownerAdmin", "name email role")
     .lean();
 
+  const nextAssignedTo = toIdString(populated.assignedTo);
+  if (previousAssignedTo && nextAssignedTo && previousAssignedTo !== nextAssignedTo) {
+    await notifyLeadEvent({
+      req,
+      eventType: "lead_reassigned",
+      lead: populated,
+      title: "Lead reassigned",
+      message: `"${populated.name}" reassigned to ${populated.assignedTo?.name || "selected user"}`,
+      metadata: {
+        previousAssignedTo,
+        assignedTo: nextAssignedTo,
+        assignedToName: populated.assignedTo?.name || "",
+      },
+    });
+  }
+
+  if (body.status !== undefined && previousStatus !== populated.status) {
+    await notifyLeadEvent({
+      req,
+      eventType: "lead_status_changed",
+      lead: populated,
+      title: "Lead status changed",
+      message: `"${populated.name}" moved from ${previousStatus || "Unknown"} to ${populated.status}`,
+      metadata: {
+        previousStatus,
+        status: populated.status,
+      },
+    });
+  }
+
   res.json({ success: true, data: formatLeadForApi(populated) });
 });
 
@@ -243,6 +307,7 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "Invalid lead status" });
   }
 
+  const previousStatus = lead.status;
   lead.status = normalizeLeadStatus(status, lead.status || DEFAULT_LEAD_STATUS);
   lead.lastContactAt = new Date();
   await lead.save();
@@ -251,6 +316,20 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
     .populate("assignedTo", "name email role")
     .populate("ownerAdmin", "name email role")
     .lean();
+
+  if (previousStatus !== populated.status) {
+    await notifyLeadEvent({
+      req,
+      eventType: "lead_status_changed",
+      lead: populated,
+      title: "Lead status changed",
+      message: `"${populated.name}" moved from ${previousStatus || "Unknown"} to ${populated.status}`,
+      metadata: {
+        previousStatus,
+        status: populated.status,
+      },
+    });
+  }
 
   res.json({ success: true, data: formatLeadForApi(populated) });
 });

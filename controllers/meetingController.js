@@ -3,6 +3,7 @@ const User = require('../models/User');
 const AdminUser = require('../models/AdminUser');
 const mongoose = require('mongoose');
 const { formatMeetingResponse, formatMeetingsResponse } = require('../services/meetingFormatter');
+const { notifyMeetingEvent } = require("../services/notificationService");
 
 const populateMeetingAdmins = (query) =>
   query
@@ -228,6 +229,19 @@ const createAdminMeeting = async (req, res) => {
     );
     const formattedMeeting = await formatMeetingResponse(populatedMeeting);
 
+    await notifyMeetingEvent({
+      req,
+      eventType: "meeting_created",
+      meeting: populatedMeeting,
+      title: "Meeting scheduled",
+      message: `${req.admin?.name || "Admin"} scheduled "${populatedMeeting.title}"`,
+      metadata: {
+        status: populatedMeeting.status,
+        date: populatedMeeting.date,
+        locationType: populatedMeeting.locationType,
+      },
+    });
+
     return res.status(201).json({
       message: "Meeting scheduled successfully",
       meeting: formattedMeeting,
@@ -295,6 +309,7 @@ const getAdminMeetingById = async (req, res) => {
 
 const updateAdminMeeting = async (req, res) => {
   try {
+    const previousMeeting = await Meeting.findById(req.params.id).select("status title date").lean();
     const updates = { ...req.body };
     delete updates.candidate;
     delete updates.salesAdmin;
@@ -327,6 +342,24 @@ const updateAdminMeeting = async (req, res) => {
     }
 
     const formattedMeeting = await formatMeetingResponse(meeting);
+
+    const statusChanged = previousMeeting?.status && previousMeeting.status !== meeting.status;
+    await notifyMeetingEvent({
+      req,
+      eventType: statusChanged ? "meeting_status_changed" : "meeting_updated",
+      meeting,
+      title: statusChanged ? "Meeting status changed" : "Meeting updated",
+      message: statusChanged
+        ? `"${meeting.title}" changed from ${previousMeeting.status} to ${meeting.status}`
+        : `${req.admin?.name || "Admin"} updated "${meeting.title}"`,
+      metadata: {
+        previousStatus: previousMeeting?.status || "",
+        status: meeting.status,
+        previousDate: previousMeeting?.date || null,
+        date: meeting.date,
+      },
+    });
+
     res.json({ meeting: formattedMeeting });
   } catch (err) {
     console.error("Error in updateAdminMeeting:", err);

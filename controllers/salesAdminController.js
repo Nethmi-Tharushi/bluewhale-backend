@@ -14,6 +14,7 @@ const bcrypt = require('bcryptjs');
 const { generateOnboardingTasksForApplication } = require("../services/recruitmentWorkflowService");
 const { createMeetingForTask, updateMeetingForTask } = require("../services/taskMeetingService");
 const { formatMeetingResponse, formatMeetingsResponse } = require("../services/meetingFormatter");
+const { notifyMeetingEvent, notifyTaskEvent } = require("../services/notificationService");
 const {
   listAccessibleSalesCandidates,
   resolveAccessibleSalesCandidate,
@@ -633,6 +634,19 @@ const createMeeting = async (req, res) => {
           : null,
     });
 
+    await notifyMeetingEvent({
+      req,
+      eventType: "meeting_created",
+      meeting: populatedMeeting,
+      title: "Meeting scheduled",
+      message: `${req.admin?.name || "Admin"} scheduled "${populatedMeeting.title}"`,
+      metadata: {
+        status: populatedMeeting.status,
+        date: populatedMeeting.date,
+        locationType: populatedMeeting.locationType,
+      },
+    });
+
     res.status(201).json(formattedMeeting);
   } catch (error) {
     console.error("Error creating meeting:", error);
@@ -673,6 +687,11 @@ const updateMeeting = async (req, res) => {
   try {
     const { id } = req.params;
     const { candidate, salesAdmin, mainAdmin, ...updates } = req.body;
+    const previousMeetingFilter =
+      req.admin.role === 'SalesAdmin' || req.admin.role === 'SalesStaff'
+        ? { _id: id, salesAdmin: req.admin._id }
+        : { _id: id };
+    const previousMeeting = await Meeting.findOne(previousMeetingFilter).select("status title date").lean();
 
     if (updates.dateTime || updates.scheduledAt) {
       updates.date = updates.dateTime || updates.scheduledAt;
@@ -720,6 +739,23 @@ const updateMeeting = async (req, res) => {
     }
 
     const formattedMeeting = await formatMeetingResponse(meeting);
+
+    const statusChanged = previousMeeting?.status && previousMeeting.status !== meeting.status;
+    await notifyMeetingEvent({
+      req,
+      eventType: statusChanged ? "meeting_status_changed" : "meeting_updated",
+      meeting,
+      title: statusChanged ? "Meeting status changed" : "Meeting updated",
+      message: statusChanged
+        ? `"${meeting.title}" changed from ${previousMeeting.status} to ${meeting.status}`
+        : `${req.admin?.name || "Admin"} updated "${meeting.title}"`,
+      metadata: {
+        previousStatus: previousMeeting?.status || "",
+        status: meeting.status,
+        previousDate: previousMeeting?.date || null,
+        date: meeting.date,
+      },
+    });
 
     res.json(formattedMeeting);
   } catch (error) {
@@ -1291,6 +1327,34 @@ const createSalesAdminTask = async (req, res) => {
       .populate('agent', 'name email companyName')
       .populate('relatedMeeting');
 
+    await notifyTaskEvent({
+      req,
+      eventType: "task_created",
+      task: populatedTask,
+      title: "Task created",
+      message: `${req.admin?.name || "Admin"} created "${populatedTask.title}"`,
+      metadata: {
+        status: populatedTask.status,
+        priority: populatedTask.priority,
+      },
+    });
+
+    if (populatedTask.relatedMeeting) {
+      await notifyMeetingEvent({
+        req,
+        eventType: "meeting_created",
+        meeting: populatedTask.relatedMeeting,
+        title: "Meeting scheduled",
+        message: `${req.admin?.name || "Admin"} scheduled "${populatedTask.relatedMeeting.title || populatedTask.title}"`,
+        metadata: {
+          source: "task",
+          taskId: String(populatedTask._id),
+          status: populatedTask.relatedMeeting.status,
+          date: populatedTask.relatedMeeting.date,
+        },
+      });
+    }
+
     res.status(201).json(withTaskCrmContext(populatedTask));
   } catch (err) {
     console.error("Error creating sales admin task:", err);
@@ -1313,6 +1377,7 @@ const updateSalesAdminTask = async (req, res) => {
     if (!task) {
       return res.status(404).json({ message: "Task not found" });
     }
+    const previousStatus = task.status;
 
     let hasAccess = hasFullCandidateAccess;
 
@@ -1368,6 +1433,44 @@ const updateSalesAdminTask = async (req, res) => {
       .populate('candidate', 'name email')
       .populate('agent', 'name email companyName')
       .populate('relatedMeeting');
+
+    const completedNow = previousStatus !== "Completed" && updatedTask.status === "Completed";
+    await notifyTaskEvent({
+      req,
+      eventType: completedNow ? "task_completed" : "task_updated",
+      task: updatedTask,
+      title: completedNow ? "Task completed" : "Task updated",
+      message: completedNow
+        ? `${req.admin?.name || "Admin"} marked "${updatedTask.title}" as completed`
+        : `${req.admin?.name || "Admin"} updated "${updatedTask.title}"`,
+      metadata: {
+        previousStatus,
+        status: updatedTask.status,
+        priority: updatedTask.priority,
+      },
+    });
+
+    if (updatedTask.relatedMeeting) {
+      const meetingStatusChanged =
+        previousStatus !== updatedTask.status && ["Completed", "Cancelled"].includes(String(updatedTask.status || ""));
+      await notifyMeetingEvent({
+        req,
+        eventType: meetingStatusChanged ? "meeting_status_changed" : "meeting_updated",
+        meeting: updatedTask.relatedMeeting,
+        title: meetingStatusChanged ? "Meeting status changed" : "Meeting updated",
+        message: meetingStatusChanged
+          ? `"${updatedTask.relatedMeeting.title || updatedTask.title}" changed to ${updatedTask.relatedMeeting.status || updatedTask.status}`
+          : `${req.admin?.name || "Admin"} updated "${updatedTask.relatedMeeting.title || updatedTask.title}"`,
+        metadata: {
+          source: "task",
+          taskId: String(updatedTask._id),
+          previousTaskStatus: previousStatus,
+          taskStatus: updatedTask.status,
+          status: updatedTask.relatedMeeting.status,
+          date: updatedTask.relatedMeeting.date,
+        },
+      });
+    }
 
     res.json(withTaskCrmContext(updatedTask));
   } catch (err) {

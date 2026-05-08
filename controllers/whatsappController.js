@@ -120,7 +120,7 @@ const isDuplicateWhatsAppFormSlugError = (error) => error?.code === 11000 && Obj
 
 const canManageAssignments = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
 const canManageTemplates = (admin) => isMainAdmin(admin) || isSalesAdmin(admin) || isSalesStaff(admin);
-const canManageCommerce = (admin) => isMainAdmin(admin) || isSalesAdmin(admin);
+const canManageCommerce = (admin) => isMainAdmin(admin) || isSalesAdmin(admin) || isSalesStaff(admin);
 const isValidObjectId = (value) => Types.ObjectId.isValid(String(value || ""));
 
 const canSendConversationMessage = ({ admin, conversation }) => {

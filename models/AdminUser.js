@@ -97,6 +97,10 @@ const adminUserSchema = new mongoose.Schema({
       type: mongoose.Schema.Types.Mixed,
       default: () => ({}),
     },
+    inAppNotifications: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({}),
+    },
     whatsappProfile: {
       logoUrl: { type: String, default: "" },
       logoCloudinaryId: { type: String, default: "" },

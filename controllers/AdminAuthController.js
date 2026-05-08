@@ -19,6 +19,7 @@ const {
   updateWalletConfig,
 } = require("../services/whatsappWalletService");
 const { syncWhatsAppAiIntentSettingsCache } = require("../services/whatsappAiIntentService");
+const { mergeInAppNotificationSettings } = require("../utils/notificationSettings");
 
 function getClientIp(req) {
   const xfwd = req.headers['x-forwarded-for'];
@@ -341,7 +342,7 @@ const buildDefaultRolePermissions = () => ({
     forms: false,
     teamManagement: false,
     internalChat: true,
-    invoices: false,
+    invoices: true,
     targets: true,
     leads: true,
     projects: false,
@@ -662,6 +663,16 @@ exports.getMyAdminProfile = async (req, res) => {
       admin.settings.rolePermissions = normalizedRolePermissions;
       touched = true;
     }
+    const normalizedInAppNotifications = mergeInAppNotificationSettings(admin.settings?.inAppNotifications || {});
+    if (
+      admin.role === "MainAdmin" &&
+      JSON.stringify(normalizedInAppNotifications) !== JSON.stringify(admin.settings?.inAppNotifications || {})
+    ) {
+      admin.settings = admin.settings || {};
+      admin.settings.inAppNotifications = normalizedInAppNotifications;
+      admin.markModified("settings.inAppNotifications");
+      touched = true;
+    }
     if (!admin.settings?.whatsappProfile) {
       admin.settings = admin.settings || {};
       admin.settings.whatsappProfile = {
@@ -770,6 +781,14 @@ exports.updateMyAdminProfile = async (req, res) => {
       }
       if (settings.rolePermissions && typeof settings.rolePermissions === 'object') {
         admin.settings.rolePermissions = mergeRolePermissionPatch(admin.settings.rolePermissions || {}, settings.rolePermissions);
+      }
+      if (
+        settings.inAppNotifications &&
+        typeof settings.inAppNotifications === "object" &&
+        admin.role === "MainAdmin"
+      ) {
+        admin.settings.inAppNotifications = mergeInAppNotificationSettings(settings.inAppNotifications);
+        admin.markModified("settings.inAppNotifications");
       }
       if (settings.whatsappProfile && typeof settings.whatsappProfile === "object") {
         admin.settings.whatsappProfile = {

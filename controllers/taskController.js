@@ -3,6 +3,7 @@ const Task = require('../models/Task');
 const User = require('../models/User');
 const mongoose = require("mongoose");
 const { createMeetingForTask, updateMeetingForTask } = require("../services/taskMeetingService");
+const { notifyMeetingEvent, notifyTaskEvent } = require("../services/notificationService");
 
 const taskDocToB2CDocType = {
   cv: "cv",
@@ -299,6 +300,34 @@ const createTask = async (req, res) => {
       .populate('agent', 'name email companyName')
       .populate('relatedMeeting');
 
+    await notifyTaskEvent({
+      req,
+      eventType: "task_created",
+      task: populatedTask,
+      title: "Task created",
+      message: `${req.admin?.name || "MainAdmin"} created "${populatedTask.title}"`,
+      metadata: {
+        status: populatedTask.status,
+        priority: populatedTask.priority,
+      },
+    });
+
+    if (populatedTask.relatedMeeting) {
+      await notifyMeetingEvent({
+        req,
+        eventType: "meeting_created",
+        meeting: populatedTask.relatedMeeting,
+        title: "Meeting scheduled",
+        message: `${req.admin?.name || "MainAdmin"} scheduled "${populatedTask.relatedMeeting.title || populatedTask.title}"`,
+        metadata: {
+          source: "task",
+          taskId: String(populatedTask._id),
+          status: populatedTask.relatedMeeting.status,
+          date: populatedTask.relatedMeeting.date,
+        },
+      });
+    }
+
     res.status(201).json(populatedTask);
   } catch (err) {
     console.error("Error creating task:", err);
@@ -319,6 +348,7 @@ const updateTask = async (req, res) => {
     if (!existingTask) {
       return res.status(404).json({ message: "Task not found" });
     }
+    const previousStatus = existingTask.status;
 
     if (existingTask.relatedMeeting && updateData.type && updateData.type !== 'Meeting') {
       return res.status(400).json({ message: "Meeting tasks cannot be changed to another task type" });
@@ -376,6 +406,44 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ message: "Task not found" });
     }
 
+    const completedNow = previousStatus !== "Completed" && task.status === "Completed";
+    await notifyTaskEvent({
+      req,
+      eventType: completedNow ? "task_completed" : "task_updated",
+      task,
+      title: completedNow ? "Task completed" : "Task updated",
+      message: completedNow
+        ? `${req.admin?.name || "MainAdmin"} marked "${task.title}" as completed`
+        : `${req.admin?.name || "MainAdmin"} updated "${task.title}"`,
+      metadata: {
+        previousStatus,
+        status: task.status,
+        priority: task.priority,
+      },
+    });
+
+    if (task.relatedMeeting) {
+      const meetingStatusChanged =
+        previousStatus !== task.status && ["Completed", "Cancelled"].includes(String(task.status || ""));
+      await notifyMeetingEvent({
+        req,
+        eventType: meetingStatusChanged ? "meeting_status_changed" : "meeting_updated",
+        meeting: task.relatedMeeting,
+        title: meetingStatusChanged ? "Meeting status changed" : "Meeting updated",
+        message: meetingStatusChanged
+          ? `"${task.relatedMeeting.title || task.title}" changed to ${task.relatedMeeting.status || task.status}`
+          : `${req.admin?.name || "MainAdmin"} updated "${task.relatedMeeting.title || task.title}"`,
+        metadata: {
+          source: "task",
+          taskId: String(task._id),
+          previousTaskStatus: previousStatus,
+          taskStatus: task.status,
+          status: task.relatedMeeting.status,
+          date: task.relatedMeeting.date,
+        },
+      });
+    }
+
     res.json(task);
   } catch (err) {
     console.error("Error updating task:", err);
@@ -414,6 +482,7 @@ const markTaskComplete = async (req, res) => {
     if (!existingTask) {
       return res.status(404).json({ message: "Task not found" });
     }
+    const wasAlreadyCompleted = existingTask.status === "Completed";
 
     const uploadedCompletionFiles = Array.isArray(completionFiles) ? completionFiles : [];
     const existingDocSelections = Array.isArray(selectedExistingDocuments) ? selectedExistingDocuments : [];
@@ -500,6 +569,23 @@ const markTaskComplete = async (req, res) => {
           }
         }
       }
+    }
+
+    if (!wasAlreadyCompleted) {
+      await notifyTaskEvent({
+        req,
+        eventType: "task_completed",
+        task,
+        title: "Task completed",
+        message: `${req.user?.name || "User"} completed "${task.title}"`,
+        actor: req.user,
+        actorModel: "User",
+        metadata: {
+          completionNotes,
+          filesCount: task.completionFiles?.length || 0,
+          status: task.status,
+        },
+      });
     }
 
     res.json(task);
