@@ -17,7 +17,7 @@ const leadSchema = new mongoose.Schema(
     assignedTo: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AdminUser",
-      required: true,
+      default: null,
       index: true,
     },
     leadNumber: {

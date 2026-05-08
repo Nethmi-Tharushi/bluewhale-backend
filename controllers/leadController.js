@@ -128,10 +128,15 @@ const createLead = asyncHandler(async (req, res) => {
   }
 
   const assignableFilter = buildAssignableAdminFilter(scope);
-  const preferredAssignee = String(body.assignedTo || "").trim() || scope.actorId;
-  const assignedAdmin = await AdminUser.findOne({ _id: preferredAssignee, ...assignableFilter }).select("_id");
+  const keepUnassigned = body.keepUnassigned === true || String(body.keepUnassigned || "").toLowerCase() === "true";
+  const preferredAssignee = String(body.assignedTo || "").trim();
+  const fallbackAssignee = keepUnassigned ? "" : scope.actorId;
+  const requestedAssignee = preferredAssignee || fallbackAssignee;
+  const assignedAdmin = requestedAssignee
+    ? await AdminUser.findOne({ _id: requestedAssignee, ...assignableFilter }).select("_id")
+    : null;
 
-  if (!assignedAdmin) {
+  if (requestedAssignee && !assignedAdmin) {
     return res.status(400).json({ message: "Invalid assigned user selected" });
   }
 
@@ -140,7 +145,7 @@ const createLead = asyncHandler(async (req, res) => {
   const lead = await Lead.create({
     teamAdmin: scope.managerId,
     ownerAdmin: scope.actorId,
-    assignedTo: assignedAdmin._id,
+    assignedTo: assignedAdmin?._id || null,
     leadNumber: nextLeadNumber,
     status: normalizeLeadStatus(body.status, DEFAULT_LEAD_STATUS),
     source: normalizeLeadSource(body.source, DEFAULT_LEAD_SOURCE),
@@ -180,17 +185,19 @@ const createLead = asyncHandler(async (req, res) => {
     },
   });
 
-  await notifyLeadEvent({
-    req,
-    eventType: "lead_assigned",
-    lead: populated,
-    title: "Lead assigned",
-    message: `"${populated.name}" assigned to ${populated.assignedTo?.name || "selected user"}`,
-    metadata: {
-      assignedTo: toIdString(populated.assignedTo),
-      assignedToName: populated.assignedTo?.name || "",
-    },
-  });
+  if (populated.assignedTo) {
+    await notifyLeadEvent({
+      req,
+      eventType: "lead_assigned",
+      lead: populated,
+      title: "Lead assigned",
+      message: `"${populated.name}" assigned to ${populated.assignedTo?.name || "selected user"}`,
+      metadata: {
+        assignedTo: toIdString(populated.assignedTo),
+        assignedToName: populated.assignedTo?.name || "",
+      },
+    });
+  }
 
   res.status(201).json({ success: true, data: formatLeadForApi(populated) });
 });
