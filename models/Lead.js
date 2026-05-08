@@ -20,6 +20,17 @@ const leadSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    assignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AdminUser",
+      default: null,
+      index: true,
+    },
+    assignedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
     leadNumber: {
       type: Number,
       required: true,

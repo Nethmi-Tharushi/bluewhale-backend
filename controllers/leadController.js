@@ -290,11 +290,14 @@ const createLead = asyncHandler(async (req, res) => {
   }
 
   const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: scope.managerId })) + 1;
+  const assignedAt = assignedAdmin ? new Date() : null;
 
   const lead = await Lead.create({
     teamAdmin: scope.managerId,
     ownerAdmin: scope.actorId,
     assignedTo: assignedAdmin?._id || null,
+    assignedBy: assignedAdmin ? scope.actorId : null,
+    assignedAt,
     leadNumber: nextLeadNumber,
     status: normalizeLeadStatus(body.status, DEFAULT_LEAD_STATUS),
     source: normalizeLeadSource(body.source, DEFAULT_LEAD_SOURCE),
@@ -316,11 +319,11 @@ const createLead = asyncHandler(async (req, res) => {
     tags: normalizeLeadTags(body.tags),
     assignmentHistory: [
       {
-        action: LEAD_ASSIGNMENT_ACTIONS.ASSIGNED,
-        assignedTo: assignedAdmin._id,
+        action: assignedAdmin ? LEAD_ASSIGNMENT_ACTIONS.ASSIGNED : LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
+        assignedTo: assignedAdmin?._id || null,
         previousAssignedTo: null,
         assignedBy: scope.actorId,
-        assignedAt: new Date(),
+        assignedAt: assignedAt || new Date(),
       },
     ],
     lastContactAt: body.lastContactAt ? new Date(body.lastContactAt) : new Date(),
