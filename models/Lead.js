@@ -17,7 +17,19 @@ const leadSchema = new mongoose.Schema(
     assignedTo: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AdminUser",
-      required: true,
+      required: false,
+      default: null,
+      index: true,
+    },
+    assignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AdminUser",
+      default: null,
+      index: true,
+    },
+    assignedAt: {
+      type: Date,
+      default: null,
       index: true,
     },
     leadNumber: {
@@ -41,6 +53,18 @@ const leadSchema = new mongoose.Schema(
       type: String,
       default: "",
       trim: true,
+    },
+    integrationKey: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+      sparse: true,
+      unique: true,
+    },
+    sourceMetadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
     },
     name: {
       type: String,
@@ -115,6 +139,37 @@ const leadSchema = new mongoose.Schema(
     },
     tags: {
       type: [String],
+      default: [],
+    },
+    assignmentHistory: {
+      type: [
+        {
+          action: {
+            type: String,
+            enum: ["assigned", "reassigned", "unassigned"],
+            default: "assigned",
+          },
+          assignedTo: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "AdminUser",
+            default: null,
+          },
+          previousAssignedTo: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "AdminUser",
+            default: null,
+          },
+          assignedBy: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "AdminUser",
+            default: null,
+          },
+          assignedAt: {
+            type: Date,
+            default: Date.now,
+          },
+        },
+      ],
       default: [],
     },
     lastContactAt: {

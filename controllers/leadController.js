@@ -1,4 +1,5 @@
 const asyncHandler = require("express-async-handler");
+const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
 const Campaign = require("../models/Campaign");
 const Lead = require("../models/Lead");
@@ -19,6 +20,11 @@ const {
 const LEAD_SOURCES = ["Nothing selected", "Campaign", "Website", "Referral", "Social Media", "Walk In", "Job Portal", "Old Data"];
 const DEFAULT_COUNTRIES = ["United Arab Emirates", "Sri Lanka", "India", "Qatar", "Kuwait", "Saudi Arabia", "Germany", "Poland", "Norway"];
 const DEFAULT_LANGUAGES = ["System Default", "English", "Arabic", "Hindi", "Tamil", "Sinhala"];
+const LEAD_ASSIGNMENT_ACTIONS = Object.freeze({
+  ASSIGNED: "assigned",
+  REASSIGNED: "reassigned",
+  UNASSIGNED: "unassigned",
+});
 
 const toIdString = (value) => {
   if (!value) return "";
@@ -70,6 +76,136 @@ const buildAssignableAdminFilter = (scope) => {
   };
 };
 
+const canManageLeadAssignments = (scope) => scope.isMainAdmin || scope.isSalesAdmin;
+
+const parseLeadId = (value) => {
+  const normalized = String(value || "").trim();
+  if (!normalized || !Types.ObjectId.isValid(normalized)) return null;
+  return normalized;
+};
+
+const populateLeadQuery = (query) =>
+  query
+    .populate("assignedTo", "name email role")
+    .populate("assignedBy", "name email role")
+    .populate("ownerAdmin", "name email role")
+    .populate("assignmentHistory.assignedTo", "name email role")
+    .populate("assignmentHistory.previousAssignedTo", "name email role")
+    .populate("assignmentHistory.assignedBy", "name email role");
+
+const findAssignableAdmin = async (scope, assigneeId) => {
+  const normalizedAssigneeId = String(assigneeId || "").trim();
+  if (!normalizedAssigneeId) return null;
+  if (!Types.ObjectId.isValid(normalizedAssigneeId)) {
+    const error = new Error("Invalid assignee id");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const assignedAdmin = await AdminUser.findOne({
+    _id: normalizedAssigneeId,
+    ...buildAssignableAdminFilter(scope),
+  }).select("_id name email role");
+
+  if (!assignedAdmin) {
+    const error = new Error("Assignee not found or not assignable in this sales scope");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return assignedAdmin;
+};
+
+const appendAssignmentHistory = (lead, { action, assignedTo = null, previousAssignedTo = null, assignedBy = null, assignedAt = new Date() } = {}) => {
+  lead.assignmentHistory = Array.isArray(lead.assignmentHistory) ? lead.assignmentHistory : [];
+  lead.assignmentHistory.push({
+    action,
+    assignedTo: assignedTo || null,
+    previousAssignedTo: previousAssignedTo || null,
+    assignedBy: assignedBy || null,
+    assignedAt,
+  });
+};
+
+const applyLeadAssignmentChange = async ({ lead, scope, actorId, assignedToInput, allowNoOp = true } = {}) => {
+  if (!canManageLeadAssignments(scope)) {
+    const error = new Error("Access denied: only MainAdmin or SalesAdmin can assign leads");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const nextAssignedIdRaw = String(assignedToInput || "").trim();
+  const nextAssignedId = nextAssignedIdRaw || null;
+  const previousAssignedId = lead?.assignedTo ? String(lead.assignedTo) : null;
+  const assignedAt = new Date();
+
+  if (!nextAssignedId) {
+    if (!previousAssignedId && !allowNoOp) {
+      const error = new Error("Lead is already unassigned");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (previousAssignedId) {
+      lead.assignedTo = null;
+      lead.assignedBy = actorId || null;
+      lead.assignedAt = assignedAt;
+      appendAssignmentHistory(lead, {
+        action: LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
+        assignedTo: null,
+        previousAssignedTo: previousAssignedId,
+        assignedBy: actorId || null,
+        assignedAt,
+      });
+    }
+
+    return {
+      action: LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
+      assignedTo: null,
+      assignedAt,
+    };
+  }
+
+  const assignedAdmin = await findAssignableAdmin(scope, nextAssignedId);
+  const isSameAssignee = previousAssignedId && previousAssignedId === String(assignedAdmin._id);
+
+  if (!isSameAssignee) {
+    lead.assignedTo = assignedAdmin._id;
+    lead.assignedBy = actorId || null;
+    lead.assignedAt = assignedAt;
+    appendAssignmentHistory(lead, {
+      action: previousAssignedId ? LEAD_ASSIGNMENT_ACTIONS.REASSIGNED : LEAD_ASSIGNMENT_ACTIONS.ASSIGNED,
+      assignedTo: assignedAdmin._id,
+      previousAssignedTo: previousAssignedId,
+      assignedBy: actorId || null,
+      assignedAt,
+    });
+  }
+
+  return {
+    action: previousAssignedId ? LEAD_ASSIGNMENT_ACTIONS.REASSIGNED : LEAD_ASSIGNMENT_ACTIONS.ASSIGNED,
+    assignedTo: assignedAdmin._id,
+    assignedAt,
+    assignee: assignedAdmin,
+    unchanged: Boolean(isSameAssignee),
+  };
+};
+
+const buildLeadListFilter = (req) => {
+  const filter = {
+    ...buildLeadAccessFilter(req),
+  };
+  const assignedFilter = String(req.query?.assigned || "").trim().toLowerCase();
+
+  if (assignedFilter === "assigned") {
+    filter.assignedTo = { $ne: null };
+  } else if (assignedFilter === "unassigned") {
+    filter.assignedTo = null;
+  }
+
+  return filter;
+};
+
 const getLeadMeta = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
 
@@ -101,13 +237,26 @@ const getLeadMeta = asyncHandler(async (req, res) => {
 });
 
 const listLeads = asyncHandler(async (req, res) => {
-  const leads = await Lead.find(buildLeadAccessFilter(req))
-    .populate("assignedTo", "name email role")
-    .populate("ownerAdmin", "name email role")
+  const leads = await populateLeadQuery(Lead.find(buildLeadListFilter(req)))
     .sort({ createdAt: -1 })
     .lean();
 
   res.json({ success: true, data: leads.map((lead) => formatLeadForApi(lead)) });
+});
+
+const getLeadById = asyncHandler(async (req, res) => {
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await populateLeadQuery(Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) })).lean();
+
+  if (!lead) {
+    return res.status(404).json({ message: "Lead not found" });
+  }
+
+  res.json({ success: true, data: formatLeadForApi(lead) });
 });
 
 const createLead = asyncHandler(async (req, res) => {
@@ -141,6 +290,8 @@ const createLead = asyncHandler(async (req, res) => {
     teamAdmin: scope.managerId,
     ownerAdmin: scope.actorId,
     assignedTo: assignedAdmin._id,
+    assignedBy: scope.actorId,
+    assignedAt: new Date(),
     leadNumber: nextLeadNumber,
     status: normalizeLeadStatus(body.status, DEFAULT_LEAD_STATUS),
     source: normalizeLeadSource(body.source, DEFAULT_LEAD_SOURCE),
@@ -160,14 +311,19 @@ const createLead = asyncHandler(async (req, res) => {
     company: body.company || "",
     description: body.description || "",
     tags: normalizeLeadTags(body.tags),
+    assignmentHistory: [
+      {
+        action: LEAD_ASSIGNMENT_ACTIONS.ASSIGNED,
+        assignedTo: assignedAdmin._id,
+        previousAssignedTo: null,
+        assignedBy: scope.actorId,
+        assignedAt: new Date(),
+      },
+    ],
     lastContactAt: body.lastContactAt ? new Date(body.lastContactAt) : new Date(),
   });
 
-  const populated = await Lead.findById(lead._id)
-    .populate("assignedTo", "name email role")
-    .populate("ownerAdmin", "name email role")
-    .lean();
-
+  const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
   await notifyLeadEvent({
     req,
     eventType: "lead_created",
@@ -196,7 +352,12 @@ const createLead = asyncHandler(async (req, res) => {
 });
 
 const updateLead = asyncHandler(async (req, res) => {
-  const lead = await Lead.findOne({ _id: req.params.id, ...buildLeadAccessFilter(req) });
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) });
   if (!lead) {
     return res.status(404).json({ message: "Lead not found" });
   }
@@ -219,17 +380,21 @@ const updateLead = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: parsedLeadValue.message });
   }
 
-  if (body.assignedTo !== undefined && String(body.assignedTo || "").trim()) {
-    const assignedAdmin = await AdminUser.findOne({
-      _id: body.assignedTo,
-      ...buildAssignableAdminFilter(scope),
-    }).select("_id");
-
-    if (!assignedAdmin) {
-      return res.status(400).json({ message: "Invalid assigned user selected" });
+  if (body.assignedTo !== undefined) {
+    if (!canManageLeadAssignments(scope)) {
+      return res.status(403).json({ message: "Access denied: only MainAdmin or SalesAdmin can assign leads" });
     }
 
-    lead.assignedTo = assignedAdmin._id;
+    try {
+      await applyLeadAssignmentChange({
+        lead,
+        scope,
+        actorId: scope.actorId,
+        assignedToInput: body.assignedTo,
+      });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ message: error.message || "Failed to update lead assignment" });
+    }
   }
 
   if (body.status !== undefined) lead.status = normalizeLeadStatus(body.status, lead.status || DEFAULT_LEAD_STATUS);
@@ -258,11 +423,7 @@ const updateLead = asyncHandler(async (req, res) => {
 
   await lead.save();
 
-  const populated = await Lead.findById(lead._id)
-    .populate("assignedTo", "name email role")
-    .populate("ownerAdmin", "name email role")
-    .lean();
-
+  const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
   const nextAssignedTo = toIdString(populated.assignedTo);
   if (previousAssignedTo && nextAssignedTo && previousAssignedTo !== nextAssignedTo) {
     await notifyLeadEvent({
@@ -297,7 +458,12 @@ const updateLead = asyncHandler(async (req, res) => {
 });
 
 const updateLeadStatus = asyncHandler(async (req, res) => {
-  const lead = await Lead.findOne({ _id: req.params.id, ...buildLeadAccessFilter(req) });
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) });
   if (!lead) {
     return res.status(404).json({ message: "Lead not found" });
   }
@@ -312,11 +478,7 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
   lead.lastContactAt = new Date();
   await lead.save();
 
-  const populated = await Lead.findById(lead._id)
-    .populate("assignedTo", "name email role")
-    .populate("ownerAdmin", "name email role")
-    .lean();
-
+  const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
   if (previousStatus !== populated.status) {
     await notifyLeadEvent({
       req,
@@ -334,8 +496,107 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
   res.json({ success: true, data: formatLeadForApi(populated) });
 });
 
+const assignLead = asyncHandler(async (req, res) => {
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const scope = getSalesScope(req);
+  if (!canManageLeadAssignments(scope)) {
+    return res.status(403).json({ message: "Access denied: only MainAdmin or SalesAdmin can assign leads" });
+  }
+
+  const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) });
+  if (!lead) {
+    return res.status(404).json({ message: "Lead not found" });
+  }
+
+  try {
+    await applyLeadAssignmentChange({
+      lead,
+      scope,
+      actorId: scope.actorId,
+      assignedToInput: req.body?.assignedTo,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ message: error.message || "Failed to update lead assignment" });
+  }
+
+  await lead.save();
+
+  const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
+  return res.json({
+    success: true,
+    message: String(req.body?.assignedTo || "").trim() ? "Lead assigned successfully" : "Lead unassigned successfully",
+    data: formatLeadForApi(populated),
+  });
+});
+
+const bulkAssignLeads = asyncHandler(async (req, res) => {
+  const scope = getSalesScope(req);
+  if (!canManageLeadAssignments(scope)) {
+    return res.status(403).json({ message: "Access denied: only MainAdmin or SalesAdmin can assign leads" });
+  }
+
+  const leadIds = Array.isArray(req.body?.leadIds) ? req.body.leadIds : [];
+  if (!leadIds.length) {
+    return res.status(400).json({ message: "leadIds must be a non-empty array" });
+  }
+
+  const normalizedLeadIds = [...new Set(leadIds.map(parseLeadId).filter(Boolean))];
+  if (!normalizedLeadIds.length || normalizedLeadIds.length !== leadIds.length) {
+    return res.status(400).json({ message: "Each lead id must be a valid id" });
+  }
+
+  const assignmentInput = req.body?.assignedTo;
+  const results = [];
+  const failures = [];
+
+  for (const leadId of normalizedLeadIds) {
+    const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) });
+    if (!lead) {
+      failures.push({ leadId, message: "Lead not found" });
+      continue;
+    }
+
+    try {
+      await applyLeadAssignmentChange({
+        lead,
+        scope,
+        actorId: scope.actorId,
+        assignedToInput: assignmentInput,
+      });
+      await lead.save();
+      const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
+      results.push(formatLeadForApi(populated));
+    } catch (error) {
+      failures.push({
+        leadId,
+        message: error.message || "Failed to update lead assignment",
+      });
+    }
+  }
+
+  return res.status(failures.length ? 207 : 200).json({
+    success: failures.length === 0,
+    message: String(assignmentInput || "").trim() ? "Bulk lead assignment completed" : "Bulk lead unassignment completed",
+    data: {
+      updated: results,
+      failures,
+      updatedCount: results.length,
+      failureCount: failures.length,
+    },
+  });
+});
+
 const deleteLead = asyncHandler(async (req, res) => {
-  const lead = await Lead.findOneAndDelete({ _id: req.params.id, ...buildLeadAccessFilter(req) });
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await Lead.findOneAndDelete({ _id: leadId, ...buildLeadAccessFilter(req) });
   if (!lead) {
     return res.status(404).json({ message: "Lead not found" });
   }
@@ -346,7 +607,10 @@ const deleteLead = asyncHandler(async (req, res) => {
 module.exports = {
   getLeadMeta,
   listLeads,
+  getLeadById,
   createLead,
+  assignLead,
+  bulkAssignLeads,
   updateLead,
   updateLeadStatus,
   deleteLead,

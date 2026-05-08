@@ -22,6 +22,17 @@ const {
   getMetaConnectionHealth,
 } = require('../controllers/AdminAuthController');
 const {
+  getMetaLeadAdsStatusHandler,
+  exchangeMetaLeadAdsCodeHandler,
+  syncMetaLeadAdsHandler,
+  syncMetaLeadAdsLeadsHandler,
+  getMetaLeadAdsCampaignsHandler,
+  getMetaLeadAdsLogsHandler,
+  syncMetaLeadAdsCampaignsHandler,
+  retryFailedMetaLeadAdsSyncsHandler,
+  disconnectMetaLeadAdsHandler,
+} = require("../controllers/metaLeadAdsController");
+const {
   getAgentSettings,
   getAgentSettingsMetadata,
 } = require("../controllers/adminManagementController");
@@ -50,6 +61,12 @@ const {
   validateRolePermissionUpdateBody,
   validateRolePermissionResetBody,
 } = require("../middlewares/rolePermissionProfileValidation");
+const {
+  validateMetaLeadAdsDisconnectBody,
+  validateMetaLeadAdsExchangeBody,
+  validateMetaLeadAdsRetryBody,
+  validateMetaLeadAdsSyncBody,
+} = require("../middlewares/metaLeadAdsValidation");
 
 // LOGIN (public)
 router.post('/login', loginAdmin);
@@ -71,6 +88,15 @@ router.post('/me/whatsapp-profile/logo', protectAdmin, upload.single("photo"), u
 router.post('/me/whatsapp-meta/embedded-signup/exchange', protectAdmin, authorizeAdmin('MainAdmin'), exchangeEmbeddedSignupCode);
 router.post('/me/whatsapp-meta/disconnect', protectAdmin, authorizeAdmin('MainAdmin'), disconnectMetaConnection);
 router.get('/me/whatsapp-meta/health', protectAdmin, authorizeAdmin('MainAdmin'), getMetaConnectionHealth);
+router.get("/me/meta-lead-ads/status", protectAdmin, authorizeAdmin("MainAdmin"), getMetaLeadAdsStatusHandler);
+router.post("/me/meta-lead-ads/exchange", protectAdmin, authorizeAdmin("MainAdmin"), validateMetaLeadAdsExchangeBody, exchangeMetaLeadAdsCodeHandler);
+router.post("/me/meta-lead-ads/sync", protectAdmin, authorizeAdmin("MainAdmin"), validateMetaLeadAdsSyncBody, syncMetaLeadAdsHandler);
+router.post("/me/meta-lead-ads/leads/sync", protectAdmin, authorizeAdmin("MainAdmin"), validateMetaLeadAdsSyncBody, syncMetaLeadAdsLeadsHandler);
+router.get("/me/meta-lead-ads/campaigns", protectAdmin, authorizeAdmin("MainAdmin"), getMetaLeadAdsCampaignsHandler);
+router.get("/me/meta-lead-ads/logs", protectAdmin, authorizeAdmin("MainAdmin"), getMetaLeadAdsLogsHandler);
+router.post("/me/meta-lead-ads/campaigns/sync", protectAdmin, authorizeAdmin("MainAdmin"), validateMetaLeadAdsSyncBody, syncMetaLeadAdsCampaignsHandler);
+router.post("/me/meta-lead-ads/retry-failed-syncs", protectAdmin, authorizeAdmin("MainAdmin"), validateMetaLeadAdsRetryBody, retryFailedMetaLeadAdsSyncsHandler);
+router.post("/me/meta-lead-ads/disconnect", protectAdmin, authorizeAdmin("MainAdmin"), validateMetaLeadAdsDisconnectBody, disconnectMetaLeadAdsHandler);
 router.put('/me/password', protectAdmin, changeMyAdminPassword);
 router.post('/me/api-key', protectAdmin, regenerateMyApiKey);
 router.get('/me/audit-logs', protectAdmin, getMyAuditLogs);

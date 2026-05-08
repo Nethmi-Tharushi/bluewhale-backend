@@ -81,8 +81,102 @@ const buildAssignedAdminPayload = (assignedTo) => {
   };
 };
 
+const buildAssignmentHistoryPayload = (items = []) =>
+  (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      action: trimString(item?.action) || "assigned",
+      assignedAt: item?.assignedAt || item?.createdAt || null,
+      assignedTo: buildAssignedAdminPayload(item?.assignedTo),
+      previousAssignedTo: buildAssignedAdminPayload(item?.previousAssignedTo),
+      assignedBy: buildAssignedAdminPayload(item?.assignedBy),
+    }))
+    .filter((item) => item.assignedAt || item.assignedTo || item.assignedBy);
+
+const pickFirstString = (...values) => {
+  for (const value of values) {
+    const normalized = trimString(value);
+    if (normalized) return normalized;
+  }
+  return "";
+};
+
+const normalizeMetaLeadCustomFields = (value) => {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => ({
+      name: trimString(item?.name || item?.key),
+      key: trimString(item?.key),
+      values: Array.isArray(item?.values)
+        ? item.values.map((entry) => trimString(entry)).filter(Boolean)
+        : trimString(item?.value)
+          ? [trimString(item.value)]
+          : [],
+    }))
+    .filter((item) => item.name || item.key || item.values.length);
+};
+
+const buildMetaLeadAdsPayload = (sourceMetadata = {}) => {
+  const metaLeadAds = sourceMetadata?.metaLeadAds && typeof sourceMetadata.metaLeadAds === "object"
+    ? sourceMetadata.metaLeadAds
+    : sourceMetadata;
+  const customFields = normalizeMetaLeadCustomFields(
+    metaLeadAds.customFields || sourceMetadata.customFields || []
+  );
+
+  return {
+    integrationProvider: pickFirstString(
+      metaLeadAds.integrationProvider,
+      sourceMetadata.integrationProvider,
+      metaLeadAds.provider,
+      sourceMetadata.provider
+    ),
+    metaLeadId: pickFirstString(metaLeadAds.metaLeadId, sourceMetadata.metaLeadId),
+    campaignId: pickFirstString(metaLeadAds.campaignId, sourceMetadata.campaignId),
+    campaignName: pickFirstString(metaLeadAds.campaignName, sourceMetadata.campaignName),
+    formId: pickFirstString(metaLeadAds.formId, sourceMetadata.formId),
+    formName: pickFirstString(metaLeadAds.formName, sourceMetadata.formName),
+    pageId: pickFirstString(metaLeadAds.pageId, sourceMetadata.pageId),
+    pageName: pickFirstString(metaLeadAds.pageName, sourceMetadata.pageName),
+    postName: pickFirstString(metaLeadAds.postName, sourceMetadata.postName, metaLeadAds.adName, sourceMetadata.adName),
+    jobPosition: pickFirstString(metaLeadAds.jobPosition, sourceMetadata.jobPosition),
+    additionalNotes: pickFirstString(metaLeadAds.additionalNotes, sourceMetadata.additionalNotes),
+    metaLeadTimestamp: metaLeadAds.metaLeadTimestamp || sourceMetadata.metaLeadTimestamp || null,
+    fetchedAt: metaLeadAds.fetchedAt || sourceMetadata.fetchedAt || null,
+    syncStatus: pickFirstString(metaLeadAds.syncStatus, sourceMetadata.syncStatus),
+    fieldValues:
+      metaLeadAds.fieldValues && typeof metaLeadAds.fieldValues === "object" && !Array.isArray(metaLeadAds.fieldValues)
+        ? metaLeadAds.fieldValues
+        : sourceMetadata.fieldValues && typeof sourceMetadata.fieldValues === "object" && !Array.isArray(sourceMetadata.fieldValues)
+          ? sourceMetadata.fieldValues
+          : {},
+    customFieldValues:
+      metaLeadAds.customFieldValues &&
+      typeof metaLeadAds.customFieldValues === "object" &&
+      !Array.isArray(metaLeadAds.customFieldValues)
+        ? metaLeadAds.customFieldValues
+        : sourceMetadata.customFieldValues &&
+            typeof sourceMetadata.customFieldValues === "object" &&
+            !Array.isArray(sourceMetadata.customFieldValues)
+          ? sourceMetadata.customFieldValues
+          : {},
+    customFields,
+  };
+};
+
 const formatLeadForApi = (lead) => {
   const base = lead && typeof lead.toObject === "function" ? lead.toObject() : lead || {};
+  const normalizedSourceMetadata =
+    base?.sourceMetadata && typeof base.sourceMetadata === "object" && !Array.isArray(base.sourceMetadata)
+      ? base.sourceMetadata
+      : {};
+  const metaLeadAds = buildMetaLeadAdsPayload(normalizedSourceMetadata);
+  const integrationProvider = metaLeadAds.integrationProvider || (trimString(base.integrationKey).startsWith("meta_lead_ads:") ? "meta_lead_ads" : "");
+  const isMetaLead = integrationProvider === "meta_lead_ads";
+  const syncStatus = pickFirstString(metaLeadAds.syncStatus, isMetaLead ? "synced" : "");
+  const additionalNotes = pickFirstString(metaLeadAds.additionalNotes);
+  const assignmentState = base.assignedTo ? "assigned" : "unassigned";
+  const assignmentHistory = buildAssignmentHistoryPayload(base.assignmentHistory);
 
   return {
     ...base,
@@ -95,17 +189,54 @@ const formatLeadForApi = (lead) => {
     phone: trimString(base.phone),
     company: trimString(base.company),
     assignedTo: buildAssignedAdminPayload(base.assignedTo),
+    assignedBy: buildAssignedAdminPayload(base.assignedBy),
+    assignedAt: base.assignedAt || null,
+    assignmentState,
+    isUnassigned: assignmentState === "unassigned",
+    assignmentHistory,
+    leadAssignments: assignmentHistory,
+    assignments: assignmentHistory,
     leadValue: Number(base.leadValue || 0),
     currency: trimString(base.currency || "AED") || "AED",
     tags: normalizeLeadTags(base.tags),
     description: trimString(base.description),
     lastContactAt: base.lastContactAt || base.updatedAt || base.createdAt || null,
     createdAt: base.createdAt || null,
+    integrationKey: trimString(base.integrationKey),
+    integrationProvider,
+    sourceMetadata: normalizedSourceMetadata,
+    integrationMeta: normalizedSourceMetadata,
+    metaLeadId: metaLeadAds.metaLeadId,
+    campaignId: metaLeadAds.campaignId,
+    campaignName: metaLeadAds.campaignName,
+    formId: metaLeadAds.formId,
+    formName: metaLeadAds.formName,
+    pageId: metaLeadAds.pageId,
+    pageName: metaLeadAds.pageName,
+    postName: metaLeadAds.postName,
+    jobPosition: metaLeadAds.jobPosition,
+    additionalNotes,
+    notes: additionalNotes,
+    metaLeadTimestamp: metaLeadAds.metaLeadTimestamp,
+    fetchedAt: metaLeadAds.fetchedAt,
+    syncStatus,
+    customFields: metaLeadAds.customFields,
+    customFieldValues: metaLeadAds.customFieldValues,
+    fieldValues: metaLeadAds.fieldValues,
+    metaLeadAds: {
+      ...metaLeadAds,
+      integrationProvider,
+      syncStatus,
+    },
   };
 };
 
 const buildLeadAccessFilter = (req) => {
   const scope = getSalesScope(req);
+
+  if (scope.isMainAdmin) {
+    return {};
+  }
 
   if (scope.isSalesStaff) {
     return {
