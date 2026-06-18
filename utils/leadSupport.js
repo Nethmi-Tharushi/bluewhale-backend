@@ -234,25 +234,14 @@ const formatLeadForApi = (lead) => {
 const buildLeadAccessFilter = (req) => {
   const scope = getSalesScope(req);
 
-  if (scope.isMainAdmin) {
+  if (scope.isMainAdmin || scope.isSalesAdmin) {
     return {};
   }
 
   if (scope.isSalesStaff) {
-    return {
-      $or: [
-        { ownerAdmin: scope.actorId },
-        { assignedTo: scope.actorId },
-      ],
-    };
+    return { assignedTo: scope.actorId };
   }
-
-  return {
-    $or: [
-      { teamAdmin: scope.managerId },
-      { ownerAdmin: scope.actorId },
-    ],
-  };
+  return {};
 };
 
 module.exports = {

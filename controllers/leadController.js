@@ -209,12 +209,13 @@ const buildLeadListFilter = (req) => {
 const getLeadMeta = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
 
-  const [assignableAdmins, campaigns] = await Promise.all([
+  const [assignableAdmins, campaigns, tagOptions] = await Promise.all([
     AdminUser.find(buildAssignableAdminFilter(scope))
       .select("name email role whatsappInbox.allowAutoAssignment")
       .sort({ name: 1 })
       .lean(),
     Campaign.find(buildLeadAccessFilter(req)).select("campaignName campaignCode").sort({ campaignName: 1 }).lean(),
+    Lead.distinct("tags", buildLeadAccessFilter(req)),
   ]);
 
   res.json({
@@ -224,6 +225,10 @@ const getLeadMeta = asyncHandler(async (req, res) => {
       sources: LEAD_SOURCES,
       countries: DEFAULT_COUNTRIES,
       languages: DEFAULT_LANGUAGES,
+      tagOptions: (Array.isArray(tagOptions) ? tagOptions : [])
+        .map((tag) => String(tag || "").trim())
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right)),
       assignableAdmins: assignableAdmins.map((admin) => ({
         ...admin,
         _id: String(admin._id),
