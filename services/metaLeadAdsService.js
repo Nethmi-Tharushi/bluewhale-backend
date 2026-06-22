@@ -22,7 +22,7 @@ const {
   trimString,
 } = require("./metaGraphService");
 const { getMetaLeadAdsCampaignLauncherState } = require("./metaLeadAdsCampaignLauncherService");
-const { normalizeLeadTags } = require("../utils/leadSupport");
+const { DEFAULT_LEAD_STATUS, normalizeLeadTags } = require("../utils/leadSupport");
 
 const SUPPORTED_LEAD_FIELDS = new Set([
   "name",
@@ -1844,7 +1844,7 @@ const createOrUpdateLeadFromMetaSubmission = async ({
       assignedBy: ownership.assignedTo ? connection.connectedByAdminId || ownership.ownerAdmin || null : null,
       assignedAt: ownership.assignedTo ? new Date() : null,
       leadNumber: nextLeadNumber,
-      status: "Leads",
+      status: DEFAULT_LEAD_STATUS,
       source: trimString(connection.crmSourceLabel || "Meta Ads"),
       sourceDetails: [trimString(sourceMetadata.campaignName), trimString(sourceMetadata.formName)].filter(Boolean).join(" | "),
       integrationKey,

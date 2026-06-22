@@ -1,15 +1,24 @@
 const { getSalesScope } = require("./salesScope");
 
-const DEFAULT_LEAD_STATUS = "Leads";
+const DEFAULT_LEAD_STATUS = "New Lead";
 const DEFAULT_LEAD_SOURCE = "Nothing selected";
 const CANONICAL_LEAD_STATUSES = Object.freeze([
-  "Leads",
-  "Prospects",
+  "New Lead",
+  "Contact Attempted",
+  "Interested",
   "Follow-up Required",
-  "Converted Leads",
-  "Paid Client",
+  "Meeting Scheduled",
+  "Proposal Sent",
+  "Negotiation",
+  "Paid Customer",
   "Not Interested",
 ]);
+const LEGACY_STATUS_EQUIVALENTS = Object.freeze({
+  "New Lead": ["Leads"],
+  Interested: ["Prospects"],
+  Negotiation: ["Converted Leads"],
+  "Paid Customer": ["Paid Client", "Paid Clients"],
+});
 const CANONICAL_STATUS_MAP = Object.freeze(
   CANONICAL_LEAD_STATUSES.reduce((accumulator, status) => {
     accumulator[String(status).trim().toLowerCase()] = status;
@@ -17,35 +26,49 @@ const CANONICAL_STATUS_MAP = Object.freeze(
   }, {})
 );
 const LEAD_STATUS_ALIASES = Object.freeze({
-  Prospect: "Prospects",
-  prospects: "Prospects",
-  prospect: "Prospects",
+  Leads: "New Lead",
+  leads: "New Lead",
+  Prospect: "Interested",
+  prospects: "Interested",
+  prospect: "Interested",
+  Interested: "Interested",
+  interested: "Interested",
+  "Contact Attempted": "Contact Attempted",
+  "contact attempted": "Contact Attempted",
   "Follow Up Required": "Follow-up Required",
   "Follow Up": "Follow-up Required",
   "Follow-up": "Follow-up Required",
   "follow up required": "Follow-up Required",
   "follow up": "Follow-up Required",
   "follow-up": "Follow-up Required",
-  Converted: "Converted Leads",
-  converted: "Converted Leads",
-  Customer: "Paid Client",
-  customer: "Paid Client",
-  Customers: "Paid Client",
-  customers: "Paid Client",
-  "Paid Customer": "Paid Client",
-  "Paid Customers": "Paid Client",
-  "Paid Clients": "Paid Client",
-  "paid clients": "Paid Client",
-  "paid customer": "Paid Client",
-  "paid customers": "Paid Client",
-  "paid client": "Paid Client",
-  "converted leads": "Converted Leads",
-  "converted lead": "Converted Leads",
+  "Meeting Scheduled": "Meeting Scheduled",
+  "meeting scheduled": "Meeting Scheduled",
+  "Proposal Sent": "Proposal Sent",
+  "proposal sent": "Proposal Sent",
+  Negotiation: "Negotiation",
+  negotiation: "Negotiation",
+  Converted: "Negotiation",
+  converted: "Negotiation",
+  Customer: "Paid Customer",
+  customer: "Paid Customer",
+  Customers: "Paid Customer",
+  customers: "Paid Customer",
+  "Paid Customer": "Paid Customer",
+  "Paid Customers": "Paid Customer",
+  "Paid Clients": "Paid Customer",
+  "Paid Client": "Paid Customer",
+  "paid clients": "Paid Customer",
+  "paid customer": "Paid Customer",
+  "paid customers": "Paid Customer",
+  "paid client": "Paid Customer",
+  "converted leads": "Negotiation",
+  "converted lead": "Negotiation",
   "Not interested": "Not Interested",
   "not interested": "Not Interested",
 });
 const VALID_LEAD_STATUSES = Object.freeze([
   ...CANONICAL_LEAD_STATUSES,
+  ...Object.values(LEGACY_STATUS_EQUIVALENTS).flat(),
   ...Object.keys(LEAD_STATUS_ALIASES),
 ]);
 
@@ -73,6 +96,20 @@ const normalizeLeadStatus = (value, fallback = DEFAULT_LEAD_STATUS) => {
   }
 
   return fallback;
+};
+
+const expandLeadStatusesForQuery = (values = []) => {
+  const requested = Array.isArray(values) ? values : [values];
+  const expanded = new Set();
+
+  requested.forEach((value) => {
+    const canonical = normalizeLeadStatus(value, "");
+    if (!canonical) return;
+    expanded.add(canonical);
+    (LEGACY_STATUS_EQUIVALENTS[canonical] || []).forEach((legacy) => expanded.add(legacy));
+  });
+
+  return [...expanded];
 };
 
 const isSupportedLeadStatus = (value) => VALID_LEAD_STATUSES.includes(trimString(value));
@@ -127,6 +164,17 @@ const buildAssignmentHistoryPayload = (items = []) =>
       assignedBy: buildAssignedAdminPayload(item?.assignedBy),
     }))
     .filter((item) => item.assignedAt || item.assignedTo || item.assignedBy);
+
+const buildInternalNotesPayload = (items = []) =>
+  (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      id: toApiId(item?._id),
+      text: trimString(item?.text),
+      authorId: toApiId(item?.authorId),
+      authorName: trimString(item?.authorName || item?.authorId?.name || item?.authorId?.email),
+      createdAt: item?.createdAt || null,
+    }))
+    .filter((item) => item.text);
 
 const pickFirstString = (...values) => {
   for (const value of values) {
@@ -200,6 +248,40 @@ const buildMetaLeadAdsPayload = (sourceMetadata = {}) => {
   };
 };
 
+const computeLeadScore = (lead = {}) => {
+  const status = normalizeLeadStatus(lead?.status, DEFAULT_LEAD_STATUS);
+  const source = normalizeLeadSource(lead?.source, DEFAULT_LEAD_SOURCE).toLowerCase();
+  let score = 10;
+
+  if (lead?.email) score += 10;
+  if (lead?.phone) score += 10;
+  if (lead?.assignedTo) score += 10;
+  if (Number(lead?.leadValue || 0) > 0) score += 15;
+  if (source.includes("job portal") || source.includes("website") || source.includes("referral")) score += 10;
+
+  const statusWeights = {
+    "New Lead": 5,
+    "Contact Attempted": 10,
+    Interested: 20,
+    "Follow-up Required": 25,
+    "Meeting Scheduled": 35,
+    "Proposal Sent": 45,
+    Negotiation: 55,
+    "Paid Customer": 100,
+    "Not Interested": 0,
+  };
+  score += statusWeights[status] ?? 0;
+
+  const lastContactAt = lead?.lastContactAt ? new Date(lead.lastContactAt) : null;
+  if (lastContactAt && !Number.isNaN(lastContactAt.getTime())) {
+    const ageDays = Math.floor((Date.now() - lastContactAt.getTime()) / (1000 * 60 * 60 * 24));
+    if (ageDays <= 7) score += 10;
+    else if (ageDays <= 30) score += 5;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+};
+
 const formatLeadForApi = (lead) => {
   const base = lead && typeof lead.toObject === "function" ? lead.toObject() : lead || {};
   const normalizedSourceMetadata =
@@ -213,6 +295,8 @@ const formatLeadForApi = (lead) => {
   const additionalNotes = pickFirstString(metaLeadAds.additionalNotes);
   const assignmentState = base.assignedTo ? "assigned" : "unassigned";
   const assignmentHistory = buildAssignmentHistoryPayload(base.assignmentHistory);
+  const internalNotes = buildInternalNotesPayload(base.internalNotes);
+  const leadScore = computeLeadScore(base);
 
   return {
     ...base,
@@ -232,6 +316,8 @@ const formatLeadForApi = (lead) => {
     assignmentHistory,
     leadAssignments: assignmentHistory,
     assignments: assignmentHistory,
+    internalNotes,
+    leadScore,
     leadValue: Number(base.leadValue || 0),
     currency: trimString(base.currency || "AED") || "AED",
     tags: normalizeLeadTags(base.tags),
@@ -289,7 +375,9 @@ module.exports = {
   isSupportedLeadStatus,
   normalizeLeadSource,
   normalizeLeadTags,
+  expandLeadStatusesForQuery,
   formatLeadForApi,
   buildLeadAccessFilter,
   toApiId,
+  computeLeadScore,
 };

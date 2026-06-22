@@ -13,8 +13,9 @@ const {
   resolveDefaultLeadOwner,
   resolveManagedCandidateAssignedStaff,
 } = require('../services/leadAccountService');
+const { DEFAULT_LEAD_STATUS, normalizeLeadStatus } = require('../utils/leadSupport');
 
-const CUSTOMER_LEAD_STATUSES = new Set(['Converted Leads', 'Paid Client', 'Paid Clients']);
+const CUSTOMER_LEAD_STATUSES = new Set(['Paid Customer']);
 
 const mergeLeadTags = (...tagLists) => {
   const seen = new Set();
@@ -57,9 +58,9 @@ const syncManagedCandidateLeadRecord = async ({ agent, managedCandidate }) => {
     assignedTo: assignedToId,
     assignedBy: assignedToId,
     assignedAt: assignedToId ? new Date() : null,
-    status: CUSTOMER_LEAD_STATUSES.has(String(managedCandidate.crmStatus || managedCandidate.status || '').trim())
-      ? String(managedCandidate.crmStatus || managedCandidate.status).trim()
-      : 'Leads',
+    status: CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(managedCandidate.crmStatus || managedCandidate.status, ""))
+      ? normalizeLeadStatus(managedCandidate.crmStatus || managedCandidate.status)
+      : DEFAULT_LEAD_STATUS,
     source: 'Job Portal',
     sourceDetails: 'Agent Managed Candidate',
     integrationKey,
@@ -542,7 +543,7 @@ router.delete('/candidates/:candidateId', protect, agentOnly, async (req, res) =
       integrationKey: buildManagedCandidateIntegrationKey(agent._id, candidateId),
     });
     if (linkedLead) {
-      if (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || '').trim())) {
+      if (CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(linkedLead.status, ""))) {
         linkedLead.sourceMetadata = {
           ...(linkedLead.sourceMetadata && typeof linkedLead.sourceMetadata === 'object' ? linkedLead.sourceMetadata : {}),
           candidateRemovedFromAgent: true,

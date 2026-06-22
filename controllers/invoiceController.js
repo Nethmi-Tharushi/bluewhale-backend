@@ -8,10 +8,11 @@ const { sendInvoiceEmail } = require("../services/emailService");
 const { resolveManagedCandidateNotificationTarget } = require("../services/managedCandidateNotificationService");
 const { createInvoiceWithGeneratedNumber } = require("../services/invoiceNumberService");
 const { ensureSalesActor, getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
+const { normalizeLeadStatus } = require("../utils/leadSupport");
 
 const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client"]);
+const CUSTOMER_LEAD_STATUSES = new Set(["Paid Customer"]);
 
 const toNum = (v) => {
   const n = Number(v || 0);
@@ -110,7 +111,7 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
           : lead.portalAccountType === "candidate"
             ? "B2C"
             : explicitCandidateType || customer.candidateType || "Other",
-      recordType: CUSTOMER_LEAD_STATUSES.has(String(lead.status || "")) ? "customer" : "lead",
+      recordType: CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(lead.status, "")) ? "customer" : "lead",
     };
   }
 
@@ -240,7 +241,14 @@ const computeFinancials = (payload) => {
   return { items, subtotal, discountTotal, taxTotal, grandTotal, paidAmount, balanceDue };
 };
 
-const assertSalesAdmin = (req) => ensureSalesActor(req);
+const assertSalesAdmin = (req) => {
+  ensureSalesActor(req);
+  if (!["MainAdmin", "SalesAdmin"].includes(String(req?.admin?.role || ""))) {
+    const err = new Error("Only MainAdmin or SalesAdmin can manage invoices");
+    err.statusCode = 403;
+    throw err;
+  }
+};
 
 const ensureInvoiceTeamAdmin = async (invoice) => {
   if (!invoice || invoice.teamAdmin) return invoice;

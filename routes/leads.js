@@ -10,6 +10,7 @@ const {
   bulkAssignLeads,
   updateLead,
   updateLeadStatus,
+  addLeadNote,
   deleteLead,
   syncPortalUsersToLeads,
 } = require("../controllers/leadController");
@@ -19,6 +20,7 @@ router.get("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesSt
 router.post("/sync-portal-users", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), syncPortalUsersToLeads);
 router.post("/bulk-assign", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), bulkAssignLeads);
 router.get("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getLeadById);
+router.post("/:id/notes", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), addLeadNote);
 router.post("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createLead);
 router.patch("/:id/assign", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), assignLead);
 router.put("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateLead);

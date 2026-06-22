@@ -25,7 +25,7 @@ const listAccessibleSalesLeadIds = async (admin) => {
     return [];
   }
 
-  const leads = await Lead.find({ ownerAdmin: actorId }).select("_id").lean();
+  const leads = await Lead.find({ assignedTo: actorId }).select("_id").lean();
   return uniqueIds(leads.map((lead) => lead._id));
 };
 

@@ -3,6 +3,7 @@ const Lead = require("../models/Lead");
 const {
   CANONICAL_LEAD_STATUSES,
   buildLeadAccessFilter,
+  expandLeadStatusesForQuery,
   formatLeadForApi,
   isSupportedLeadStatus,
   normalizeLeadSource,
@@ -10,7 +11,7 @@ const {
 } = require("../utils/leadSupport");
 
 const trimString = (value) => String(value || "").trim();
-const WON_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client"]);
+const WON_LEAD_STATUSES = new Set(["Paid Customer"]);
 
 const toNumber = (value) => {
   const numeric = Number(value);
@@ -104,9 +105,9 @@ const buildReportsQuery = (req) => {
     : [];
   const normalizedStages = [...new Set(stageTokens.filter(isSupportedLeadStatus).map((item) => normalizeLeadStatus(item)))];
   if (normalizedStages.length === 1) {
-    query.status = normalizedStages[0];
+    query.status = { $in: expandLeadStatusesForQuery(normalizedStages[0]) };
   } else if (normalizedStages.length > 1) {
-    query.status = { $in: normalizedStages };
+    query.status = { $in: expandLeadStatusesForQuery(normalizedStages) };
   }
 
   const dateField = trimString(req.query.dateField) === "lastContactAt" ? "lastContactAt" : "createdAt";

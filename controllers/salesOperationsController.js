@@ -11,11 +11,12 @@ const {
   normalizeInvoicePersistenceError,
 } = require("../services/invoiceNumberService");
 const { getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
+const { normalizeLeadStatus } = require("../utils/leadSupport");
 
 const PROPOSAL_STATUSES = ["Draft", "Sent", "Accepted", "Rejected", "Expired", "Converted"];
 const ESTIMATE_STATUSES = ["Draft", "Sent", "Approved", "Rejected", "Expired", "Invoiced"];
 const TARGET_STATUSES = ["Active", "Completed", "Archived"];
-const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client"]);
+const CUSTOMER_LEAD_STATUSES = new Set(["Paid Customer"]);
 
 const toNum = (value) => {
   const num = Number(value || 0);
@@ -452,7 +453,7 @@ const createProposal = asyncHandler(async (req, res) => {
           : linkedLead?.portalAccountType === "candidate"
             ? "B2C"
             : customer.candidateType || "Other",
-      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead") : customer.recordType || "other",
+      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(linkedLead.status, "")) ? "customer" : "lead") : customer.recordType || "other",
     },
     title: body.title,
     issueDate: body.issueDate,
@@ -560,7 +561,7 @@ const createEstimate = asyncHandler(async (req, res) => {
           : linkedLead?.portalAccountType === "candidate"
             ? "B2C"
             : customer.candidateType || "Other",
-      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead") : customer.recordType || "other",
+      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(linkedLead.status, "")) ? "customer" : "lead") : customer.recordType || "other",
     },
     title: body.title,
     issueDate: body.issueDate,

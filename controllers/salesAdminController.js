@@ -23,6 +23,13 @@ const {
   buildAccessibleSalesTaskAccess,
 } = require("../services/salesTaskAccessService");
 
+const hasFullSalesScope = (admin) => ["MainAdmin", "SalesAdmin"].includes(String(admin?.role || ""));
+
+const listAccessibleSalesCandidatesById = async (admin) => {
+  const candidates = await listAccessibleSalesCandidates(admin);
+  return new Map(candidates.map((candidate) => [String(candidate?._id || ""), candidate]));
+};
+
 const parseTaskCrmContext = (value) => {
   if (!value) return {};
   if (typeof value === "string") {
@@ -142,6 +149,13 @@ const getCandidateDetails = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
   try {
+    if (!hasFullSalesScope(req.admin)) {
+      const accessibleCandidatesById = await listAccessibleSalesCandidatesById(req.admin);
+      if (!accessibleCandidatesById.has(String(id))) {
+        return res.status(403).json({ success: false, message: "Access denied to this candidate" });
+      }
+    }
+
     // b2c
     let candidate = await User.findById(id).lean();
 
@@ -289,10 +303,33 @@ const getCandidateDetails = asyncHandler(async (req, res) => {
 const getAssignedAgents = asyncHandler(async (req, res) => {
   try {
     const salesAdminId = req.admin._id;
+    const fullScope = hasFullSalesScope(req.admin);
+    let visibleAgentIds = [];
+
+    if (!fullScope) {
+      const accessibleCandidates = await listAccessibleSalesCandidates(req.admin);
+      visibleAgentIds = [...new Set(
+        accessibleCandidates
+          .filter((candidate) => candidate.type === "B2B" && candidate.agent?.id)
+          .map((candidate) => String(candidate.agent.id))
+      )];
+
+      if (!visibleAgentIds.length) {
+        return res.status(200).json({
+          success: true,
+          count: 0,
+          data: [],
+        });
+      }
+    }
 
     const agents = await User.find({
       userType: 'agent',
-      ...(req.admin.role === 'MainAdmin' ? {} : { assignedTo: salesAdminId }),
+      ...(req.admin.role === 'MainAdmin'
+        ? {}
+        : fullScope
+          ? { assignedTo: salesAdminId }
+          : { _id: { $in: visibleAgentIds } }),
     }).select('name email phone companyName location managedCandidates');
 
     const agentsWithCounts = agents.map(agent => ({
@@ -325,11 +362,29 @@ const getAssignedAgentById = asyncHandler(async (req, res) => {
   try {
     const salesAdminId = req.admin._id;
     const { id } = req.params; // agentId
+    const fullScope = hasFullSalesScope(req.admin);
+
+    if (!fullScope) {
+      const accessibleCandidates = await listAccessibleSalesCandidates(req.admin);
+      const visibleAgentIds = new Set(
+        accessibleCandidates
+          .filter((candidate) => candidate.type === "B2B" && candidate.agent?.id)
+          .map((candidate) => String(candidate.agent.id))
+      );
+
+      if (!visibleAgentIds.has(String(id))) {
+        return res.status(403).json({ success: false, message: "Access denied to this agent" });
+      }
+    }
 
     const agent = await User.findOne({
       _id: id,
       userType: 'agent',
-      ...(req.admin.role === 'MainAdmin' ? {} : { assignedTo: salesAdminId }),
+      ...(req.admin.role === 'MainAdmin'
+        ? {}
+        : fullScope
+          ? { assignedTo: salesAdminId }
+          : {}),
     }).select('name email phone companyName location managedCandidates');
 
     if (!agent) {
@@ -354,6 +409,9 @@ const getAssignedAgentById = asyncHandler(async (req, res) => {
 //applications controller
 const getApplications = async (req, res) => {
   try {
+    const accessibleCandidatesById = hasFullSalesScope(req.admin)
+      ? null
+      : await listAccessibleSalesCandidatesById(req.admin);
     const jobs = await Job.find({}).lean();
 
     const jobsWithCandidates = await Promise.all(
@@ -368,6 +426,7 @@ const getApplications = async (req, res) => {
 
         for (const app of b2cApplications) {
           if (!app.user) continue;
+          if (accessibleCandidatesById && !accessibleCandidatesById.has(String(app.user._id))) continue;
           b2cCandidates.push({
             id: app.user._id,
             name: app.user.name,
@@ -391,6 +450,7 @@ const getApplications = async (req, res) => {
 
           for (const mc of agent.managedCandidates) {
             if (!mc) continue;
+            if (accessibleCandidatesById && !accessibleCandidatesById.has(String(mc._id))) continue;
 
             // Check if this managed candidate applied to this job
             const appliedToJob = mc.appliedJobs?.some(j => j.jobId.toString() === job._id.toString());
@@ -425,7 +485,11 @@ const getApplications = async (req, res) => {
       })
     );
 
-    res.status(200).json(jobsWithCandidates);
+    res.status(200).json(
+      accessibleCandidatesById
+        ? jobsWithCandidates.filter((job) => Array.isArray(job.candidates) && job.candidates.length > 0)
+        : jobsWithCandidates
+    );
   } catch (error) {
     console.error('Error fetching job applications:', error);
     res.status(500).json({ message: 'Server Error' });
@@ -438,6 +502,13 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
 
   if (!status || !jobId) {
     return res.status(400).json({ success: false, message: 'Status and jobId are required' });
+  }
+
+  if (!hasFullSalesScope(req.admin)) {
+    const accessibleCandidatesById = await listAccessibleSalesCandidatesById(req.admin);
+    if (!accessibleCandidatesById.has(String(candidateId))) {
+      return res.status(403).json({ success: false, message: "Access denied to this candidate" });
+    }
   }
 
   // Try updating B2C application

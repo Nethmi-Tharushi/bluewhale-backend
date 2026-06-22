@@ -16,6 +16,7 @@ const { listAvailableProductCollections } = require("./whatsappProductCollection
 const { sendMessage } = require("./whatsappService");
 const { generateGroundedWhatsAppReply, generateOpenScopeWhatsAppReply, isOpenAiConfigured } = require("./openaiService");
 const { getQualificationFieldPrompt } = require("../prompts/whatsappAiAgentPrompts");
+const { DEFAULT_LEAD_STATUS } = require("../utils/leadSupport");
 
 const ROLLOUT_STATUS_OPTIONS = WhatsAppAiAgentSettings.ROLLOUT_STATUS_OPTIONS || ["draft", "interest_collected", "pilot", "live"];
 const AGENT_TYPE_OPTIONS = WhatsAppAiAgentSettings.AGENT_TYPE_OPTIONS || ["sales_agent", "faq_responder", "lead_qualifier"];
@@ -1102,7 +1103,7 @@ const upsertQualifiedLead = async ({
       ownerAdmin: ownership.ownerAdmin,
       assignedTo: ownership.assignedTo,
       leadNumber: nextLeadNumber,
-      status: "Leads",
+      status: DEFAULT_LEAD_STATUS,
       source,
       sourceDetails: source,
       name,

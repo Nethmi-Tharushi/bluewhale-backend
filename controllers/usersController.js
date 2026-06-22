@@ -17,6 +17,7 @@ const {
   normalizeEmail,
   resolveAssignedSalesStaff,
 } = require("../services/leadAccountService");
+const { DEFAULT_LEAD_STATUS } = require("../utils/leadSupport");
 
 const normalizeUploadFieldName = (fieldname = "") => {
   const f = String(fieldname).trim();
@@ -814,7 +815,7 @@ const signupUser = async (req, res) => {
         assignedBy: assignedStaff?._id || null,
         assignedAt: assignedStaff ? new Date() : null,
         leadNumber: nextLeadNumber,
-        status: "Leads",
+        status: DEFAULT_LEAD_STATUS,
         source: "Website",
         sourceDetails: portalSource,
         integrationKey: `portal_user:${user._id}`,

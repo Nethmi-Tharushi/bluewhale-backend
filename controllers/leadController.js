@@ -24,6 +24,7 @@ const {
   DEFAULT_LEAD_SOURCE,
   DEFAULT_LEAD_STATUS,
   buildLeadAccessFilter,
+  expandLeadStatusesForQuery,
   formatLeadForApi,
   isSupportedLeadStatus,
   normalizeLeadSource,
@@ -39,7 +40,7 @@ const LEAD_ASSIGNMENT_ACTIONS = Object.freeze({
   REASSIGNED: "reassigned",
   UNASSIGNED: "unassigned",
 });
-const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client", "Paid Clients"]);
+const CUSTOMER_LEAD_STATUSES = new Set(["Paid Customer"]);
 
 const toIdString = (value) => {
   if (!value) return "";
@@ -224,9 +225,9 @@ const buildLeadListFilter = (req) => {
   }
 
   if (statuses.length === 1) {
-    filter.status = statuses[0];
+    filter.status = { $in: expandLeadStatusesForQuery(statuses[0]) };
   } else if (statuses.length > 1) {
-    filter.status = { $in: statuses };
+    filter.status = { $in: expandLeadStatusesForQuery(statuses) };
   }
 
   return filter;
@@ -244,6 +245,52 @@ const mergeLeadTags = (...tagLists) => {
       seen.add(key);
       return true;
     });
+};
+
+const normalizePhoneForDuplicateCheck = (value) => String(value || "").replace(/\D/g, "");
+
+const buildDuplicateLeadPayload = (lead) =>
+  lead
+    ? {
+        id: String(lead._id || ""),
+        name: String(lead.name || "").trim(),
+        email: String(lead.email || "").trim().toLowerCase(),
+        phone: String(lead.phone || "").trim(),
+        status: normalizeLeadStatus(lead.status, DEFAULT_LEAD_STATUS),
+        assignedTo: lead.assignedTo
+          ? {
+              _id: String(lead.assignedTo._id || lead.assignedTo || ""),
+              name: String(lead.assignedTo.name || "").trim(),
+            }
+          : null,
+      }
+    : null;
+
+const findPotentialDuplicateLead = async ({ leadId = null, email = "", phone = "", linkedUserId = null } = {}) => {
+  const or = [];
+  if (email) or.push({ email });
+  if (linkedUserId) or.push({ linkedUser: linkedUserId });
+  if (phone) or.push({ phone });
+  if (!or.length) return null;
+
+  const filter = { $or: or };
+  if (leadId) {
+    filter._id = { $ne: leadId };
+  }
+
+  const matches = await Lead.find(filter)
+    .select("_id name email phone status assignedTo linkedUser")
+    .populate("assignedTo", "name email role")
+    .lean();
+
+  const normalizedPhone = normalizePhoneForDuplicateCheck(phone);
+  return (
+    matches.find((candidate) => {
+      if (email && String(candidate.email || "").trim().toLowerCase() === email) return true;
+      if (linkedUserId && String(candidate.linkedUser || "") === String(linkedUserId)) return true;
+      return normalizedPhone && normalizePhoneForDuplicateCheck(candidate.phone) === normalizedPhone;
+    }) || null
+  );
 };
 
 const getLeadMeta = asyncHandler(async (req, res) => {
@@ -343,6 +390,21 @@ const createLead = asyncHandler(async (req, res) => {
     const existingLinkedLead = await Lead.findOne({ integrationKey: `portal_user:${linkedUser._id}` }).select("_id");
     if (existingLinkedLead) {
       return res.status(400).json({ message: "A CRM lead already exists for this portal account" });
+    }
+  }
+
+  if (!body.overrideDuplicate) {
+    const duplicateLead = await findPotentialDuplicateLead({
+      email: normalizedEmail,
+      phone: body.phone,
+      linkedUserId: linkedUser?._id || null,
+    });
+
+    if (duplicateLead) {
+      return res.status(409).json({
+        message: "Potential duplicate lead detected",
+        duplicateLead: buildDuplicateLeadPayload(duplicateLead),
+      });
     }
   }
 
@@ -462,6 +524,23 @@ const updateLead = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: parsedLeadValue.message });
   }
 
+  const normalizedEmail = body.email !== undefined ? normalizeEmail(body.email) : normalizeEmail(lead.email);
+  if (!body.overrideDuplicate) {
+    const duplicateLead = await findPotentialDuplicateLead({
+      leadId: lead._id,
+      email: normalizedEmail,
+      phone: body.phone !== undefined ? body.phone : lead.phone,
+      linkedUserId: lead.linkedUser || null,
+    });
+
+    if (duplicateLead) {
+      return res.status(409).json({
+        message: "Potential duplicate lead detected",
+        duplicateLead: buildDuplicateLeadPayload(duplicateLead),
+      });
+    }
+  }
+
   if (body.assignedTo !== undefined) {
     if (!canManageLeadAssignments(scope)) {
       return res.status(403).json({ message: "Access denied: only MainAdmin or SalesAdmin can assign leads" });
@@ -483,7 +562,7 @@ const updateLead = asyncHandler(async (req, res) => {
   if (body.source !== undefined) lead.source = normalizeLeadSource(body.source, DEFAULT_LEAD_SOURCE);
   if (body.sourceDetails !== undefined) lead.sourceDetails = String(body.sourceDetails || "").trim();
   if (body.name !== undefined) lead.name = String(body.name || "").trim();
-  if (body.email !== undefined) lead.email = body.email;
+  if (body.email !== undefined) lead.email = normalizedEmail;
   if (body.phone !== undefined) lead.phone = body.phone;
   if (body.website !== undefined) lead.website = body.website;
   if (body.address !== undefined) lead.address = body.address;
@@ -538,6 +617,35 @@ const updateLead = asyncHandler(async (req, res) => {
   }
 
   res.json({ success: true, data: formatLeadForApi(populated) });
+});
+
+const addLeadNote = asyncHandler(async (req, res) => {
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) });
+  if (!lead) {
+    return res.status(404).json({ message: "Lead not found" });
+  }
+
+  const text = String(req.body?.text || req.body?.note || "").trim();
+  if (!text) {
+    return res.status(400).json({ message: "Note text is required" });
+  }
+
+  lead.internalNotes = Array.isArray(lead.internalNotes) ? lead.internalNotes : [];
+  lead.internalNotes.unshift({
+    text,
+    authorId: req.admin?._id || null,
+    authorName: String(req.admin?.name || req.admin?.email || "CRM").trim(),
+    createdAt: new Date(),
+  });
+  await lead.save();
+
+  const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
+  return res.status(201).json({ success: true, data: formatLeadForApi(populated) });
 });
 
 const updateLeadStatus = asyncHandler(async (req, res) => {
@@ -743,7 +851,7 @@ const syncPortalUsersToLeads = asyncHandler(async (req, res) => {
       assignedBy: req.admin?._id || assignedAdmin?._id || null,
       assignedAt,
       leadNumber: nextLeadNumber,
-      status: "Leads",
+      status: DEFAULT_LEAD_STATUS,
       source: "Job Portal",
       sourceDetails: "Portal User Backfill",
       integrationKey: `portal_user:${user._id}`,
@@ -831,7 +939,9 @@ const syncPortalUsersToLeads = asyncHandler(async (req, res) => {
         assignedBy: assignedAdmin?._id || null,
         assignedAt,
         leadNumber: 2000 + (await Lead.countDocuments({ teamAdmin: ownershipContext.teamAdminId })) + 1,
-        status: CUSTOMER_LEAD_STATUSES.has(String(managedCandidate.status || "").trim()) ? String(managedCandidate.status).trim() : "Leads",
+        status: CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(managedCandidate.status, ""))
+          ? normalizeLeadStatus(managedCandidate.status)
+          : DEFAULT_LEAD_STATUS,
         source: "Job Portal",
         sourceDetails: "Agent Managed Candidate Backfill",
         integrationKey,
@@ -900,6 +1010,7 @@ module.exports = {
   bulkAssignLeads,
   updateLead,
   updateLeadStatus,
+  addLeadNote,
   deleteLead,
   syncPortalUsersToLeads,
 };

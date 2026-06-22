@@ -38,8 +38,23 @@ const leadSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["Prospects", "Not Interested", "Follow-up Required", "Leads", "Paid Client", "Paid Clients", "Converted Leads"],
-      default: "Leads",
+      enum: [
+        "New Lead",
+        "Contact Attempted",
+        "Interested",
+        "Follow-up Required",
+        "Meeting Scheduled",
+        "Proposal Sent",
+        "Negotiation",
+        "Paid Customer",
+        "Not Interested",
+        "Leads",
+        "Prospects",
+        "Converted Leads",
+        "Paid Client",
+        "Paid Clients",
+      ],
+      default: "New Lead",
       index: true,
     },
     source: {
@@ -180,6 +195,32 @@ const leadSchema = new mongoose.Schema(
             default: null,
           },
           assignedAt: {
+            type: Date,
+            default: Date.now,
+          },
+        },
+      ],
+      default: [],
+    },
+    internalNotes: {
+      type: [
+        {
+          text: {
+            type: String,
+            required: true,
+            trim: true,
+          },
+          authorId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "AdminUser",
+            default: null,
+          },
+          authorName: {
+            type: String,
+            default: "",
+            trim: true,
+          },
+          createdAt: {
             type: Date,
             default: Date.now,
           },

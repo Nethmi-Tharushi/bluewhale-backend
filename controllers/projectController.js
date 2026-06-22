@@ -2,7 +2,8 @@ const asyncHandler = require("express-async-handler");
 const Project = require("../models/Project");
 const Lead = require("../models/Lead");
 const { getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
-const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client"]);
+const { normalizeLeadStatus } = require("../utils/leadSupport");
+const CUSTOMER_LEAD_STATUSES = new Set(["Paid Customer"]);
 
 const toNum = (value) => {
   const num = Number(value || 0);
@@ -67,7 +68,7 @@ const createProject = asyncHandler(async (req, res) => {
           : linkedLead?.portalAccountType === "candidate"
             ? "B2C"
             : customer.type || "Other",
-      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead") : customer.recordType || "other",
+      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(linkedLead.status, "")) ? "customer" : "lead") : customer.recordType || "other",
     },
     billingType: body.billingType || "Fixed Rate",
     status: body.status || "In Progress",
@@ -126,7 +127,7 @@ const updateProject = asyncHandler(async (req, res) => {
         : linkedLead.portalAccountType === "candidate"
           ? "B2C"
           : project.customer.type;
-    project.customer.recordType = CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead";
+    project.customer.recordType = CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(linkedLead.status, "")) ? "customer" : "lead";
   }
   if (body.billingType !== undefined) project.billingType = body.billingType;
   if (body.status !== undefined) project.status = body.status;

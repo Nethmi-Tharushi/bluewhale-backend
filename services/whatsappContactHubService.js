@@ -5,6 +5,7 @@ const Task = require("../models/Task");
 const WhatsAppContact = require("../models/WhatsAppContact");
 const WhatsAppConversation = require("../models/WhatsAppConversation");
 const WhatsAppMessage = require("../models/WhatsAppMessage");
+const { normalizeLeadStatus } = require("../utils/leadSupport");
 const { normalizePhone } = require("./whatsappWebhookService");
 
 const CONTACT_HUB_STATUS_OPTIONS = WhatsAppContact.CONTACT_HUB_STATUS_OPTIONS || [
@@ -367,12 +368,23 @@ const buildHubConversationPayload = ({ conversation = null, taskCount = 0, meeti
 };
 
 const normalizeLeadStatusToContactHubStatus = (value) => {
-  const status = trimString(value);
+  const status = normalizeLeadStatus(value, trimString(value));
   if (!status) return "";
-  if (["Paid Client", "Paid Clients", "Converted Leads"].includes(status)) return "Customer";
+  if (status === "Paid Customer") return "Customer";
   if (status === "Follow-up Required") return "Follow-up";
   if (status === "Not Interested") return "Inactive";
-  if (["Prospects", "Leads"].includes(status)) return "New Lead";
+  if (
+    [
+      "New Lead",
+      "Contact Attempted",
+      "Interested",
+      "Meeting Scheduled",
+      "Proposal Sent",
+      "Negotiation",
+    ].includes(status)
+  ) {
+    return "New Lead";
+  }
   return "";
 };
 
