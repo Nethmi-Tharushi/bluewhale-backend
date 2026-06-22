@@ -65,6 +65,18 @@ const leadSchema = new mongoose.Schema(
       sparse: true,
       unique: true,
     },
+    linkedUser: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    portalAccountType: {
+      type: String,
+      enum: ["candidate", "agent", ""],
+      default: "",
+      trim: true,
+    },
     sourceMetadata: {
       type: mongoose.Schema.Types.Mixed,
       default: null,

@@ -10,8 +10,39 @@ const CANONICAL_LEAD_STATUSES = Object.freeze([
   "Paid Client",
   "Not Interested",
 ]);
+const CANONICAL_STATUS_MAP = Object.freeze(
+  CANONICAL_LEAD_STATUSES.reduce((accumulator, status) => {
+    accumulator[String(status).trim().toLowerCase()] = status;
+    return accumulator;
+  }, {})
+);
 const LEAD_STATUS_ALIASES = Object.freeze({
+  Prospect: "Prospects",
+  prospects: "Prospects",
+  prospect: "Prospects",
+  "Follow Up Required": "Follow-up Required",
+  "Follow Up": "Follow-up Required",
+  "Follow-up": "Follow-up Required",
+  "follow up required": "Follow-up Required",
+  "follow up": "Follow-up Required",
+  "follow-up": "Follow-up Required",
+  Converted: "Converted Leads",
+  converted: "Converted Leads",
+  Customer: "Paid Client",
+  customer: "Paid Client",
+  Customers: "Paid Client",
+  customers: "Paid Client",
+  "Paid Customer": "Paid Client",
+  "Paid Customers": "Paid Client",
   "Paid Clients": "Paid Client",
+  "paid clients": "Paid Client",
+  "paid customer": "Paid Client",
+  "paid customers": "Paid Client",
+  "paid client": "Paid Client",
+  "converted leads": "Converted Leads",
+  "converted lead": "Converted Leads",
+  "Not interested": "Not Interested",
+  "not interested": "Not Interested",
 });
 const VALID_LEAD_STATUSES = Object.freeze([
   ...CANONICAL_LEAD_STATUSES,
@@ -31,7 +62,12 @@ const normalizeLeadStatus = (value, fallback = DEFAULT_LEAD_STATUS) => {
   const normalized = trimString(value);
   if (!normalized) return fallback;
 
-  const canonical = LEAD_STATUS_ALIASES[normalized] || normalized;
+  const normalizedLower = normalized.toLowerCase();
+  const canonical =
+    LEAD_STATUS_ALIASES[normalized] ||
+    LEAD_STATUS_ALIASES[normalizedLower] ||
+    CANONICAL_STATUS_MAP[normalizedLower] ||
+    normalized;
   if (CANONICAL_LEAD_STATUSES.includes(canonical)) {
     return canonical;
   }

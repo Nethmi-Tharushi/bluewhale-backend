@@ -484,10 +484,74 @@ const sendInvoiceEmail = async ({ to, invoiceNumber, customerName, pdfBuffer, co
   }
 };
 
+const sendPortalWelcomeEmail = async ({
+  to,
+  name,
+  userType,
+  password = "11112222",
+  portalUrl = "",
+}) => {
+  try {
+    assertEmailConfigured();
+    const fromAddress = getFromAddress();
+    const safeName = String(name || "there").trim() || "there";
+    const loginUrl = resolveClientUrl(
+      portalUrl || process.env.JOB_PORTAL_URL || process.env.CLIENT_URL || process.env.FRONTEND_URL
+    );
+    const subject = "Welcome to Blue Whale Job Portal";
+    const accountLabel = String(userType || "").toLowerCase() === "agent" ? "B2B Agent" : "B2C Candidate";
+    const html = `
+      <div style="font-family: Arial, sans-serif; padding: 20px; background: #f4f7fb;">
+        <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 24px; border: 1px solid #e5e7eb;">
+          <h2 style="margin: 0 0 12px; color: #1e3a8a;">Welcome to Blue Whale Job Portal</h2>
+          <p style="margin: 0 0 16px; color: #334155;">Hi ${safeName}, your ${accountLabel} portal account has been created by our CRM team.</p>
+          <div style="background:#eff6ff;border-radius:10px;padding:16px;margin:16px 0;">
+            <p style="margin:0 0 8px;color:#0f172a;"><strong>Login email:</strong> ${to}</p>
+            <p style="margin:0 0 8px;color:#0f172a;"><strong>Temporary password:</strong> ${password}</p>
+            ${loginUrl ? `<p style="margin:0;color:#0f172a;"><strong>Login URL:</strong> <a href="${loginUrl}">${loginUrl}</a></p>` : ""}
+          </div>
+          <div style="background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:14px;margin:18px 0;">
+            Please log in and change your password immediately for security.
+          </div>
+          <p style="margin: 0; color: #64748b;">If you did not expect this account, please contact Blue Whale Migration support.</p>
+        </div>
+      </div>
+    `;
+
+    const resend = getResendClient();
+    if (resend) {
+      const { data, error } = await resend.emails.send({
+        from: fromAddress,
+        to,
+        subject,
+        html,
+      });
+      if (error) {
+        throw new Error(error.message || "Resend failed to send welcome email");
+      }
+      return { success: true, messageId: data?.id, provider: "resend" };
+    }
+
+    const transporter = createTransporter();
+    const info = await transporter.sendMail({
+      from: `"Blue Whale Migration" <${fromAddress}>`,
+      to,
+      subject,
+      html,
+    });
+    return { success: true, messageId: info?.messageId, provider: "smtp" };
+  } catch (error) {
+    const err = new Error(error?.message || "Failed to send welcome email");
+    err.statusCode = error?.statusCode || 500;
+    throw err;
+  }
+};
+
 module.exports = {
   sendPasswordResetEmail,
   sendMeetingReminderEmail,
   sendInquiryResponseEmail,
   sendInvoiceEmail,
   sendAdminLoginOtpEmail,
+  sendPortalWelcomeEmail,
 };

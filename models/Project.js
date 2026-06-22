@@ -40,11 +40,13 @@ const projectSchema = new mongoose.Schema(
     },
     projectName: { type: String, required: true, trim: true },
     customer: {
+      leadId: { type: mongoose.Schema.Types.ObjectId, ref: "Lead", default: null },
       sourceId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
       name: { type: String, required: true, trim: true },
       email: { type: String, default: "", trim: true, lowercase: true },
       phone: { type: String, default: "" },
       type: { type: String, enum: ["B2C", "B2B", "Other"], default: "Other" },
+      recordType: { type: String, enum: ["lead", "customer", "other"], default: "other" },
     },
     billingType: {
       type: String,

@@ -5,6 +5,7 @@ const Invoice = require("../models/Invoice");
 const SalesTarget = require("../models/SalesTarget");
 const SalesProposal = require("../models/SalesProposal");
 const SalesEstimate = require("../models/SalesEstimate");
+const Lead = require("../models/Lead");
 const {
   createInvoiceWithGeneratedNumber,
   normalizeInvoicePersistenceError,
@@ -14,6 +15,7 @@ const { getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
 const PROPOSAL_STATUSES = ["Draft", "Sent", "Accepted", "Rejected", "Expired", "Converted"];
 const ESTIMATE_STATUSES = ["Draft", "Sent", "Approved", "Rejected", "Expired", "Invoiced"];
 const TARGET_STATUSES = ["Active", "Completed", "Archived"];
+const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client"]);
 
 const toNum = (value) => {
   const num = Number(value || 0);
@@ -82,6 +84,16 @@ const normalizeTeamId = (value) => {
   if (!value) return "";
   if (typeof value === "object" && value._id) return String(value._id);
   return String(value);
+};
+
+const toLeadReference = async (value = "", req) => {
+  const normalized = String(value || "").trim();
+  if (!normalized) return null;
+
+  return Lead.findOne({
+    _id: normalized,
+    ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+  }).select("_id name email phone address company status linkedUser portalAccountType");
 };
 
 const mapAdminUser = (user) => ({
@@ -412,7 +424,8 @@ const createProposal = asyncHandler(async (req, res) => {
   const body = req.body || {};
   const customer = body.customer || {};
   const status = body.status || "Draft";
-  if (!customer.name || !customer.email || !body.title || !body.issueDate || !body.validUntil) {
+  const linkedLead = await toLeadReference(customer.leadId, req);
+  if ((!linkedLead?.name && !customer.name) || (!linkedLead?.email && !customer.email) || !body.title || !body.issueDate || !body.validUntil) {
     return res.status(400).json({ message: "Customer, title, issue date, and validity date are required" });
   }
   if (!PROPOSAL_STATUSES.includes(status)) return res.status(400).json({ message: "Invalid proposal status" });
@@ -426,13 +439,20 @@ const createProposal = asyncHandler(async (req, res) => {
     ownerAdmin: scope.actorId,
     createdBy: scope.actorId,
     customer: {
-      name: customer.name,
-      email: customer.email,
-      phone: customer.phone || "",
-      company: customer.company || "",
-      address: customer.address || "",
-      candidateId: customer.candidateId || null,
-      candidateType: customer.candidateType || "Other",
+      name: linkedLead?.name || customer.name,
+      email: linkedLead?.email || customer.email,
+      phone: linkedLead?.phone || customer.phone || "",
+      company: linkedLead?.company || customer.company || "",
+      address: linkedLead?.address || customer.address || "",
+      leadId: linkedLead?._id || customer.leadId || null,
+      candidateId: linkedLead?.linkedUser || customer.candidateId || null,
+      candidateType:
+        linkedLead?.portalAccountType === "agent"
+          ? "B2B"
+          : linkedLead?.portalAccountType === "candidate"
+            ? "B2C"
+            : customer.candidateType || "Other",
+      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead") : customer.recordType || "other",
     },
     title: body.title,
     issueDate: body.issueDate,
@@ -512,7 +532,8 @@ const createEstimate = asyncHandler(async (req, res) => {
   const body = req.body || {};
   const customer = body.customer || {};
   const status = body.status || "Draft";
-  if (!customer.name || !customer.email || !body.title || !body.issueDate || !body.validUntil) {
+  const linkedLead = await toLeadReference(customer.leadId, req);
+  if ((!linkedLead?.name && !customer.name) || (!linkedLead?.email && !customer.email) || !body.title || !body.issueDate || !body.validUntil) {
     return res.status(400).json({ message: "Customer, title, issue date, and validity date are required" });
   }
   if (!ESTIMATE_STATUSES.includes(status)) return res.status(400).json({ message: "Invalid estimate status" });
@@ -526,13 +547,20 @@ const createEstimate = asyncHandler(async (req, res) => {
     ownerAdmin: scope.actorId,
     createdBy: scope.actorId,
     customer: {
-      name: customer.name,
-      email: customer.email,
-      phone: customer.phone || "",
-      company: customer.company || "",
-      address: customer.address || "",
-      candidateId: customer.candidateId || null,
-      candidateType: customer.candidateType || "Other",
+      name: linkedLead?.name || customer.name,
+      email: linkedLead?.email || customer.email,
+      phone: linkedLead?.phone || customer.phone || "",
+      company: linkedLead?.company || customer.company || "",
+      address: linkedLead?.address || customer.address || "",
+      leadId: linkedLead?._id || customer.leadId || null,
+      candidateId: linkedLead?.linkedUser || customer.candidateId || null,
+      candidateType:
+        linkedLead?.portalAccountType === "agent"
+          ? "B2B"
+          : linkedLead?.portalAccountType === "candidate"
+            ? "B2C"
+            : customer.candidateType || "Other",
+      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead") : customer.recordType || "other",
     },
     title: body.title,
     issueDate: body.issueDate,

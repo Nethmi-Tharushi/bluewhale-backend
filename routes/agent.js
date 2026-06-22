@@ -4,7 +4,127 @@ const { protect, authorizeAdmin, protectAdmin } = require('../middlewares/AdminA
 const upload = require('../middlewares/upload');
 const User = require('../models/User');
 const Job = require('../models/Job');
+const Lead = require('../models/Lead');
 const { getAllManagedCandidates, updateCandidateStatus } = require('../controllers/usersController')
+const {
+  MANAGED_CANDIDATE_B2B_TAG,
+  buildManagedCandidateIntegrationKey,
+  normalizeEmail,
+  resolveDefaultLeadOwner,
+  resolveManagedCandidateAssignedStaff,
+} = require('../services/leadAccountService');
+
+const CUSTOMER_LEAD_STATUSES = new Set(['Converted Leads', 'Paid Client', 'Paid Clients']);
+
+const mergeLeadTags = (...tagLists) => {
+  const seen = new Set();
+  return tagLists
+    .flat()
+    .map((tag) => String(tag || '').trim())
+    .filter((tag) => {
+      if (!tag) return false;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
+const syncManagedCandidateLeadRecord = async ({ agent, managedCandidate }) => {
+  const integrationKey = buildManagedCandidateIntegrationKey(agent?._id, managedCandidate?._id);
+  if (!integrationKey) return null;
+
+  const assignedStaff = await resolveManagedCandidateAssignedStaff({ agent, managedCandidate });
+  const ownershipContext = await resolveDefaultLeadOwner(assignedStaff);
+
+  if (!ownershipContext.teamAdminId || !ownershipContext.ownerAdminId) {
+    return null;
+  }
+
+  const assignedToId = assignedStaff?._id || null;
+  const sourceMetadata = {
+    origin: 'agent_managed_candidate',
+    candidateType: 'B2B',
+    agentId: String(agent._id),
+    agentName: String(agent.name || '').trim(),
+    companyName: String(agent.companyName || '').trim(),
+    managedCandidateId: String(managedCandidate._id),
+  };
+
+  const leadPayload = {
+    teamAdmin: ownershipContext.teamAdminId,
+    ownerAdmin: ownershipContext.ownerAdminId,
+    assignedTo: assignedToId,
+    assignedBy: assignedToId,
+    assignedAt: assignedToId ? new Date() : null,
+    status: CUSTOMER_LEAD_STATUSES.has(String(managedCandidate.crmStatus || managedCandidate.status || '').trim())
+      ? String(managedCandidate.crmStatus || managedCandidate.status).trim()
+      : 'Leads',
+    source: 'Job Portal',
+    sourceDetails: 'Agent Managed Candidate',
+    integrationKey,
+    linkedUser: null,
+    portalAccountType: 'candidate',
+    name: String(managedCandidate.name || '').trim() || normalizeEmail(managedCandidate.email) || 'Managed Candidate',
+    email: normalizeEmail(managedCandidate.email),
+    phone: String(managedCandidate.phone || '').trim(),
+    address: String(managedCandidate.address || '').trim(),
+    city: String(managedCandidate.location || '').trim(),
+    country: String(managedCandidate.country || '').trim(),
+    company: String(agent.companyName || '').trim(),
+    description:
+      String(managedCandidate.jobInterest || '').trim() ||
+      `Managed candidate under ${String(agent.companyName || agent.name || 'agent').trim()}`,
+    tags: mergeLeadTags(['Job Portal', MANAGED_CANDIDATE_B2B_TAG], managedCandidate.tags || []),
+    sourceMetadata,
+    lastContactAt: managedCandidate.lastUpdated || managedCandidate.addedAt || new Date(),
+  };
+
+  const existingLead = await Lead.findOne({ integrationKey });
+  if (existingLead) {
+    existingLead.teamAdmin = leadPayload.teamAdmin;
+    existingLead.ownerAdmin = leadPayload.ownerAdmin;
+    existingLead.assignedTo = leadPayload.assignedTo;
+    existingLead.assignedBy = leadPayload.assignedBy;
+    existingLead.assignedAt = leadPayload.assignedAt;
+    existingLead.source = leadPayload.source;
+    existingLead.sourceDetails = leadPayload.sourceDetails;
+    existingLead.portalAccountType = leadPayload.portalAccountType;
+    existingLead.name = leadPayload.name;
+    existingLead.email = leadPayload.email;
+    existingLead.phone = leadPayload.phone;
+    existingLead.address = leadPayload.address;
+    existingLead.city = leadPayload.city;
+    existingLead.country = leadPayload.country;
+    existingLead.company = leadPayload.company;
+    existingLead.description = leadPayload.description;
+    existingLead.tags = mergeLeadTags(existingLead.tags || [], leadPayload.tags);
+    existingLead.sourceMetadata = {
+      ...(existingLead.sourceMetadata && typeof existingLead.sourceMetadata === 'object' ? existingLead.sourceMetadata : {}),
+      ...sourceMetadata,
+    };
+    existingLead.lastContactAt = leadPayload.lastContactAt;
+    await existingLead.save();
+    return existingLead;
+  }
+
+  const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: ownershipContext.teamAdminId })) + 1;
+  return Lead.create({
+    ...leadPayload,
+    leadNumber: nextLeadNumber,
+    assignmentHistory: [
+      {
+        action: assignedToId ? 'assigned' : 'unassigned',
+        assignedTo: assignedToId,
+        previousAssignedTo: null,
+        assignedBy: assignedToId,
+        assignedAt: leadPayload.assignedAt || new Date(),
+      },
+    ],
+    createdAt: managedCandidate.addedAt || undefined,
+    updatedAt: managedCandidate.lastUpdated || managedCandidate.addedAt || undefined,
+  });
+};
 
 // Middleware to allow only agents
 const agentOnly = (req, res, next) => {
@@ -183,10 +303,16 @@ router.post(
       agent.markModified("managedCandidates");
       await agent.save();
 
+      const createdCandidate = agent.managedCandidates[agent.managedCandidates.length - 1];
+      await syncManagedCandidateLeadRecord({
+        agent,
+        managedCandidate: createdCandidate,
+      });
+
       res.status(201).json({
         success: true,
         message: 'Candidate added successfully',
-        data: candidateData
+        data: createdCandidate
       });
 
     } catch (error) {
@@ -380,6 +506,10 @@ arrayFields.forEach(field => {
       candidate.lastUpdated = new Date();
 
       await agent.save();
+      await syncManagedCandidateLeadRecord({
+        agent,
+        managedCandidate: candidate,
+      });
 
       res.json({
         success: true,
@@ -407,6 +537,22 @@ router.delete('/candidates/:candidateId', protect, agentOnly, async (req, res) =
     const agent = await User.findById(req.user._id);
     const candidateIndex = agent.managedCandidates.findIndex(c => c._id.toString() === candidateId);
     if (candidateIndex === -1) return res.status(404).json({ success: false, message: 'Candidate not found' });
+
+    const linkedLead = await Lead.findOne({
+      integrationKey: buildManagedCandidateIntegrationKey(agent._id, candidateId),
+    });
+    if (linkedLead) {
+      if (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || '').trim())) {
+        linkedLead.sourceMetadata = {
+          ...(linkedLead.sourceMetadata && typeof linkedLead.sourceMetadata === 'object' ? linkedLead.sourceMetadata : {}),
+          candidateRemovedFromAgent: true,
+          candidateRemovedAt: new Date(),
+        };
+        await linkedLead.save();
+      } else {
+        await Lead.deleteOne({ _id: linkedLead._id });
+      }
+    }
 
     agent.managedCandidates.splice(candidateIndex, 1);
     await agent.save();

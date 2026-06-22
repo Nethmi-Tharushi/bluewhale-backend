@@ -2,6 +2,7 @@ const asyncHandler = require("express-async-handler");
 const Invoice = require("../models/Invoice");
 const AdminUser = require("../models/AdminUser");
 const User = require("../models/User");
+const Lead = require("../models/Lead");
 const { buildInvoicePdfBuffer } = require("../services/invoicePdfService");
 const { sendInvoiceEmail } = require("../services/emailService");
 const { resolveManagedCandidateNotificationTarget } = require("../services/managedCandidateNotificationService");
@@ -10,6 +11,7 @@ const { ensureSalesActor, getSalesScope, buildOwnedFilter } = require("../utils/
 
 const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client"]);
 
 const toNum = (v) => {
   const n = Number(v || 0);
@@ -51,16 +53,20 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
         email: existingCustomer.email || "",
         phone: existingCustomer.phone || "",
         address: existingCustomer.address || "",
+        leadId: existingCustomer.leadId || null,
         candidateId: existingCustomer.candidateId || null,
         candidateType: existingCustomer.candidateType || "Other",
+        recordType: existingCustomer.recordType || "other",
       }
     : {
         name: "",
         email: "",
         phone: "",
         address: "",
+        leadId: null,
         candidateId: null,
         candidateType: "Other",
+        recordType: "other",
       };
 
   const customer = {
@@ -68,6 +74,7 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
     ...rawCustomer,
   };
 
+  const leadId = String(customer.leadId || "").trim();
   const candidateId = String(customer.candidateId || "").trim();
   const explicitCandidateType = normalizeCandidateType(customer.candidateType);
   const accessibleAdminIds = getAccessibleAdminIds(req);
@@ -77,6 +84,36 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
     ? {}
     : { "managedCandidates.assignedTo": { $in: accessibleAdminIds } };
 
+  if (leadId) {
+    const lead = await Lead.findOne({
+      _id: leadId,
+      ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+    }).select("name email phone address company linkedUser portalAccountType status");
+
+    if (!lead) {
+      const err = new Error("Lead not found or not accessible to you");
+      err.statusCode = 403;
+      err.details = { leadId };
+      throw err;
+    }
+
+    return {
+      name: String(lead.name || customer.name || "").trim(),
+      email: String(lead.email || customer.email || "").trim().toLowerCase(),
+      phone: String(lead.phone || customer.phone || "").trim(),
+      address: String(lead.address || customer.address || "").trim(),
+      leadId: lead._id,
+      candidateId: lead.linkedUser || null,
+      candidateType:
+        lead.portalAccountType === "agent"
+          ? "B2B"
+          : lead.portalAccountType === "candidate"
+            ? "B2C"
+            : explicitCandidateType || customer.candidateType || "Other",
+      recordType: CUSTOMER_LEAD_STATUSES.has(String(lead.status || "")) ? "customer" : "lead",
+    };
+  }
+
   if (!candidateId) {
     customer.name = String(customer.name || "").trim();
     customer.email = String(customer.email || "").trim().toLowerCase();
@@ -84,6 +121,8 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
     customer.address = String(customer.address || "").trim();
     customer.candidateType = explicitCandidateType || customer.candidateType || "Other";
     customer.candidateId = null;
+    customer.leadId = null;
+    customer.recordType = customer.recordType || "other";
     return customer;
   }
 
@@ -99,8 +138,10 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
       email: String(b2cCandidate.email || customer.email || "").trim().toLowerCase(),
       phone: b2cCandidate.phone || String(customer.phone || "").trim(),
       address: b2cCandidate.address || String(customer.address || "").trim(),
+      leadId: customer.leadId || null,
       candidateId: b2cCandidate._id,
       candidateType: "B2C",
+      recordType: customer.recordType || "other",
     };
   }
 
@@ -123,8 +164,10 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
       email: String(managedCandidate.email || customer.email || "").trim().toLowerCase(),
       phone: managedCandidate.phone || String(customer.phone || "").trim(),
       address: managedCandidate.address || String(customer.address || "").trim(),
+      leadId: customer.leadId || null,
       candidateId: managedCandidate._id,
       candidateType: "B2B",
+      recordType: customer.recordType || "other",
     };
   }
 
@@ -153,7 +196,9 @@ const resolveInvoiceCustomer = async (req, rawCustomer = {}, existingCustomer = 
   customer.phone = String(customer.phone || "").trim();
   customer.address = String(customer.address || "").trim();
   customer.candidateId = customer.candidateId || null;
+  customer.leadId = customer.leadId || null;
   customer.candidateType = explicitCandidateType || customer.candidateType || "Other";
+  customer.recordType = customer.recordType || "other";
   return customer;
 };
 
@@ -342,8 +387,10 @@ const createInvoice = asyncHandler(async (req, res) => {
         email: customer.email,
         phone: customer.phone || "",
         address: customer.address || "",
+        leadId: customer.leadId || null,
         candidateId: customer.candidateId || null,
         candidateType: customer.candidateType || "Other",
+        recordType: customer.recordType || "other",
       },
       issueDate,
       dueDate,
@@ -541,8 +588,10 @@ const updateInvoice = asyncHandler(async (req, res) => {
     invoice.customer.email = customer.email;
     invoice.customer.phone = customer.phone;
     invoice.customer.address = customer.address;
+    invoice.customer.leadId = customer.leadId || null;
     invoice.customer.candidateId = customer.candidateId || null;
     invoice.customer.candidateType = customer.candidateType;
+    invoice.customer.recordType = customer.recordType || "other";
   }
 
   if (issueDate) invoice.issueDate = issueDate;

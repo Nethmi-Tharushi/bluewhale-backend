@@ -3,8 +3,22 @@ const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
 const Campaign = require("../models/Campaign");
 const Lead = require("../models/Lead");
+const User = require("../models/User");
+const { sendPortalWelcomeEmail } = require("../services/emailService");
 const { notifyLeadEvent } = require("../services/notificationService");
 const { getSalesScope } = require("../utils/salesScope");
+const {
+  buildLeadOwnership,
+  DEFAULT_PORTAL_PASSWORD,
+  ensurePortalUserForLead,
+  MANAGED_CANDIDATE_B2B_TAG,
+  buildManagedCandidateIntegrationKey,
+  normalizeEmail,
+  resolveDefaultLeadOwner,
+  resolveManagedCandidateAssignedStaff,
+  resolveAssignedSalesStaff,
+  syncLeadLinkedUserAssignment,
+} = require("../services/leadAccountService");
 const {
   CANONICAL_LEAD_STATUSES,
   DEFAULT_LEAD_SOURCE,
@@ -25,6 +39,7 @@ const LEAD_ASSIGNMENT_ACTIONS = Object.freeze({
   REASSIGNED: "reassigned",
   UNASSIGNED: "unassigned",
 });
+const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client", "Paid Clients"]);
 
 const toIdString = (value) => {
   if (!value) return "";
@@ -196,6 +211,11 @@ const buildLeadListFilter = (req) => {
     ...buildLeadAccessFilter(req),
   };
   const assignedFilter = String(req.query?.assigned || "").trim().toLowerCase();
+  const statuses = String(req.query?.status || "")
+    .split(",")
+    .map((item) => normalizeLeadStatus(item))
+    .filter(Boolean)
+    .filter((value, index, array) => array.indexOf(value) === index);
 
   if (assignedFilter === "assigned") {
     filter.assignedTo = { $ne: null };
@@ -203,7 +223,27 @@ const buildLeadListFilter = (req) => {
     filter.assignedTo = null;
   }
 
+  if (statuses.length === 1) {
+    filter.status = statuses[0];
+  } else if (statuses.length > 1) {
+    filter.status = { $in: statuses };
+  }
+
   return filter;
+};
+
+const mergeLeadTags = (...tagLists) => {
+  const seen = new Set();
+  return tagLists
+    .flat()
+    .map((tag) => String(tag || "").trim())
+    .filter((tag) => {
+      if (!tag) return false;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 };
 
 const getLeadMeta = asyncHandler(async (req, res) => {
@@ -281,34 +321,44 @@ const createLead = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: parsedLeadValue.message });
   }
 
-  const assignableFilter = buildAssignableAdminFilter(scope);
-  const keepUnassigned = body.keepUnassigned === true || String(body.keepUnassigned || "").toLowerCase() === "true";
-  const preferredAssignee = String(body.assignedTo || "").trim();
-  const fallbackAssignee = keepUnassigned ? "" : scope.actorId;
-  const requestedAssignee = preferredAssignee || fallbackAssignee;
-  const assignedAdmin = requestedAssignee
-    ? await AdminUser.findOne({ _id: requestedAssignee, ...assignableFilter }).select("_id")
-    : null;
+  const requestedAssignee = String(body.assignedTo || "").trim();
+  const assignedAdmin = await resolveAssignedSalesStaff({
+    actor: req.admin,
+    preferredAssigneeId: requestedAssignee,
+  });
+  const ownership = buildLeadOwnership({
+    actor: req.admin,
+    assignedStaff: assignedAdmin,
+  });
 
-  if (requestedAssignee && !assignedAdmin) {
-    return res.status(400).json({ message: "Invalid assigned user selected" });
+  const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: ownership.teamAdmin || scope.managerId })) + 1;
+  const assignedAt = assignedAdmin ? new Date() : null;
+  const normalizedEmail = normalizeEmail(body.email);
+  const portalAccountResult = await ensurePortalUserForLead({
+    leadInput: body,
+    assignedStaff: assignedAdmin,
+  });
+  const linkedUser = portalAccountResult?.user || null;
+  if (linkedUser?._id) {
+    const existingLinkedLead = await Lead.findOne({ integrationKey: `portal_user:${linkedUser._id}` }).select("_id");
+    if (existingLinkedLead) {
+      return res.status(400).json({ message: "A CRM lead already exists for this portal account" });
+    }
   }
 
-  const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: scope.managerId })) + 1;
-  const assignedAt = assignedAdmin ? new Date() : null;
-
   const lead = await Lead.create({
-    teamAdmin: scope.managerId,
-    ownerAdmin: scope.actorId,
-    assignedTo: assignedAdmin?._id || null,
-    assignedBy: assignedAdmin ? scope.actorId : null,
+    teamAdmin: ownership.teamAdmin || scope.managerId,
+    ownerAdmin: ownership.ownerAdmin || scope.actorId,
+    assignedTo: ownership.assignedTo || null,
+    assignedBy: ownership.assignedBy || null,
     assignedAt,
     leadNumber: nextLeadNumber,
     status: normalizeLeadStatus(body.status, DEFAULT_LEAD_STATUS),
     source: normalizeLeadSource(body.source, DEFAULT_LEAD_SOURCE),
     sourceDetails: String(body.sourceDetails || "").trim(),
+    integrationKey: linkedUser?._id ? `portal_user:${linkedUser._id}` : body.integrationKey,
     name: String(body.name || "").trim(),
-    email: body.email || "",
+    email: normalizedEmail,
     phone: body.phone || "",
     website: body.website || "",
     address: body.address || "",
@@ -321,13 +371,15 @@ const createLead = asyncHandler(async (req, res) => {
     defaultLanguage: body.defaultLanguage || "System Default",
     company: body.company || "",
     description: body.description || "",
+    linkedUser: linkedUser?._id || null,
+    portalAccountType: String(body.portalAccountType || linkedUser?.userType || "").trim(),
     tags: normalizeLeadTags(body.tags),
     assignmentHistory: [
       {
         action: assignedAdmin ? LEAD_ASSIGNMENT_ACTIONS.ASSIGNED : LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
-        assignedTo: assignedAdmin?._id || null,
+        assignedTo: ownership.assignedTo || null,
         previousAssignedTo: null,
-        assignedBy: scope.actorId,
+        assignedBy: ownership.assignedBy || scope.actorId,
         assignedAt: assignedAt || new Date(),
       },
     ],
@@ -359,6 +411,23 @@ const createLead = asyncHandler(async (req, res) => {
         assignedToName: populated.assignedTo?.name || "",
       },
     });
+  }
+
+  if (
+    portalAccountResult?.created &&
+    body?.sendWelcomeEmail &&
+    normalizedEmail
+  ) {
+    try {
+      await sendPortalWelcomeEmail({
+        to: normalizedEmail,
+        name: populated.name,
+        userType: linkedUser?.userType || body?.portalAccountType || "candidate",
+        password: portalAccountResult.password || DEFAULT_PORTAL_PASSWORD,
+      });
+    } catch (emailError) {
+      console.error("Failed to send portal welcome email:", emailError);
+    }
   }
 
   res.status(201).json({ success: true, data: formatLeadForApi(populated) });
@@ -435,6 +504,7 @@ const updateLead = asyncHandler(async (req, res) => {
   }
 
   await lead.save();
+  await syncLeadLinkedUserAssignment(lead);
 
   const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
   const nextAssignedTo = toIdString(populated.assignedTo);
@@ -490,6 +560,7 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
   lead.status = normalizeLeadStatus(status, lead.status || DEFAULT_LEAD_STATUS);
   lead.lastContactAt = new Date();
   await lead.save();
+  await syncLeadLinkedUserAssignment(lead);
 
   const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
   if (previousStatus !== populated.status) {
@@ -537,6 +608,7 @@ const assignLead = asyncHandler(async (req, res) => {
   }
 
   await lead.save();
+  await syncLeadLinkedUserAssignment(lead);
 
   const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
   return res.json({
@@ -581,6 +653,7 @@ const bulkAssignLeads = asyncHandler(async (req, res) => {
         assignedToInput: assignmentInput,
       });
       await lead.save();
+      await syncLeadLinkedUserAssignment(lead);
       const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
       results.push(formatLeadForApi(populated));
     } catch (error) {
@@ -617,6 +690,207 @@ const deleteLead = asyncHandler(async (req, res) => {
   res.json({ success: true, message: "Lead deleted successfully" });
 });
 
+const syncPortalUsersToLeads = asyncHandler(async (req, res) => {
+  const existingLeadUserIds = await Lead.distinct("linkedUser", { linkedUser: { $ne: null } });
+  const existingLeadUserIdSet = new Set(existingLeadUserIds.map((value) => String(value)));
+  const existingLeadIntegrationKeys = new Set(
+    (await Lead.distinct("integrationKey", { integrationKey: { $ne: null } }))
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  );
+
+  const portalUsers = await User.find({
+    _id: { $nin: existingLeadUserIds },
+  })
+    .select("_id name email phone address country location companyName companyAddress contactPerson userType assignedTo createdAt jobInterest")
+    .sort({ createdAt: 1, _id: 1 });
+
+  const created = [];
+  const skipped = [];
+
+  for (const user of portalUsers) {
+    if (existingLeadUserIdSet.has(String(user._id))) {
+      skipped.push({ userId: String(user._id), reason: "Lead already exists" });
+      continue;
+    }
+
+    const preferredAssignedStaff = user.assignedTo
+      ? await AdminUser.findOne({ _id: user.assignedTo, role: "SalesStaff" }).select("_id name email role reportsTo")
+      : null;
+    const assignedAdmin =
+      preferredAssignedStaff ||
+      (await resolveAssignedSalesStaff({
+        actor: req.admin,
+      }));
+    const ownership = buildLeadOwnership({
+      actor: req.admin,
+      assignedStaff: assignedAdmin,
+    });
+    const teamAdminId = ownership.teamAdmin || getSalesScope(req).managerId || req.admin?._id || null;
+    const ownerAdminId = ownership.ownerAdmin || req.admin?._id || null;
+
+    if (!teamAdminId || !ownerAdminId) {
+      skipped.push({ userId: String(user._id), reason: "Unable to resolve lead ownership" });
+      continue;
+    }
+
+    const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: teamAdminId })) + 1;
+    const assignedAt = assignedAdmin ? new Date() : null;
+    const lead = await Lead.create({
+      teamAdmin: teamAdminId,
+      ownerAdmin: ownerAdminId,
+      assignedTo: assignedAdmin?._id || null,
+      assignedBy: req.admin?._id || assignedAdmin?._id || null,
+      assignedAt,
+      leadNumber: nextLeadNumber,
+      status: "Leads",
+      source: "Job Portal",
+      sourceDetails: "Portal User Backfill",
+      integrationKey: `portal_user:${user._id}`,
+      linkedUser: user._id,
+      portalAccountType: String(user.userType || "").trim(),
+      name: user.userType === "agent" ? user.contactPerson || user.name : user.name,
+      email: normalizeEmail(user.email),
+      phone: user.phone || "",
+      address: user.address || user.companyAddress || "",
+      city: user.location || "",
+      country: user.country || "",
+      company: user.companyName || "",
+      description: user.jobInterest || (user.userType === "agent" ? `Agent signup for ${user.companyName || "company"}` : ""),
+      sourceMetadata: {
+        origin: "job_portal_backfill",
+        portalUserId: String(user._id),
+        userType: user.userType,
+      },
+      assignmentHistory: [
+        {
+          action: assignedAdmin ? LEAD_ASSIGNMENT_ACTIONS.ASSIGNED : LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
+          assignedTo: assignedAdmin?._id || null,
+          previousAssignedTo: null,
+          assignedBy: req.admin?._id || assignedAdmin?._id || null,
+          assignedAt: assignedAt || new Date(),
+        },
+      ],
+      lastContactAt: user.createdAt || new Date(),
+      createdAt: user.createdAt || undefined,
+      updatedAt: user.createdAt || undefined,
+    });
+
+    await syncLeadLinkedUserAssignment(lead);
+    created.push({
+      userId: String(user._id),
+      leadId: String(lead._id),
+      name: lead.name,
+    });
+    existingLeadUserIdSet.add(String(user._id));
+    existingLeadIntegrationKeys.add(String(lead.integrationKey || "").trim());
+  }
+
+  const agentUsers = await User.find({ userType: "agent" })
+    .select("_id name email companyName assignedTo managedCandidates")
+    .sort({ createdAt: 1, _id: 1 });
+
+  for (const agent of agentUsers) {
+    for (const managedCandidate of agent.managedCandidates || []) {
+      const integrationKey = buildManagedCandidateIntegrationKey(agent._id, managedCandidate._id);
+      if (!integrationKey) {
+        skipped.push({
+          candidateId: String(managedCandidate?._id || ""),
+          reason: "Unable to resolve managed candidate integration key",
+        });
+        continue;
+      }
+
+      if (existingLeadIntegrationKeys.has(integrationKey)) {
+        skipped.push({
+          candidateId: String(managedCandidate._id),
+          reason: "Managed candidate lead already exists",
+        });
+        continue;
+      }
+
+      const assignedAdmin = await resolveManagedCandidateAssignedStaff({
+        agent,
+        managedCandidate,
+      });
+      const ownershipContext = await resolveDefaultLeadOwner(assignedAdmin);
+
+      if (!ownershipContext.teamAdminId || !ownershipContext.ownerAdminId) {
+        skipped.push({
+          candidateId: String(managedCandidate._id),
+          reason: "Unable to resolve managed candidate ownership",
+        });
+        continue;
+      }
+
+      const assignedAt = assignedAdmin ? new Date() : null;
+      const lead = await Lead.create({
+        teamAdmin: ownershipContext.teamAdminId,
+        ownerAdmin: ownershipContext.ownerAdminId,
+        assignedTo: assignedAdmin?._id || null,
+        assignedBy: assignedAdmin?._id || null,
+        assignedAt,
+        leadNumber: 2000 + (await Lead.countDocuments({ teamAdmin: ownershipContext.teamAdminId })) + 1,
+        status: CUSTOMER_LEAD_STATUSES.has(String(managedCandidate.status || "").trim()) ? String(managedCandidate.status).trim() : "Leads",
+        source: "Job Portal",
+        sourceDetails: "Agent Managed Candidate Backfill",
+        integrationKey,
+        linkedUser: null,
+        portalAccountType: "candidate",
+        name: String(managedCandidate.name || "").trim() || normalizeEmail(managedCandidate.email) || "Managed Candidate",
+        email: normalizeEmail(managedCandidate.email),
+        phone: managedCandidate.phone || "",
+        address: managedCandidate.address || "",
+        city: managedCandidate.location || "",
+        country: managedCandidate.country || "",
+        company: agent.companyName || "",
+        description:
+          String(managedCandidate.jobInterest || "").trim() ||
+          `Managed candidate under ${String(agent.companyName || agent.name || "agent").trim()}`,
+        tags: mergeLeadTags(["Job Portal", MANAGED_CANDIDATE_B2B_TAG]),
+        sourceMetadata: {
+          origin: "agent_managed_candidate_backfill",
+          candidateType: "B2B",
+          agentId: String(agent._id),
+          agentName: String(agent.name || "").trim(),
+          companyName: String(agent.companyName || "").trim(),
+          managedCandidateId: String(managedCandidate._id),
+        },
+        assignmentHistory: [
+          {
+            action: assignedAdmin ? LEAD_ASSIGNMENT_ACTIONS.ASSIGNED : LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
+            assignedTo: assignedAdmin?._id || null,
+            previousAssignedTo: null,
+            assignedBy: assignedAdmin?._id || null,
+            assignedAt: assignedAt || new Date(),
+          },
+        ],
+        lastContactAt: managedCandidate.lastUpdated || managedCandidate.addedAt || new Date(),
+        createdAt: managedCandidate.addedAt || undefined,
+        updatedAt: managedCandidate.lastUpdated || managedCandidate.addedAt || undefined,
+      });
+
+      created.push({
+        candidateId: String(managedCandidate._id),
+        leadId: String(lead._id),
+        name: lead.name,
+      });
+      existingLeadIntegrationKeys.add(integrationKey);
+    }
+  }
+
+  return res.json({
+    success: true,
+    message: `Portal user sync completed: ${created.length} leads created, ${skipped.length} skipped`,
+    data: {
+      created,
+      skipped,
+      createdCount: created.length,
+      skippedCount: skipped.length,
+    },
+  });
+});
+
 module.exports = {
   getLeadMeta,
   listLeads,
@@ -627,5 +901,6 @@ module.exports = {
   updateLead,
   updateLeadStatus,
   deleteLead,
+  syncPortalUsersToLeads,
 };
 

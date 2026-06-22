@@ -11,6 +11,12 @@ const ChatAssignment = require('../models/ChatAssignment');
 const ChatUser = require('../models/ChatUser');
 const AdminUser = require("../models/AdminUser");
 const RecruitmentChannel = require("../models/RecruitmentChannel");
+const Lead = require("../models/Lead");
+const {
+  buildLeadOwnership,
+  normalizeEmail,
+  resolveAssignedSalesStaff,
+} = require("../services/leadAccountService");
 
 const normalizeUploadFieldName = (fieldname = "") => {
   const f = String(fieldname).trim();
@@ -783,6 +789,61 @@ const signupUser = async (req, res) => {
 
     // Create new user
     const user = await User.create(userData);
+
+    const assignedStaff = await resolveAssignedSalesStaff();
+    const fallbackOwner =
+      assignedStaff ||
+      (await AdminUser.findOne({ role: { $in: ["SalesAdmin", "MainAdmin"] } })
+        .sort({ role: 1, createdAt: 1, _id: 1 })
+        .select("_id role reportsTo"));
+    const ownership = buildLeadOwnership({
+      actor: null,
+      assignedStaff,
+    });
+    const teamAdminId = ownership.teamAdmin || fallbackOwner?._id || null;
+    const ownerAdminId = ownership.ownerAdmin || fallbackOwner?._id || null;
+
+    if (teamAdminId && ownerAdminId) {
+      const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: teamAdminId })) + 1;
+      const portalSource = userType === "agent" ? "Job Portal Agent Signup" : "Job Portal Candidate Signup";
+
+      await Lead.create({
+        teamAdmin: teamAdminId,
+        ownerAdmin: ownerAdminId,
+        assignedTo: assignedStaff?._id || null,
+        assignedBy: assignedStaff?._id || null,
+        assignedAt: assignedStaff ? new Date() : null,
+        leadNumber: nextLeadNumber,
+        status: "Leads",
+        source: "Website",
+        sourceDetails: portalSource,
+        integrationKey: `portal_user:${user._id}`,
+        linkedUser: user._id,
+        portalAccountType: user.userType,
+        name: user.userType === "agent" ? user.contactPerson || user.name : user.name,
+        email: normalizeEmail(user.email),
+        phone: user.phone || user.phoneNumber || "",
+        address: user.address || user.companyAddress || "",
+        country: user.country || "",
+        company: user.companyName || "",
+        description: user.userType === "agent" ? `Agent signup for ${user.companyName || "company"}` : "",
+        sourceMetadata: {
+          origin: "job_portal_signup",
+          portalUserId: String(user._id),
+          userType: user.userType,
+        },
+        assignmentHistory: [
+          {
+            action: assignedStaff ? "assigned" : "unassigned",
+            assignedTo: assignedStaff?._id || null,
+            previousAssignedTo: null,
+            assignedBy: assignedStaff?._id || null,
+            assignedAt: new Date(),
+          },
+        ],
+        lastContactAt: new Date(),
+      });
+    }
 
     // Respond with created user info and token
     if (user) {

@@ -1,6 +1,8 @@
 const asyncHandler = require("express-async-handler");
 const Project = require("../models/Project");
+const Lead = require("../models/Lead");
 const { getSalesScope, buildOwnedFilter } = require("../utils/salesScope");
+const CUSTOMER_LEAD_STATUSES = new Set(["Converted Leads", "Paid Client"]);
 
 const toNum = (value) => {
   const num = Number(value || 0);
@@ -19,6 +21,16 @@ const normalizeVisibleTabs = (tabs) => {
   return undefined;
 };
 
+const resolveLinkedLead = async (leadId = "", req) => {
+  const normalized = String(leadId || "").trim();
+  if (!normalized) return null;
+
+  return Lead.findOne({
+    _id: normalized,
+    ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+  }).select("_id name email phone linkedUser portalAccountType status");
+};
+
 const listProjects = asyncHandler(async (req, res) => {
   const projects = await Project.find(buildOwnedFilter(req, "ownerAdmin", "teamAdmin"))
     .populate("ownerAdmin", "name email role")
@@ -33,8 +45,9 @@ const createProject = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
   const body = req.body || {};
   const customer = body.customer || {};
+  const linkedLead = await resolveLinkedLead(customer.leadId, req);
 
-  if (!body.projectName || !customer.name || !body.startDate) {
+  if (!body.projectName || (!linkedLead?.name && !customer.name) || !body.startDate) {
     return res.status(400).json({ message: "Project name, customer, and start date are required" });
   }
 
@@ -43,11 +56,18 @@ const createProject = asyncHandler(async (req, res) => {
     ownerAdmin: scope.actorId,
     projectName: body.projectName,
     customer: {
-      sourceId: customer.sourceId || null,
-      name: customer.name,
-      email: customer.email || "",
-      phone: customer.phone || "",
-      type: customer.type || "Other",
+      leadId: linkedLead?._id || customer.leadId || null,
+      sourceId: linkedLead?.linkedUser || customer.sourceId || null,
+      name: linkedLead?.name || customer.name,
+      email: linkedLead?.email || customer.email || "",
+      phone: linkedLead?.phone || customer.phone || "",
+      type:
+        linkedLead?.portalAccountType === "agent"
+          ? "B2B"
+          : linkedLead?.portalAccountType === "candidate"
+            ? "B2C"
+            : customer.type || "Other",
+      recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead") : customer.recordType || "other",
     },
     billingType: body.billingType || "Fixed Rate",
     status: body.status || "In Progress",
@@ -84,13 +104,30 @@ const updateProject = asyncHandler(async (req, res) => {
 
   const body = req.body || {};
   const customer = body.customer || {};
+  const linkedLead = await resolveLinkedLead(customer.leadId, req);
 
   if (body.projectName !== undefined) project.projectName = body.projectName;
+  if (customer.leadId !== undefined) project.customer.leadId = linkedLead?._id || customer.leadId || null;
   if (customer.name !== undefined) project.customer.name = customer.name;
   if (customer.email !== undefined) project.customer.email = customer.email;
   if (customer.phone !== undefined) project.customer.phone = customer.phone;
   if (customer.type !== undefined) project.customer.type = customer.type;
   if (customer.sourceId !== undefined) project.customer.sourceId = customer.sourceId || null;
+  if (customer.recordType !== undefined) project.customer.recordType = customer.recordType || "other";
+
+  if (linkedLead) {
+    project.customer.name = linkedLead.name || project.customer.name;
+    project.customer.email = linkedLead.email || project.customer.email;
+    project.customer.phone = linkedLead.phone || project.customer.phone;
+    project.customer.sourceId = linkedLead.linkedUser || project.customer.sourceId || null;
+    project.customer.type =
+      linkedLead.portalAccountType === "agent"
+        ? "B2B"
+        : linkedLead.portalAccountType === "candidate"
+          ? "B2C"
+          : project.customer.type;
+    project.customer.recordType = CUSTOMER_LEAD_STATUSES.has(String(linkedLead.status || "")) ? "customer" : "lead";
+  }
   if (body.billingType !== undefined) project.billingType = body.billingType;
   if (body.status !== undefined) project.status = body.status;
   if (body.progressMode !== undefined) project.progressMode = body.progressMode === "tasks" ? "tasks" : "manual";
