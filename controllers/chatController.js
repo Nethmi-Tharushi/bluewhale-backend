@@ -12,6 +12,63 @@ const normalizeObjectId = (value) => {
 
 const escapeRegex = (value = "") => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const toObjectIdOrNull = (value) => {
+  const normalized = String(value || "").trim();
+  return mongoose.Types.ObjectId.isValid(normalized) ? normalized : null;
+};
+
+const buildAllowedChatAdminPayload = (admin) => {
+  if (!admin) return null;
+  return {
+    _id: admin._id,
+    name: admin.name,
+    email: admin.email,
+    role: admin.role,
+    companyName: admin.companyName || "",
+    lastMessageAt: null,
+  };
+};
+
+const resolveAssignedChatAdmin = async (user, managedCandidateId = "") => {
+  if (!user?._id) return null;
+
+  const normalizedManagedCandidateId = toObjectIdOrNull(managedCandidateId);
+
+  const portalUser = await User.findById(user._id)
+    .select("userType assignedTo managedCandidates._id managedCandidates.assignedTo")
+    .populate("assignedTo", "name email role companyName")
+    .populate("managedCandidates.assignedTo", "name email role companyName")
+    .lean();
+
+  if (!portalUser) return null;
+
+  if (normalizedManagedCandidateId) {
+    const managedCandidate = Array.isArray(portalUser.managedCandidates)
+      ? portalUser.managedCandidates.find(
+          (candidate) => String(candidate?._id || "") === normalizedManagedCandidateId
+        )
+      : null;
+
+    if (!managedCandidate) {
+      return null;
+    }
+
+    return managedCandidate.assignedTo || portalUser.assignedTo || null;
+  }
+
+  return portalUser.assignedTo || null;
+};
+
+const canAccessUserChatAdmin = async (user, targetAdminId, managedCandidateId = "") => {
+  const normalizedTargetAdminId = toObjectIdOrNull(targetAdminId);
+  if (!normalizedTargetAdminId) return null;
+
+  const assignedAdmin = await resolveAssignedChatAdmin(user, managedCandidateId);
+  if (!assignedAdmin) return null;
+
+  return String(assignedAdmin._id || assignedAdmin) === normalizedTargetAdminId ? assignedAdmin : null;
+};
+
 const getAllowedInternalAdminFilter = (admin) => {
   const role = String(admin?.role || "");
   if (role === "MainAdmin") {
@@ -101,6 +158,10 @@ const pickAdminForUserSend = async ({ adminIdParam, body = {}, userId }) => {
 exports.getUserMessages = async (req, res) => {
   try {
     const adminId = req.params.adminId;
+    const allowedAdmin = await canAccessUserChatAdmin(req.user, adminId, req.query?.managedCandidateId);
+    if (!allowedAdmin) {
+      return res.status(403).json({ message: "Unauthorized to access this chat" });
+    }
 
     const messages = await Message.find({
       $or: [
@@ -223,62 +284,28 @@ exports.getUsersForAdmin = async (req, res) => {
 // --- USER: Get admins this user has chatted with (separate conversation threads) ---
 exports.getAdminsForUser = async (req, res) => {
   try {
-    const userId = req.user._id;
-
-    const admins = await Message.aggregate([
-      {
-        $match: {
-          $or: [
-            { senderId: userId, senderType: "user", recipientType: "admin" },
-            { recipientId: userId, recipientType: "user", senderType: "admin" },
-          ],
-        },
-      },
-      {
-        $project: {
-          otherAdminId: {
-            $cond: [{ $eq: ["$senderType", "admin"] }, "$senderId", "$recipientId"],
-          },
-          createdAt: 1,
-        },
-      },
-      {
-        $group: {
-          _id: "$otherAdminId",
-          lastMessageAt: { $max: "$createdAt" },
-        },
-      },
-      {
-        $lookup: {
-          from: "adminusers",
-          localField: "_id",
-          foreignField: "_id",
-          as: "admin",
-        },
-      },
-      { $unwind: "$admin" },
-      {
-        $project: {
-          _id: "$admin._id",
-          name: "$admin.name",
-          email: "$admin.email",
-          role: "$admin.role",
-          lastMessageAt: 1,
-        },
-      },
-      { $sort: { lastMessageAt: -1 } },
-    ]);
-
-    if (admins.length > 0) {
-      return res.json(admins);
+    const assignedAdmin = await resolveAssignedChatAdmin(req.user, req.query?.managedCandidateId);
+    if (!assignedAdmin) {
+      return res.json([]);
     }
 
-    // Fallback: first-time users can still start with any available admin.
-    const allAdmins = await AdminUser.find({})
-      .select("_id name email role")
-      .sort({ createdAt: 1 })
-      .lean();
-    return res.json(allAdmins);
+    const userId = req.user._id;
+    const lastMessage = await Message.findOne({
+      $or: [
+        { senderId: userId, senderType: "user", recipientId: assignedAdmin._id, recipientType: "admin" },
+        { senderId: assignedAdmin._id, senderType: "admin", recipientId: userId, recipientType: "user" },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .select("createdAt content");
+
+    return res.json([
+      {
+        ...buildAllowedChatAdminPayload(assignedAdmin),
+        lastMessageAt: lastMessage?.createdAt || null,
+        lastMessage: String(lastMessage?.content || "").trim(),
+      },
+    ]);
   } catch (err) {
     console.error("getAdminsForUser error:", err);
     res.status(500).json({ message: "Failed to fetch admins" });
@@ -288,29 +315,7 @@ exports.getAdminsForUser = async (req, res) => {
 // --- USER: Get assigned admin ---
 exports.getAssignedAdmin = async (req, res) => {
   try {
-    const userId = req.user._id;
-
-    // Prefer the latest admin who has chatted with this user.
-    const latestMessage = await Message.findOne({
-      $or: [
-        { senderId: userId, senderType: "user", recipientType: "admin" },
-        { recipientId: userId, recipientType: "user", senderType: "admin" },
-      ],
-    })
-      .sort({ createdAt: -1 })
-      .select("senderId senderType recipientId recipientType");
-
-    let admin = null;
-    if (latestMessage) {
-      const adminId =
-        latestMessage.senderType === "admin" ? latestMessage.senderId : latestMessage.recipientId;
-      admin = await AdminUser.findById(adminId);
-    }
-
-    // Fallback for first-time chat users
-    if (!admin) {
-      admin = await AdminUser.findOne();
-    }
+    const admin = await resolveAssignedChatAdmin(req.user, req.query?.managedCandidateId);
 
     if (!admin) return res.status(404).json({ message: "No admin assigned" });
     res.json({ assignedAdmin: admin });
@@ -328,14 +333,17 @@ exports.sendMessageToAdmin = async (req, res) => {
       return res.status(400).json({ message: "Message content required" });
     }
 
-    const admin = await pickAdminForUserSend({
-      adminIdParam: req.params.adminId,
-      body: req.body,
-      userId: req.user._id,
-    });
+    const targetAdminId =
+      req.params.adminId ||
+      req.body?.adminId ||
+      req.body?.recipientId ||
+      req.body?.contactId ||
+      req.body?.targetId ||
+      "";
+    const admin = await canAccessUserChatAdmin(req.user, targetAdminId, req.query?.managedCandidateId);
 
     if (!admin) {
-      return res.status(404).json({ message: "No admin available" });
+      return res.status(403).json({ message: "Unauthorized to message this admin" });
     }
 
     const senderUser = await User.findById(req.user._id).select("name");
