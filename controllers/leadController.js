@@ -3,6 +3,7 @@ const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
 const Campaign = require("../models/Campaign");
 const Lead = require("../models/Lead");
+const LeadReminder = require("../models/LeadReminder");
 const User = require("../models/User");
 const { sendPortalWelcomeEmail } = require("../services/emailService");
 const { notifyLeadEvent } = require("../services/notificationService");
@@ -102,8 +103,10 @@ const parseLeadId = (value) => {
 
 const populateLeadQuery = (query) =>
   query
+    .populate("createdBy", "name email role")
     .populate("assignedTo", "name email role")
     .populate("assignedBy", "name email role")
+    .populate("statusUpdatedBy", "name email role")
     .populate("ownerAdmin", "name email role")
     .populate("assignmentHistory.assignedTo", "name email role")
     .populate("assignmentHistory.previousAssignedTo", "name email role")
@@ -231,6 +234,58 @@ const buildLeadListFilter = (req) => {
   }
 
   return filter;
+};
+
+const parseLeadReminderPayload = (body = {}) => {
+  const title = String(body.title || "").trim();
+  const message = String(body.message || "").trim();
+  const remindAtValue = String(body.remindAt || "").trim();
+  const remindAt = remindAtValue ? new Date(remindAtValue) : null;
+
+  if (!title) {
+    return { error: "Reminder title is required" };
+  }
+
+  if (!remindAt || Number.isNaN(remindAt.getTime())) {
+    return { error: "Valid reminder date and time are required" };
+  }
+
+  return {
+    title,
+    message,
+    remindAt,
+  };
+};
+
+const formatLeadReminderForApi = (reminder) => {
+  const plain = reminder?.toObject ? reminder.toObject() : reminder;
+  if (!plain) return null;
+
+  return {
+    _id: String(plain._id || plain.id || ""),
+    lead: plain.lead && typeof plain.lead === "object"
+      ? {
+          _id: String(plain.lead._id || plain.lead.id || ""),
+          name: String(plain.lead.name || ""),
+          email: String(plain.lead.email || ""),
+          phone: String(plain.lead.phone || ""),
+        }
+      : plain.lead || null,
+    createdBy: plain.createdBy && typeof plain.createdBy === "object"
+      ? {
+          _id: String(plain.createdBy._id || plain.createdBy.id || ""),
+          name: String(plain.createdBy.name || ""),
+          email: String(plain.createdBy.email || ""),
+        }
+      : plain.createdBy || null,
+    title: String(plain.title || ""),
+    message: String(plain.message || ""),
+    remindAt: plain.remindAt || null,
+    status: String(plain.status || "Pending"),
+    sentAt: plain.sentAt || null,
+    createdAt: plain.createdAt || null,
+    updatedAt: plain.updatedAt || null,
+  };
 };
 
 const mergeLeadTags = (...tagLists) => {
@@ -453,13 +508,14 @@ const createLead = asyncHandler(async (req, res) => {
     req,
     eventType: "lead_created",
     lead: populated,
-    title: "Lead created",
-    message: `${req.admin?.name || "Admin"} created lead "${populated.name}"`,
-    metadata: {
-      status: populated.status,
-      source: populated.source,
-    },
-  });
+      title: "Lead created",
+      message: `${req.admin?.name || "Admin"} created lead "${populated.name}"`,
+      metadata: {
+        status: populated.status,
+        source: populated.source,
+        createdBy: req.admin?._id || null,
+      },
+    });
 
   if (populated.assignedTo) {
     await notifyLeadEvent({
@@ -648,6 +704,90 @@ const addLeadNote = asyncHandler(async (req, res) => {
   return res.status(201).json({ success: true, data: formatLeadForApi(populated) });
 });
 
+const listLeadReminders = asyncHandler(async (req, res) => {
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) }).select("_id name email phone").lean();
+  if (!lead) {
+    return res.status(404).json({ message: "Lead not found" });
+  }
+
+  const reminders = await LeadReminder.find({ lead: lead._id })
+    .populate("lead", "_id name email phone")
+    .populate("createdBy", "_id name email role")
+    .sort({ remindAt: -1, createdAt: -1 })
+    .lean();
+
+  return res.json({
+    success: true,
+    data: reminders.map(formatLeadReminderForApi),
+  });
+});
+
+const createLeadReminder = asyncHandler(async (req, res) => {
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) }).select("_id name email phone").lean();
+  if (!lead) {
+    return res.status(404).json({ message: "Lead not found" });
+  }
+
+  const parsed = parseLeadReminderPayload(req.body || {});
+  if (parsed.error) {
+    return res.status(400).json({ message: parsed.error });
+  }
+
+  const reminder = await LeadReminder.create({
+    lead: lead._id,
+    createdBy: req.admin?._id || null,
+    title: parsed.title,
+    message: parsed.message,
+    remindAt: parsed.remindAt,
+    status: parsed.remindAt <= new Date() ? "Pending" : "Pending",
+  });
+
+  const populated = await LeadReminder.findById(reminder._id)
+    .populate("lead", "_id name email phone")
+    .populate("createdBy", "_id name email role")
+    .lean();
+
+  return res.status(201).json({
+    success: true,
+    data: formatLeadReminderForApi(populated),
+  });
+});
+
+const deleteLeadReminder = asyncHandler(async (req, res) => {
+  const leadId = parseLeadId(req.params.id);
+  const reminderId = String(req.params.reminderId || "").trim();
+
+  if (!leadId || !reminderId) {
+    return res.status(400).json({ message: "Invalid reminder request" });
+  }
+
+  const lead = await Lead.findOne({ _id: leadId, ...buildLeadAccessFilter(req) }).select("_id").lean();
+  if (!lead) {
+    return res.status(404).json({ message: "Lead not found" });
+  }
+
+  const reminder = await LeadReminder.findOneAndDelete({
+    _id: reminderId,
+    lead: lead._id,
+  }).lean();
+
+  if (!reminder) {
+    return res.status(404).json({ message: "Reminder not found" });
+  }
+
+  return res.json({ success: true, message: "Reminder deleted successfully" });
+});
+
 const updateLeadStatus = asyncHandler(async (req, res) => {
   const leadId = parseLeadId(req.params.id);
   if (!leadId) {
@@ -666,6 +806,8 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
 
   const previousStatus = lead.status;
   lead.status = normalizeLeadStatus(status, lead.status || DEFAULT_LEAD_STATUS);
+  lead.statusUpdatedBy = req.admin?._id || null;
+  lead.statusUpdatedAt = new Date();
   lead.lastContactAt = new Date();
   await lead.save();
   await syncLeadLinkedUserAssignment(lead);
@@ -681,6 +823,7 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
       metadata: {
         previousStatus,
         status: populated.status,
+        updatedBy: String(req.admin?.name || req.admin?.email || "CRM").trim(),
       },
     });
   }
@@ -1011,6 +1154,9 @@ module.exports = {
   updateLead,
   updateLeadStatus,
   addLeadNote,
+  listLeadReminders,
+  createLeadReminder,
+  deleteLeadReminder,
   deleteLead,
   syncPortalUsersToLeads,
 };

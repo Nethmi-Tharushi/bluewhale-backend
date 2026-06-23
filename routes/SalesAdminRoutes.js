@@ -24,11 +24,15 @@ const {
   createTarget,
   deleteTarget,
   listProposals,
+  getProposalById,
   createProposal,
+  updateProposal,
   updateProposalStatus,
   convertProposalToEstimate,
   listEstimates,
+  getEstimateById,
   createEstimate,
+  updateEstimate,
   updateEstimateStatus,
   convertEstimateToInvoice,
   listPayments,
@@ -89,11 +93,15 @@ router.get("/targets", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "
 router.post("/targets", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createTarget);
 router.delete("/targets/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), deleteTarget);
 router.get("/proposals", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), listProposals);
+router.get("/proposals/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), getProposalById);
 router.post("/proposals", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), createProposal);
+router.put("/proposals/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateProposal);
 router.patch("/proposals/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateProposalStatus);
 router.post("/proposals/:id/convert-estimate", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), convertProposalToEstimate);
 router.get("/estimates", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), listEstimates);
+router.get("/estimates/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), getEstimateById);
 router.post("/estimates", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), createEstimate);
+router.put("/estimates/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateEstimate);
 router.patch("/estimates/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateEstimateStatus);
 router.post("/estimates/:id/convert-invoice", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), convertEstimateToInvoice);
 router.get("/payments", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), listPayments);

@@ -41,6 +41,10 @@ const NOTIFICATION_EVENTS = {
     label: "Lead status changed",
     group: "Leads",
   },
+  lead_reminder_due: {
+    label: "Lead reminder due",
+    group: "Leads",
+  },
 };
 
 const buildDefaultInAppNotificationSettings = () => ({
@@ -90,6 +94,11 @@ const buildDefaultInAppNotificationSettings = () => ({
     SalesStaff: true,
   },
   lead_status_changed: {
+    MainAdmin: true,
+    SalesAdmin: true,
+    SalesStaff: true,
+  },
+  lead_reminder_due: {
     MainAdmin: true,
     SalesAdmin: true,
     SalesStaff: true,

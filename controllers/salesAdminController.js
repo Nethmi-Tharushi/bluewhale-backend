@@ -25,6 +25,8 @@ const {
 
 const hasFullSalesScope = (admin) => ["MainAdmin", "SalesAdmin"].includes(String(admin?.role || ""));
 
+const uniqueIds = (values = []) => [...new Set(values.map((value) => String(value?._id || value?.id || value || "").trim()).filter(Boolean))];
+
 const listAccessibleSalesCandidatesById = async (admin) => {
   const candidates = await listAccessibleSalesCandidates(admin);
   return new Map(candidates.map((candidate) => [String(candidate?._id || ""), candidate]));
@@ -69,6 +71,31 @@ const withTaskCrmContext = (task) => {
     linkedLeadId: crmContext?.linkedLeadId || null,
     crmContext,
   };
+};
+
+const resolveTaskCandidateFromLinkedLead = async ({ linkedLeadId, candidateType, candidate, managedCandidateId, agent, req }) => {
+  const normalizedLinkedLeadId = String(linkedLeadId || "").trim();
+  if (!normalizedLinkedLeadId || !mongoose.Types.ObjectId.isValid(normalizedLinkedLeadId)) {
+    return null;
+  }
+
+  const lead = await Lead.findById(normalizedLinkedLeadId).select("_id linkedUser portalAccountType status").lean();
+  if (!lead) return null;
+
+  const inferredType = String(candidateType || "").trim().toUpperCase() || (lead.portalAccountType === "agent" ? "B2B" : "B2C");
+  const inferredCandidateId = String(candidate || managedCandidateId || lead.linkedUser || "").trim();
+  const inferredAgentId = String(agent || "").trim();
+
+    const fallbackResolution = await resolveAccessibleSalesCandidate({
+      admin: req.admin,
+      candidateType: inferredType,
+      candidateId: inferredType === "B2C" ? inferredCandidateId : undefined,
+      managedCandidateId: inferredType === "B2B" ? inferredCandidateId : undefined,
+      agentId: inferredAgentId,
+      linkedLeadId: normalizedLinkedLeadId,
+    }).catch(() => null);
+
+  return fallbackResolution;
 };
 
 const resolveTaskLinkingPayload = async (body = {}) => {
@@ -1203,13 +1230,7 @@ const getSalesAdminTasks = async (req, res) => {
         });
       });
 
-      taskFilter = {
-        $or: [
-          { assignedBy: salesAdminId },
-          { candidateType: 'B2C', candidate: { $in: b2cCandidateIds } },
-          { candidateType: 'B2B', managedCandidateId: { $in: managedCandidateIds } },
-        ],
-      };
+      taskFilter = {};
     } else {
       const salesTaskAccess = await buildAccessibleSalesTaskAccess(req.admin);
       const {
@@ -1246,18 +1267,48 @@ const getSalesAdminTasks = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    const linkedLeadIds = uniqueIds(tasks.map((task) => task.linkedLeadId).filter(Boolean));
+    const linkedLeadLookup = linkedLeadIds.length
+      ? new Map(
+          (await Lead.find({ _id: { $in: linkedLeadIds } })
+            .select("_id name email phone linkedUser portalAccountType")
+            .populate("linkedUser", "name email phone")
+            .lean()).map((lead) => [String(lead._id), lead])
+        )
+      : new Map();
+
     // 🔥 Add managed candidate name to B2B tasks
     const tasksWithCandidateNames = tasks.map(task => {
+      let candidateName = "";
+
       if (task.candidateType === 'B2B' && task.managedCandidateId) {
         const mcData = managedCandidateMap.get(task.managedCandidateId.toString());
         if (mcData) {
-          // Add candidateName for table display
-          task.candidateName = mcData.name;
+          candidateName = mcData.name || "";
         }
-      } else if (task.candidateType === 'B2C' && task.candidate) {
-        // Add candidateName for B2C
-        task.candidateName = task.candidate.name;
       }
+
+      if (!candidateName && task.candidate?.name) {
+        candidateName = task.candidate.name;
+      }
+
+      if (!candidateName && task.linkedLeadId) {
+        const linkedLead = linkedLeadLookup.get(String(task.linkedLeadId));
+        candidateName = linkedLead?.linkedUser?.name || linkedLead?.name || linkedLead?.email || linkedLead?.phone || "";
+
+        if (!task.candidate && linkedLead?.linkedUser?._id) {
+          task.candidate = {
+            _id: String(linkedLead.linkedUser._id),
+            name: linkedLead.linkedUser.name || "",
+            email: linkedLead.linkedUser.email || "",
+          };
+        }
+      }
+
+      if (candidateName) {
+        task.candidateName = candidateName;
+      }
+
       return withTaskCrmContext(task);
     });
 
@@ -1296,15 +1347,34 @@ const createSalesAdminTask = async (req, res) => {
       notes
     } = req.body;
 
-    const resolvedCandidate = await resolveAccessibleSalesCandidate({
+    const taskLinking = await resolveTaskLinkingPayload(req.body);
+
+    let resolvedCandidate = await resolveAccessibleSalesCandidate({
       admin: req.admin,
       candidateType,
       candidateId: candidate || req.body.candidateId,
       managedCandidateId: managedCandidateId || candidate || req.body.candidateId,
       agentId: agent || req.body.agentId,
+      linkedLeadId: taskLinking.linkedLeadId,
     });
 
-    const taskLinking = await resolveTaskLinkingPayload(req.body);
+    const needsLeadFallback =
+      resolvedCandidate?.success &&
+      (
+        (resolvedCandidate.candidateType === "B2C" && !resolvedCandidate.candidateId) ||
+        (resolvedCandidate.candidateType === "B2B" && !resolvedCandidate.managedCandidateId)
+      );
+
+    if ((needsLeadFallback || !resolvedCandidate?.success) && (!candidate && !managedCandidateId && !req.body.candidateId && !agent && !req.body.agentId)) {
+      const fallbackResolution = await resolveTaskCandidateFromLinkedLead({
+        linkedLeadId: req.body.linkedLeadId,
+        candidateType,
+        req,
+      });
+      if (fallbackResolution?.success) {
+        resolvedCandidate = fallbackResolution;
+      }
+    }
 
     if (!resolvedCandidate.success) {
       return res.status(resolvedCandidate.statusCode || 400).json({
@@ -1364,7 +1434,9 @@ const createSalesAdminTask = async (req, res) => {
     }
 
     if (resolvedCandidate.candidateType === 'B2C') {
-      taskData.candidate = resolvedCandidate.candidateId;
+      if (resolvedCandidate.candidateId && mongoose.Types.ObjectId.isValid(resolvedCandidate.candidateId)) {
+        taskData.candidate = resolvedCandidate.candidateId;
+      }
     } else if (resolvedCandidate.candidateType === 'B2B') {
       taskData.managedCandidateId = resolvedCandidate.managedCandidateId;
       taskData.agent = resolvedCandidate.agentId;

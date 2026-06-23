@@ -97,6 +97,34 @@ const toLeadReference = async (value = "", req) => {
   }).select("_id name email phone address company status linkedUser portalAccountType");
 };
 
+const resolveCustomerPayload = async (baseCustomer = {}, incomingCustomer = {}, req) => {
+  const linkedLeadId = String(incomingCustomer.leadId || baseCustomer.leadId || "").trim();
+  const linkedLead = linkedLeadId ? await toLeadReference(linkedLeadId, req) : null;
+
+  const candidateType =
+    linkedLead?.portalAccountType === "agent"
+      ? "B2B"
+      : linkedLead?.portalAccountType === "candidate"
+        ? "B2C"
+        : incomingCustomer.candidateType || baseCustomer.candidateType || "Other";
+
+  const recordType = linkedLead
+    ? (CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(linkedLead.status, "")) ? "customer" : "lead")
+    : incomingCustomer.recordType || baseCustomer.recordType || "other";
+
+  return {
+    name: String(linkedLead?.name || incomingCustomer.name || baseCustomer.name || "").trim(),
+    email: String(linkedLead?.email || incomingCustomer.email || baseCustomer.email || "").trim().toLowerCase(),
+    phone: String(linkedLead?.phone || incomingCustomer.phone || baseCustomer.phone || "").trim(),
+    company: String(linkedLead?.company || incomingCustomer.company || baseCustomer.company || "").trim(),
+    address: String(linkedLead?.address || incomingCustomer.address || baseCustomer.address || "").trim(),
+    leadId: linkedLead?._id || baseCustomer.leadId || incomingCustomer.leadId || null,
+    candidateId: linkedLead?.linkedUser || baseCustomer.candidateId || incomingCustomer.candidateId || null,
+    candidateType,
+    recordType,
+  };
+};
+
 const mapAdminUser = (user) => ({
   _id: user?._id,
   name: user?.name || "",
@@ -420,12 +448,26 @@ const listProposals = asyncHandler(async (req, res) => {
   return res.json({ success: true, data: proposals });
 });
 
+const getProposalById = asyncHandler(async (req, res) => {
+  const proposal = await SalesProposal.findOne({
+    _id: req.params.id,
+    ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+  })
+    .populate("ownerAdmin", "name email role")
+    .populate("estimateId", "_id estimateNumber status")
+    .lean();
+
+  if (!proposal) return res.status(404).json({ message: "Proposal not found" });
+  return res.json({ success: true, data: proposal });
+});
+
 const createProposal = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
   const body = req.body || {};
   const customer = body.customer || {};
   const status = body.status || "Draft";
-  const linkedLead = await toLeadReference(customer.leadId, req);
+  const linkedLeadId = String(body.linkedLeadId || customer.leadId || "").trim();
+  const linkedLead = linkedLeadId ? await toLeadReference(linkedLeadId, req) : null;
   if ((!linkedLead?.name && !customer.name) || (!linkedLead?.email && !customer.email) || !body.title || !body.issueDate || !body.validUntil) {
     return res.status(400).json({ message: "Customer, title, issue date, and validity date are required" });
   }
@@ -439,20 +481,20 @@ const createProposal = asyncHandler(async (req, res) => {
     teamAdmin: scope.managerId,
     ownerAdmin: scope.actorId,
     createdBy: scope.actorId,
-    customer: {
-      name: linkedLead?.name || customer.name,
-      email: linkedLead?.email || customer.email,
-      phone: linkedLead?.phone || customer.phone || "",
-      company: linkedLead?.company || customer.company || "",
-      address: linkedLead?.address || customer.address || "",
-      leadId: linkedLead?._id || customer.leadId || null,
-      candidateId: linkedLead?.linkedUser || customer.candidateId || null,
-      candidateType:
-        linkedLead?.portalAccountType === "agent"
-          ? "B2B"
-          : linkedLead?.portalAccountType === "candidate"
-            ? "B2C"
-            : customer.candidateType || "Other",
+      customer: {
+        name: linkedLead?.name || customer.name,
+        email: linkedLead?.email || customer.email,
+        phone: linkedLead?.phone || customer.phone || "",
+        company: linkedLead?.company || customer.company || "",
+        address: linkedLead?.address || customer.address || "",
+        leadId: linkedLead?._id || customer.leadId || linkedLeadId || null,
+        candidateId: linkedLead?.linkedUser || customer.candidateId || null,
+        candidateType:
+          linkedLead?.portalAccountType === "agent"
+            ? "B2B"
+            : linkedLead?.portalAccountType === "candidate"
+              ? "B2C"
+            : customer.candidateType || body.candidateType || "Other",
       recordType: linkedLead ? (CUSTOMER_LEAD_STATUSES.has(normalizeLeadStatus(linkedLead.status, "")) ? "customer" : "lead") : customer.recordType || "other",
     },
     title: body.title,
@@ -465,6 +507,50 @@ const createProposal = asyncHandler(async (req, res) => {
   });
 
   return res.status(201).json({ success: true, data: proposal });
+});
+
+const updateProposal = asyncHandler(async (req, res) => {
+  const proposal = await SalesProposal.findOne({
+    _id: req.params.id,
+    ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+  });
+  if (!proposal) return res.status(404).json({ message: "Proposal not found" });
+
+  const body = req.body || {};
+  const incomingCustomer = body.customer || {};
+  const customer = await resolveCustomerPayload(proposal.customer?.toObject?.() || proposal.customer || {}, incomingCustomer, req);
+
+  if (customer.name) proposal.customer.name = customer.name;
+  if (customer.email) proposal.customer.email = customer.email;
+  proposal.customer.phone = customer.phone;
+  proposal.customer.company = customer.company;
+  proposal.customer.address = customer.address;
+  proposal.customer.leadId = customer.leadId;
+  proposal.customer.candidateId = customer.candidateId;
+  proposal.customer.candidateType = customer.candidateType;
+  proposal.customer.recordType = customer.recordType;
+
+  if (body.title !== undefined) proposal.title = String(body.title || "").trim();
+  if (body.issueDate) proposal.issueDate = body.issueDate;
+  if (body.validUntil) proposal.validUntil = body.validUntil;
+  if (body.currency) proposal.currency = body.currency;
+  if (body.notes !== undefined) proposal.notes = String(body.notes || "");
+
+  if (body.items !== undefined) {
+    const totals = withTotals({ items: body.items });
+    proposal.items = totals.items;
+    proposal.subtotal = totals.subtotal;
+    proposal.discountTotal = totals.discountTotal;
+    proposal.taxTotal = totals.taxTotal;
+    proposal.grandTotal = totals.grandTotal;
+  }
+
+  if (body.status && PROPOSAL_STATUSES.includes(body.status)) {
+    proposal.status = body.status;
+  }
+
+  await proposal.save();
+  return res.json({ success: true, data: proposal });
 });
 
 const updateProposalStatus = asyncHandler(async (req, res) => {
@@ -528,6 +614,20 @@ const listEstimates = asyncHandler(async (req, res) => {
   return res.json({ success: true, data: estimates });
 });
 
+const getEstimateById = asyncHandler(async (req, res) => {
+  const estimate = await SalesEstimate.findOne({
+    _id: req.params.id,
+    ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+  })
+    .populate("ownerAdmin", "name email role")
+    .populate("proposalId", "_id proposalNumber status")
+    .populate("invoiceId", "_id invoiceNumber status")
+    .lean();
+
+  if (!estimate) return res.status(404).json({ message: "Estimate not found" });
+  return res.json({ success: true, data: estimate });
+});
+
 const createEstimate = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
   const body = req.body || {};
@@ -573,6 +673,50 @@ const createEstimate = asyncHandler(async (req, res) => {
   });
 
   return res.status(201).json({ success: true, data: estimate });
+});
+
+const updateEstimate = asyncHandler(async (req, res) => {
+  const estimate = await SalesEstimate.findOne({
+    _id: req.params.id,
+    ...buildOwnedFilter(req, "ownerAdmin", "teamAdmin"),
+  });
+  if (!estimate) return res.status(404).json({ message: "Estimate not found" });
+
+  const body = req.body || {};
+  const incomingCustomer = body.customer || {};
+  const customer = await resolveCustomerPayload(estimate.customer?.toObject?.() || estimate.customer || {}, incomingCustomer, req);
+
+  if (customer.name) estimate.customer.name = customer.name;
+  if (customer.email) estimate.customer.email = customer.email;
+  estimate.customer.phone = customer.phone;
+  estimate.customer.company = customer.company;
+  estimate.customer.address = customer.address;
+  estimate.customer.leadId = customer.leadId;
+  estimate.customer.candidateId = customer.candidateId;
+  estimate.customer.candidateType = customer.candidateType;
+  estimate.customer.recordType = customer.recordType;
+
+  if (body.title !== undefined) estimate.title = String(body.title || "").trim();
+  if (body.issueDate) estimate.issueDate = body.issueDate;
+  if (body.validUntil) estimate.validUntil = body.validUntil;
+  if (body.currency) estimate.currency = body.currency;
+  if (body.notes !== undefined) estimate.notes = String(body.notes || "");
+
+  if (body.items !== undefined) {
+    const totals = withTotals({ items: body.items });
+    estimate.items = totals.items;
+    estimate.subtotal = totals.subtotal;
+    estimate.discountTotal = totals.discountTotal;
+    estimate.taxTotal = totals.taxTotal;
+    estimate.grandTotal = totals.grandTotal;
+  }
+
+  if (body.status && ESTIMATE_STATUSES.includes(body.status)) {
+    estimate.status = body.status;
+  }
+
+  await estimate.save();
+  return res.json({ success: true, data: estimate });
 });
 
 const updateEstimateStatus = asyncHandler(async (req, res) => {
@@ -671,11 +815,15 @@ module.exports = {
   createTarget,
   deleteTarget,
   listProposals,
+  getProposalById,
   createProposal,
+  updateProposal,
   updateProposalStatus,
   convertProposalToEstimate,
   listEstimates,
+  getEstimateById,
   createEstimate,
+  updateEstimate,
   updateEstimateStatus,
   convertEstimateToInvoice,
   listPayments,

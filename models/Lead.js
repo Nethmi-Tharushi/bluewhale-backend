@@ -31,6 +31,23 @@ const leadSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    statusUpdatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AdminUser",
+      default: null,
+      index: true,
+    },
+    statusUpdatedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AdminUser",
+      default: null,
+      index: true,
+    },
     leadNumber: {
       type: Number,
       required: true,

@@ -23,6 +23,7 @@ const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const { Server } = require("socket.io");
 require("./jobs/meetingReminderJob");
+require("./jobs/leadReminderJob");
 const { startWhatsAppAutomationWorker } = require("./services/whatsappAutomationService");
 const { startWhatsAppCampaignWorker } = require("./services/whatsappCampaignRuntimeService");
 const { startMetaLeadAdsPollingWorker } = require("./services/metaLeadAdsPollingService");
@@ -167,6 +168,7 @@ const io = new Server(server, {
 });
 
 app.set("io", io);
+global.__crm_io = io;
 
 io.on("connection", (socket) => {
   console.log("🔗 Client connected:", socket.id);

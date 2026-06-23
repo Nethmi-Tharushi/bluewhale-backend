@@ -11,6 +11,9 @@ const {
   updateLead,
   updateLeadStatus,
   addLeadNote,
+  listLeadReminders,
+  createLeadReminder,
+  deleteLeadReminder,
   deleteLead,
   syncPortalUsersToLeads,
 } = require("../controllers/leadController");
@@ -21,6 +24,9 @@ router.post("/sync-portal-users", protectAdmin, authorizeAdmin("MainAdmin", "Sal
 router.post("/bulk-assign", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), bulkAssignLeads);
 router.get("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getLeadById);
 router.post("/:id/notes", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), addLeadNote);
+router.get("/:id/reminders", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listLeadReminders);
+router.post("/:id/reminders", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createLeadReminder);
+router.delete("/:id/reminders/:reminderId", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), deleteLeadReminder);
 router.post("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createLead);
 router.patch("/:id/assign", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), assignLead);
 router.put("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateLead);

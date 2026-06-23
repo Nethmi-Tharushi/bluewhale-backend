@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const Application = require("../models/Application");
+const Lead = require("../models/Lead");
 const User = require("../models/User");
 
 const FULL_ACCESS_ROLES = ["MainAdmin", "SalesAdmin"];
@@ -186,11 +187,13 @@ const resolveAccessibleSalesCandidate = async ({
   candidateId,
   managedCandidateId,
   agentId,
+  linkedLeadId,
 }) => {
   const requestedType = String(candidateType || "").trim().toUpperCase();
   const normalizedCandidateId = String(candidateId || "");
   const normalizedManagedCandidateId = String(managedCandidateId || normalizedCandidateId);
   const normalizedAgentId = String(agentId || "");
+  const normalizedLinkedLeadId = String(linkedLeadId || "");
   const fullAccess = hasFullSalesCandidateAccess(admin);
   const visibleAssigneeIds = getVisibleSalesAssigneeIds(admin);
   const baseDetails = {
@@ -198,6 +201,7 @@ const resolveAccessibleSalesCandidate = async ({
     candidateType: requestedType,
     userId: toIdString(admin?._id),
     agentId: normalizedAgentId,
+    linkedLeadId: normalizedLinkedLeadId,
   };
 
   if (!["B2C", "B2B"].includes(requestedType)) {
@@ -209,7 +213,44 @@ const resolveAccessibleSalesCandidate = async ({
   }
 
   if (requestedType === "B2C") {
-    if (!mongoose.Types.ObjectId.isValid(normalizedCandidateId)) {
+    let resolvedCandidateId = normalizedCandidateId;
+    let linkedLead = null;
+    if (!resolvedCandidateId && mongoose.Types.ObjectId.isValid(normalizedLinkedLeadId)) {
+      linkedLead = await Lead.findById(normalizedLinkedLeadId).select("_id name email phone linkedUser portalAccountType").lean();
+      resolvedCandidateId = String(linkedLead?.linkedUser || "");
+      if (!resolvedCandidateId) {
+        const leadEmail = String(linkedLead?.email || "").trim().toLowerCase();
+        const leadPhone = String(linkedLead?.phone || "").trim();
+        const leadName = String(linkedLead?.name || "").trim();
+        const candidateMatch = await User.findOne({
+          userType: "candidate",
+          $or: [
+            leadEmail ? { email: leadEmail } : null,
+            leadPhone ? { phone: leadPhone } : null,
+            leadName ? { name: leadName } : null,
+          ].filter(Boolean),
+        })
+          .select("_id name email phone assignedTo")
+          .populate("assignedTo", "name email role");
+
+        if (candidateMatch) {
+          resolvedCandidateId = String(candidateMatch._id || "");
+        }
+      }
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(resolvedCandidateId)) {
+      if (mongoose.Types.ObjectId.isValid(normalizedLinkedLeadId)) {
+        return {
+          success: true,
+          candidateType: "B2C",
+          candidate: null,
+          candidateId: "",
+          linkedLeadId: normalizedLinkedLeadId,
+          assignedTo: null,
+        };
+      }
+
       return buildCandidateAccessError({
         message: "Valid candidateId is required for B2C task creation",
         statusCode: 400,
@@ -218,7 +259,7 @@ const resolveAccessibleSalesCandidate = async ({
     }
 
     const candidate = await User.findOne({
-      _id: normalizedCandidateId,
+      _id: resolvedCandidateId,
       userType: "candidate",
     })
       .select("name email phone assignedTo")
