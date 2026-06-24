@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const cloudinary = require("../config/cloudinary");
 const AdminUser = require('../models/AdminUser');
 const { loadWhatsAppMetaConnection, syncWhatsAppMetaConnectionCache } = require("../services/whatsappMetaConnectionService");
-const { sendAdminLoginOtpEmail } = require("../services/emailService");
+const { sendAdminLoginOtpEmail, sendAdminAccountWelcomeEmail } = require("../services/emailService");
 const { sendMessage: sendWhatsAppMessage } = require("../services/whatsappService");
 const {
   normalizeMetaLeadAdsConnection,
@@ -421,6 +421,26 @@ function handleAdminManagementError(res, err) {
 exports.registerAdmin = async (req, res) => {
   try {
     const admin = await createAdminRecord(req.body || {}, req.admin);
+    const loginUrl =
+      String(
+        req.body?.loginUrl ||
+        process.env.CRM_LOGIN_URL ||
+        process.env.PUBLIC_CRM_URL ||
+        "https://app.bluewhalemigration.com/crm/"
+      ).trim();
+
+    try {
+      await sendAdminAccountWelcomeEmail({
+        to: admin.email,
+        name: admin.name,
+        role: admin.role,
+        password: String(req.body?.password || "").trim(),
+        loginUrl,
+      });
+    } catch (emailError) {
+      console.error("Failed to send new admin welcome email:", emailError.message || emailError);
+    }
+
     res.status(201).json({
       message: 'Admin registered successfully',
       admin,
@@ -767,14 +787,16 @@ exports.getRolePermissions = async (_req, res) => {
 exports.updateMyAdminProfile = async (req, res) => {
   try {
     const adminId = req.admin?._id;
-    const { name, email, settings, billing } = req.body;
+    const { name, email, phone, settings, billing } = req.body;
     let metaLeadAdsSettingsUpdated = false;
 
     const admin = await AdminUser.findById(adminId);
     if (!admin) return res.status(404).json({ message: 'Admin not found' });
+    const isSalesStaff = String(admin.role || "") === "SalesStaff";
 
     if (typeof name === 'string') admin.name = name;
-    if (typeof email === 'string') admin.email = email;
+    if (!isSalesStaff && typeof email === 'string') admin.email = email;
+    if (typeof phone === 'string') admin.phone = phone;
 
     if (settings && typeof settings === 'object') {
       admin.settings = admin.settings || {};
@@ -791,7 +813,7 @@ exports.updateMyAdminProfile = async (req, res) => {
           ...settings.prefs,
         };
       }
-      if (settings.rolePermissions && typeof settings.rolePermissions === 'object') {
+      if (!isSalesStaff && settings.rolePermissions && typeof settings.rolePermissions === 'object') {
         admin.settings.rolePermissions = mergeRolePermissionPatch(admin.settings.rolePermissions || {}, settings.rolePermissions);
       }
       if (
@@ -802,25 +824,25 @@ exports.updateMyAdminProfile = async (req, res) => {
         admin.settings.inAppNotifications = mergeInAppNotificationSettings(settings.inAppNotifications);
         admin.markModified("settings.inAppNotifications");
       }
-      if (settings.whatsappProfile && typeof settings.whatsappProfile === "object") {
+      if (!isSalesStaff && settings.whatsappProfile && typeof settings.whatsappProfile === "object") {
         admin.settings.whatsappProfile = {
           ...(admin.settings.whatsappProfile || {}),
           ...settings.whatsappProfile,
         };
       }
-      if (settings.whatsappMetaConnection && typeof settings.whatsappMetaConnection === "object") {
+      if (!isSalesStaff && settings.whatsappMetaConnection && typeof settings.whatsappMetaConnection === "object") {
         admin.settings.whatsappMetaConnection = {
           ...(admin.settings.whatsappMetaConnection || {}),
           ...settings.whatsappMetaConnection,
         };
       }
-      if (settings.whatsappAiIntentAutomation && typeof settings.whatsappAiIntentAutomation === "object") {
+      if (!isSalesStaff && settings.whatsappAiIntentAutomation && typeof settings.whatsappAiIntentAutomation === "object") {
         admin.settings.whatsappAiIntentAutomation = {
           ...(admin.settings.whatsappAiIntentAutomation || {}),
           ...settings.whatsappAiIntentAutomation,
         };
       }
-      if (settings.metaLeadAdsConnection && typeof settings.metaLeadAdsConnection === "object") {
+      if (!isSalesStaff && settings.metaLeadAdsConnection && typeof settings.metaLeadAdsConnection === "object") {
         admin.settings.metaLeadAdsConnection = prepareMetaLeadAdsConnectionForPersistence({
           ...(admin.settings.metaLeadAdsConnection || {}),
           ...settings.metaLeadAdsConnection,
@@ -829,7 +851,7 @@ exports.updateMyAdminProfile = async (req, res) => {
       }
     }
 
-    if (billing && typeof billing === 'object') {
+    if (!isSalesStaff && billing && typeof billing === 'object') {
       admin.billing = { ...(admin.billing || {}), ...billing };
     }
 

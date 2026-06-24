@@ -283,6 +283,9 @@ const formatLeadReminderForApi = (reminder) => {
     remindAt: plain.remindAt || null,
     status: String(plain.status || "Pending"),
     sentAt: plain.sentAt || null,
+    emailDeliveryStatus: String(plain.emailDeliveryStatus || "Pending"),
+    emailSentAt: plain.emailSentAt || null,
+    emailError: String(plain.emailError || ""),
     createdAt: plain.createdAt || null,
     updatedAt: plain.updatedAt || null,
   };

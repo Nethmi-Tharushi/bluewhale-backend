@@ -39,6 +39,20 @@ const leadReminderSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    emailDeliveryStatus: {
+      type: String,
+      enum: ["Pending", "Sent", "Failed", "Skipped"],
+      default: "Pending",
+    },
+    emailSentAt: {
+      type: Date,
+      default: null,
+    },
+    emailError: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   { timestamps: true }
 );

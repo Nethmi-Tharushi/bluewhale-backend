@@ -10,6 +10,10 @@ const getFromAddress = () => {
   return process.env.EMAIL_FROM || process.env.EMAIL_USER;
 };
 
+const buildDisplayFromAddress = (label, fromAddress) => {
+  return `"${label}" <${fromAddress}>`;
+};
+
 const createTransporter = () => {
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT || 587);
@@ -55,6 +59,85 @@ const assertEmailConfigured = () => {
   }
 };
 
+const mapEmailErrorMessage = (error, fallbackMessage) => {
+  return error?.responseCode === 535
+    ? "SMTP authentication failed. Check EMAIL_USER and EMAIL_PASS (Gmail requires App Password)."
+    : error?.code === 'EAUTH'
+      ? 'Email authentication failed. Verify SMTP credentials.'
+      : error?.code === 'ENOTFOUND'
+        ? 'SMTP host not found. Verify SMTP_HOST.'
+        : error?.code === 'ETIMEDOUT'
+          ? 'Email service connection timed out. Verify Resend or SMTP connectivity.'
+          : error?.message || fallbackMessage;
+};
+
+const sendEmailWithFallback = async ({
+  fromAddress,
+  smtpFrom,
+  to,
+  subject,
+  html,
+  resendAttachments,
+  smtpAttachments,
+  verifySmtp = false,
+  resendErrorMessage = "Resend failed to send email",
+}) => {
+  const resend = getResendClient();
+  let resendFailure = null;
+
+  if (resend) {
+    try {
+      const { data, error } = await resend.emails.send({
+        from: fromAddress,
+        to,
+        subject,
+        html,
+        ...(Array.isArray(resendAttachments) && resendAttachments.length
+          ? { attachments: resendAttachments }
+          : {}),
+      });
+
+      if (error) {
+        const resendError = new Error(error.message || resendErrorMessage);
+        resendError.statusCode = Number(error.statusCode || error.status || 500);
+        throw resendError;
+      }
+
+      return { messageId: data?.id, provider: "resend" };
+    } catch (error) {
+      resendFailure = error;
+      console.error(`Resend send failed for "${subject}". Falling back to SMTP if available:`, error.message || error);
+    }
+  }
+
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    if (resendFailure) {
+      throw resendFailure;
+    }
+
+    const err = new Error("Email service is not configured. Set RESEND_API_KEY or SMTP credentials.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const transporter = createTransporter();
+  if (verifySmtp) {
+    await transporter.verify();
+  }
+
+  const info = await transporter.sendMail({
+    from: smtpFrom,
+    to,
+    subject,
+    html,
+    ...(Array.isArray(smtpAttachments) && smtpAttachments.length
+      ? { attachments: smtpAttachments }
+      : {}),
+  });
+
+  return { messageId: info?.messageId, provider: "smtp" };
+};
+
 const resolveClientUrl = (candidate) => {
   const raw = String(
     candidate ||
@@ -78,6 +161,7 @@ const sanitizeRedirectTarget = (rawTarget) => {
 
 const sendPasswordResetEmail = async (email, resetToken, userType, options = {}) => {
   try {
+    assertEmailConfigured();
     const clientUrl = resolveClientUrl(options.clientUrl) || resolveClientUrl(process.env.CLIENT_URL);
     if (!clientUrl) {
       throw new Error("CLIENT_URL is not configured for password reset links.");
@@ -185,47 +269,20 @@ const sendPasswordResetEmail = async (email, resetToken, userType, options = {})
       </html>
     `;
 
-    const resend = getResendClient();
-    if (resend) {
-      const { data, error } = await resend.emails.send({
-        from: fromAddress,
-        to: email,
-        subject: 'Password Reset Request - Job Portal',
-        html,
-      });
-
-      if (error) {
-        throw new Error(error.message || 'Resend failed to send reset email');
-      }
-
-      console.log('Password reset email sent via Resend:', data?.id);
-      return { success: true, messageId: data?.id };
-    }
-
-    const transporter = createTransporter();
-
-    const mailOptions = {
-      from: `"Job Portal" <${fromAddress}>`,
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Job Portal", fromAddress),
       to: email,
       subject: 'Password Reset Request - Job Portal',
       html,
-    };
+      resendErrorMessage: 'Resend failed to send reset email',
+    });
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('Password reset email sent:', info.messageId);
-    return { success: true, messageId: info.messageId };
+    console.log(`Password reset email sent via ${result.provider}:`, result.messageId);
+    return { success: true, messageId: result.messageId, provider: result.provider };
   } catch (error) {
     console.error('Email sending failed:', error);
-    const message =
-      error?.responseCode === 535
-        ? "SMTP authentication failed. Check EMAIL_USER and EMAIL_PASS (Gmail requires App Password)."
-        : error?.code === 'EAUTH'
-          ? 'Email authentication failed. Verify SMTP credentials.'
-          : error?.code === 'ENOTFOUND'
-            ? 'SMTP host not found. Verify SMTP_HOST.'
-            : error?.code === 'ETIMEDOUT'
-              ? 'Email service connection timed out. Configure RESEND_API_KEY and EMAIL_FROM on production.'
-            : error?.message || 'Failed to send reset email';
+    const message = mapEmailErrorMessage(error, 'Failed to send reset email');
     const err = new Error(message);
     err.statusCode = error?.statusCode || 500;
     throw err;
@@ -254,30 +311,18 @@ const sendAdminLoginOtpEmail = async ({ to, name, otpCode, expiresInMinutes = 5,
       </div>
     `;
 
-    const resend = getResendClient();
-    if (resend) {
-      const { data, error } = await resend.emails.send({
-        from: fromAddress,
-        to,
-        subject,
-        html,
-      });
-      if (error) {
-        throw new Error(error.message || "Resend failed to send OTP email");
-      }
-      return { success: true, messageId: data?.id, provider: "resend" };
-    }
-
-    const transporter = createTransporter();
-    const info = await transporter.sendMail({
-      from: `"Blue Whale CRM" <${fromAddress}>`,
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Blue Whale CRM", fromAddress),
       to,
       subject,
       html,
+      resendErrorMessage: "Resend failed to send OTP email",
     });
-    return { success: true, messageId: info?.messageId, provider: "smtp" };
+
+    return { success: true, messageId: result.messageId, provider: result.provider };
   } catch (error) {
-    const err = new Error(error?.message || "Failed to send OTP email");
+    const err = new Error(mapEmailErrorMessage(error, "Failed to send OTP email"));
     err.statusCode = error?.statusCode || 500;
     throw err;
   }
@@ -286,12 +331,8 @@ const sendAdminLoginOtpEmail = async ({ to, name, otpCode, expiresInMinutes = 5,
 // Meeting reminder function
 const sendMeetingReminderEmail = async (user, meeting) => {
   try {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      throw new Error('Email credentials not configured');
-    }
-
-    const transporter = createTransporter();
-    await transporter.verify();
+    assertEmailConfigured();
+    const fromAddress = getFromAddress();
 
     // email content based on user type
     let greeting = `Hello ${user.name},`;
@@ -312,11 +353,8 @@ const sendMeetingReminderEmail = async (user, meeting) => {
         `
       : "";
 
-    const mailOptions = {
-      from: `"Job Portal" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: `Reminder: Meeting "${meeting.title}"`,
-      html: `
+    const subject = `Reminder: Meeting "${meeting.title}"`;
+    const html = `
         <div style="font-family: Arial, sans-serif; padding: 20px;">
           <h2>${greeting}</h2>
           <p>This is a reminder for ${meetingContext}:</p>
@@ -331,21 +369,32 @@ const sendMeetingReminderEmail = async (user, meeting) => {
           ${managedCandidateDetailsHtml}
           <p>Thanks,<br/>Job Portal Team</p>
         </div>
-      `,
-    };
+      `;
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`Meeting reminder sent to ${user.email}: ${info.messageId}`);
-    return info;
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Job Portal", fromAddress),
+      to: user.email,
+      subject,
+      html,
+      verifySmtp: true,
+      resendErrorMessage: "Resend failed to send meeting reminder email",
+    });
+
+    console.log(`Meeting reminder sent to ${user.email} via ${result.provider}: ${result.messageId}`);
+    return result;
   } catch (error) {
     console.error(`Failed to send reminder to ${user.email}:`, error);
-    throw error; 
+    const err = new Error(mapEmailErrorMessage(error, "Failed to send meeting reminder email"));
+    err.statusCode = error?.statusCode || 500;
+    throw err; 
   }
 };
 
 const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = null, context = null) => {
   try {
-    const transporter = createTransporter();
+    assertEmailConfigured();
+    const fromAddress = getFromAddress();
     
     // Use provided recipient email or fallback to inquiry email
     const toEmail = recipientEmail || inquiry.email;
@@ -360,11 +409,8 @@ const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = 
         `
       : "";
 
-    const mailOptions = {
-      from: `"Blue Whale Migration" <${process.env.EMAIL_USER}>`,
-      to: toEmail,
-      subject: `Response to your inquiry: ${inquiry.subject}`,
-      html: `
+    const subject = `Response to your inquiry: ${inquiry.subject}`;
+    const html = `
         <!DOCTYPE html>
         <html>
           <head>
@@ -388,19 +434,29 @@ const sendInquiryResponseEmail = async (inquiry, replyMessage, recipientEmail = 
               ${managedCandidateDetailsHtml}
 
               <div class="footer">
-                <p>Thank you for reaching out to us.<br/>— Blue Whale Migration Team</p>
+                <p>Thank you for reaching out to us.<br/>Blue Whale Migration Team</p>
               </div>
             </div>
           </body>
         </html>
-      `,
-    };
+      `;
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`Inquiry response email sent to ${toEmail}: ${info.messageId}`);
-    return info;
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Blue Whale Migration", fromAddress),
+      to: toEmail,
+      subject,
+      html,
+      resendErrorMessage: "Resend failed to send inquiry response email",
+    });
+
+    console.log(`Inquiry response email sent to ${toEmail} via ${result.provider}: ${result.messageId}`);
+    return result;
   } catch (error) {
     console.error("Failed to send inquiry response email:", error);
+    const err = new Error(mapEmailErrorMessage(error, "Failed to send inquiry response email"));
+    err.statusCode = error?.statusCode || 500;
+    throw err;
   }
 };
 
@@ -430,54 +486,35 @@ const sendInvoiceEmail = async ({ to, invoiceNumber, customerName, pdfBuffer, co
       </div>
     `;
 
-    const resend = getResendClient();
-    if (resend) {
-      const { data, error } = await resend.emails.send({
-        from: fromAddress,
-        to,
-        subject,
-        html,
-        attachments: [
-          {
-            filename: `${invoiceNumber}.pdf`,
-            content: Buffer.isBuffer(pdfBuffer)
-              ? pdfBuffer.toString("base64")
-              : Buffer.from(pdfBuffer).toString("base64"),
-          },
-        ],
-      });
-
-      if (error) {
-        const err = new Error(error.message || "Resend failed to send invoice email");
-        err.statusCode = Number(error.statusCode || error.status || 500);
-        throw err;
-      }
-
-      return { messageId: data?.id, provider: "resend" };
-    }
-
-    const transporter = createTransporter();
-    await transporter.verify();
-    const info = await transporter.sendMail({
-      from: `"Blue Whale Migration Billing" <${fromAddress}>`,
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Blue Whale Migration Billing", fromAddress),
       to,
       subject,
       html,
-      attachments: [
+      resendAttachments: [
+        {
+          filename: `${invoiceNumber}.pdf`,
+          content: Buffer.isBuffer(pdfBuffer)
+            ? pdfBuffer.toString("base64")
+            : Buffer.from(pdfBuffer).toString("base64"),
+        },
+      ],
+      smtpAttachments: [
         {
           filename: `${invoiceNumber}.pdf`,
           content: pdfBuffer,
           contentType: "application/pdf",
         },
       ],
+      verifySmtp: true,
+      resendErrorMessage: "Resend failed to send invoice email",
     });
-    return info;
+
+    return result;
   } catch (error) {
     console.error("Failed to send invoice email:", error);
-    const message =
-      error?.responseCode === 535
-        ? "SMTP authentication failed. Check EMAIL_USER and EMAIL_PASS (for Gmail use an App Password)."
-        : error?.message || "Failed to send invoice email";
+    const message = mapEmailErrorMessage(error, "Failed to send invoice email");
     const err = new Error(message);
     err.statusCode = error?.statusCode || 500;
     throw err;
@@ -518,30 +555,135 @@ const sendPortalWelcomeEmail = async ({
       </div>
     `;
 
-    const resend = getResendClient();
-    if (resend) {
-      const { data, error } = await resend.emails.send({
-        from: fromAddress,
-        to,
-        subject,
-        html,
-      });
-      if (error) {
-        throw new Error(error.message || "Resend failed to send welcome email");
-      }
-      return { success: true, messageId: data?.id, provider: "resend" };
-    }
-
-    const transporter = createTransporter();
-    const info = await transporter.sendMail({
-      from: `"Blue Whale Migration" <${fromAddress}>`,
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Blue Whale Migration", fromAddress),
       to,
       subject,
       html,
+      resendErrorMessage: "Resend failed to send welcome email",
     });
-    return { success: true, messageId: info?.messageId, provider: "smtp" };
+
+    return { success: true, messageId: result.messageId, provider: result.provider };
   } catch (error) {
-    const err = new Error(error?.message || "Failed to send welcome email");
+    const err = new Error(mapEmailErrorMessage(error, "Failed to send welcome email"));
+    err.statusCode = error?.statusCode || 500;
+    throw err;
+  }
+};
+
+const sendLeadReminderEmail = async ({
+  to,
+  creatorName,
+  leadName,
+  leadEmail = "",
+  leadPhone = "",
+  title,
+  message = "",
+  remindAt,
+}) => {
+  try {
+    assertEmailConfigured();
+    const fromAddress = getFromAddress();
+    const safeName = String(creatorName || "there").trim() || "there";
+    const safeLeadName = String(leadName || "Lead").trim() || "Lead";
+    const subject = `Lead reminder due: ${title || safeLeadName}`;
+    const formattedRemindAt = remindAt
+      ? new Date(remindAt).toLocaleString("en-GB", {
+          year: "numeric",
+          month: "short",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "";
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; padding: 20px; background: #f4f7fb;">
+        <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 24px; border: 1px solid #e5e7eb;">
+          <h2 style="margin: 0 0 12px; color: #1e3a8a;">Lead reminder due</h2>
+          <p style="margin: 0 0 16px; color: #334155;">Hi ${safeName}, this is your scheduled reminder for <strong>${safeLeadName}</strong>.</p>
+          <div style="background:#eff6ff;border-radius:10px;padding:16px;margin:16px 0;">
+            <p style="margin:0 0 8px;color:#0f172a;"><strong>Reminder title:</strong> ${title || safeLeadName}</p>
+            ${formattedRemindAt ? `<p style="margin:0 0 8px;color:#0f172a;"><strong>Scheduled for:</strong> ${formattedRemindAt}</p>` : ""}
+            <p style="margin:0 0 8px;color:#0f172a;"><strong>Lead name:</strong> ${safeLeadName}</p>
+            ${leadEmail ? `<p style="margin:0 0 8px;color:#0f172a;"><strong>Lead email:</strong> ${leadEmail}</p>` : ""}
+            ${leadPhone ? `<p style="margin:0;color:#0f172a;"><strong>Lead phone:</strong> ${leadPhone}</p>` : ""}
+          </div>
+          ${message ? `<div style="background:#f8fafc;border-left:4px solid #1e3a8a;border-radius:8px;padding:14px 16px;color:#334155;"><strong>Note:</strong><br/>${message}</div>` : ""}
+          <p style="margin: 18px 0 0; color: #64748b;">Please follow up on this lead from the CRM dashboard.</p>
+        </div>
+      </div>
+    `;
+
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Blue Whale CRM", fromAddress),
+      to,
+      subject,
+      html,
+      resendErrorMessage: "Resend failed to send lead reminder email",
+    });
+
+    return { success: true, messageId: result.messageId, provider: result.provider };
+  } catch (error) {
+    const err = new Error(mapEmailErrorMessage(error, "Failed to send lead reminder email"));
+    err.statusCode = error?.statusCode || 500;
+    throw err;
+  }
+};
+
+const sendAdminAccountWelcomeEmail = async ({
+  to,
+  name,
+  role,
+  password,
+  loginUrl = "",
+}) => {
+  try {
+    assertEmailConfigured();
+    const fromAddress = getFromAddress();
+    const safeName = String(name || "there").trim() || "there";
+    const safeRole = String(role || "Team Member").trim() || "Team Member";
+    const safePassword = String(password || "").trim();
+    const resolvedLoginUrl = resolveClientUrl(
+      loginUrl ||
+      process.env.CRM_LOGIN_URL ||
+      process.env.PUBLIC_CRM_URL ||
+      "https://app.bluewhalemigration.com/crm/"
+    );
+    const subject = "Your Blue Whale CRM account is ready";
+    const html = `
+      <div style="font-family: Arial, sans-serif; padding: 20px; background: #f4f7fb;">
+        <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 24px; border: 1px solid #e5e7eb;">
+          <h2 style="margin: 0 0 12px; color: #1e3a8a;">Welcome to Blue Whale CRM</h2>
+          <p style="margin: 0 0 16px; color: #334155;">Hi ${safeName}, your CRM account has been created successfully.</p>
+          <div style="background:#eff6ff;border-radius:10px;padding:16px;margin:16px 0;">
+            <p style="margin:0 0 8px;color:#0f172a;"><strong>User role:</strong> ${safeRole}</p>
+            <p style="margin:0 0 8px;color:#0f172a;"><strong>Username:</strong> ${to}</p>
+            <p style="margin:0 0 8px;color:#0f172a;"><strong>Temporary password:</strong> ${safePassword}</p>
+            ${resolvedLoginUrl ? `<p style="margin:0;color:#0f172a;"><strong>Login link:</strong> <a href="${resolvedLoginUrl}">${resolvedLoginUrl}</a></p>` : ""}
+          </div>
+          <div style="background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:14px;margin:18px 0;">
+            Please log in and change your password immediately for security.
+          </div>
+          <p style="margin: 0; color: #64748b;">If you were not expecting this account, please contact Blue Whale Migration support.</p>
+        </div>
+      </div>
+    `;
+
+    const result = await sendEmailWithFallback({
+      fromAddress,
+      smtpFrom: buildDisplayFromAddress("Blue Whale CRM", fromAddress),
+      to,
+      subject,
+      html,
+      resendErrorMessage: "Resend failed to send admin welcome email",
+    });
+
+    return { success: true, messageId: result.messageId, provider: result.provider };
+  } catch (error) {
+    const err = new Error(mapEmailErrorMessage(error, "Failed to send admin welcome email"));
     err.statusCode = error?.statusCode || 500;
     throw err;
   }
@@ -554,4 +696,6 @@ module.exports = {
   sendInvoiceEmail,
   sendAdminLoginOtpEmail,
   sendPortalWelcomeEmail,
+  sendLeadReminderEmail,
+  sendAdminAccountWelcomeEmail,
 };

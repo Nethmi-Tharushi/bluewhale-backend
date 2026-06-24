@@ -112,7 +112,13 @@ const getAccessibleAdminFilter = (actor, { includeManagerForSalesStaff = true } 
     return {
       $or: [
         { _id: actorId },
-        { role: "SalesStaff", reportsTo: actorId },
+        {
+          role: "SalesStaff",
+          $or: [
+            { reportsTo: actorId },
+            { createdBy: actorId },
+          ],
+        },
       ],
     };
   }
@@ -148,7 +154,10 @@ const getManageableAdminFilter = (actor) => {
   if (actorRole === "SalesAdmin") {
     return {
       role: "SalesStaff",
-      reportsTo: actorId,
+      $or: [
+        { reportsTo: actorId },
+        { createdBy: actorId },
+      ],
     };
   }
 
