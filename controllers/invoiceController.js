@@ -243,8 +243,8 @@ const computeFinancials = (payload) => {
 
 const assertSalesAdmin = (req) => {
   ensureSalesActor(req);
-  if (!["MainAdmin", "SalesAdmin"].includes(String(req?.admin?.role || ""))) {
-    const err = new Error("Only MainAdmin or SalesAdmin can manage invoices");
+  if (!["MainAdmin", "SalesAdmin", "SalesStaff"].includes(String(req?.admin?.role || ""))) {
+    const err = new Error("Only MainAdmin, SalesAdmin, or SalesStaff can manage invoices");
     err.statusCode = 403;
     throw err;
   }

@@ -92,25 +92,25 @@ router.get("/overview", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", 
 router.get("/targets", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listTargets);
 router.post("/targets", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createTarget);
 router.delete("/targets/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), deleteTarget);
-router.get("/proposals", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), listProposals);
-router.get("/proposals/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), getProposalById);
-router.post("/proposals", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), createProposal);
-router.put("/proposals/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateProposal);
-router.patch("/proposals/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateProposalStatus);
-router.post("/proposals/:id/convert-estimate", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), convertProposalToEstimate);
-router.get("/estimates", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), listEstimates);
-router.get("/estimates/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), getEstimateById);
-router.post("/estimates", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), createEstimate);
-router.put("/estimates/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateEstimate);
-router.patch("/estimates/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), updateEstimateStatus);
-router.post("/estimates/:id/convert-invoice", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), convertEstimateToInvoice);
-router.get("/payments", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), listPayments);
+router.get("/proposals", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listProposals);
+router.get("/proposals/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getProposalById);
+router.post("/proposals", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createProposal);
+router.put("/proposals/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateProposal);
+router.patch("/proposals/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateProposalStatus);
+router.post("/proposals/:id/convert-estimate", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), convertProposalToEstimate);
+router.get("/estimates", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listEstimates);
+router.get("/estimates/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), getEstimateById);
+router.post("/estimates", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createEstimate);
+router.put("/estimates/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateEstimate);
+router.patch("/estimates/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateEstimateStatus);
+router.post("/estimates/:id/convert-invoice", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), convertEstimateToInvoice);
+router.get("/payments", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), listPayments);
 
 // billing / invoices
 router.post(
   '/invoices',
   protectAdmin,
-  authorizeAdmin('MainAdmin', 'SalesAdmin'),
+  authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'),
   upload.fields([
     { name: 'attachment', maxCount: 1 },
     { name: 'file', maxCount: 1 },
@@ -121,12 +121,12 @@ router.post(
   handleMulterError,
   createInvoice
 );
-router.get('/invoices', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), listInvoices);
-router.get('/invoices/:id', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), getInvoiceById);
+router.get('/invoices', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), listInvoices);
+router.get('/invoices/:id', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), getInvoiceById);
 router.put(
   '/invoices/:id',
   protectAdmin,
-  authorizeAdmin('MainAdmin', 'SalesAdmin'),
+  authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'),
   upload.fields([
     { name: 'attachment', maxCount: 1 },
     { name: 'file', maxCount: 1 },
@@ -137,11 +137,11 @@ router.put(
   handleMulterError,
   updateInvoice
 );
-router.patch('/invoices/:id/status', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), updateInvoiceStatus);
-router.post('/invoices/:id/mark-paid', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), markInvoicePaid);
-router.post('/invoices/:id/payments', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), addInvoicePayment);
-router.get('/invoices/:id/pdf', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), downloadInvoicePdf);
-router.post('/invoices/:id/send-email', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin'), sendInvoiceByEmail);
+router.patch('/invoices/:id/status', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), updateInvoiceStatus);
+router.post('/invoices/:id/mark-paid', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), markInvoicePaid);
+router.post('/invoices/:id/payments', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), addInvoicePayment);
+router.get('/invoices/:id/pdf', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), downloadInvoicePdf);
+router.post('/invoices/:id/send-email', protectAdmin, authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'), sendInvoiceByEmail);
 
 
 module.exports = router;
