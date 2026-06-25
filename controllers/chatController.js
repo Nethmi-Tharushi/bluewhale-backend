@@ -1,83 +1,27 @@
-// server/controllers/chatController.js
 const Message = require("../models/Message");
 const AdminUser = require("../models/AdminUser");
-const User = require("../models/User");
-const mongoose = require("mongoose");
-
-const normalizeObjectId = (value) => {
-  if (!value) return "";
-  if (typeof value === "object" && value._id) return String(value._id);
-  return String(value);
-};
-
-const escapeRegex = (value = "") => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const toObjectIdOrNull = (value) => {
-  const normalized = String(value || "").trim();
-  return mongoose.Types.ObjectId.isValid(normalized) ? normalized : null;
-};
-
-const buildAllowedChatAdminPayload = (admin) => {
-  if (!admin) return null;
-  return {
-    _id: admin._id,
-    name: admin.name,
-    email: admin.email,
-    role: admin.role,
-    companyName: admin.companyName || "",
-    lastMessageAt: null,
-  };
-};
-
-const resolveAssignedChatAdmin = async (user, managedCandidateId = "") => {
-  if (!user?._id) return null;
-
-  const normalizedManagedCandidateId = toObjectIdOrNull(managedCandidateId);
-
-  const portalUser = await User.findById(user._id)
-    .select("userType assignedTo managedCandidates._id managedCandidates.assignedTo")
-    .populate("assignedTo", "name email role companyName")
-    .populate("managedCandidates.assignedTo", "name email role companyName")
-    .lean();
-
-  if (!portalUser) return null;
-
-  if (normalizedManagedCandidateId) {
-    const managedCandidate = Array.isArray(portalUser.managedCandidates)
-      ? portalUser.managedCandidates.find(
-          (candidate) => String(candidate?._id || "") === normalizedManagedCandidateId
-        )
-      : null;
-
-    if (!managedCandidate) {
-      return null;
-    }
-
-    return managedCandidate.assignedTo || portalUser.assignedTo || null;
-  }
-
-  return portalUser.assignedTo || null;
-};
-
-const canAccessUserChatAdmin = async (user, targetAdminId, managedCandidateId = "") => {
-  const normalizedTargetAdminId = toObjectIdOrNull(targetAdminId);
-  if (!normalizedTargetAdminId) return null;
-
-  const assignedAdmin = await resolveAssignedChatAdmin(user, managedCandidateId);
-  if (!assignedAdmin) return null;
-
-  return String(assignedAdmin._id || assignedAdmin) === normalizedTargetAdminId ? assignedAdmin : null;
-};
+const {
+  CHAT_BRAND_NAME,
+  normalizeObjectId,
+  resolvePortalThreadScopeByUserId,
+  canAdminAccessPortalThread,
+  fetchPortalThreadMessages,
+  getVisiblePortalUsersForAdmin,
+  createUserToAdminMessage,
+  createAdminToUserMessage,
+} = require("../services/chatService");
 
 const getAllowedInternalAdminFilter = (admin) => {
   const role = String(admin?.role || "");
   if (role === "MainAdmin") {
-    return { _id: null };
+    return { role: "SalesAdmin" };
   }
   if (role === "SalesAdmin") {
     return {
-      role: "SalesStaff",
-      reportsTo: admin._id,
+      $or: [
+        { role: "MainAdmin" },
+        { role: "SalesStaff", reportsTo: admin._id },
+      ],
     };
   }
   if (role === "SalesStaff") {
@@ -90,85 +34,31 @@ const getAllowedInternalAdminFilter = (admin) => {
 };
 
 const canAccessInternalAdminContact = async (admin, targetAdminId) => {
-  if (!mongoose.Types.ObjectId.isValid(String(targetAdminId || ""))) return null;
+  const normalizedTargetAdminId = normalizeObjectId(targetAdminId);
+  if (!normalizedTargetAdminId) return null;
   return AdminUser.findOne({
-    _id: targetAdminId,
+    _id: normalizedTargetAdminId,
     ...getAllowedInternalAdminFilter(admin),
   }).select("_id name email role reportsTo");
 };
 
-const pickAdminForUserSend = async ({ adminIdParam, body = {}, userId }) => {
-  const candidateIds = [
-    adminIdParam,
-    body.adminId,
-    body.recipientId,
-    body.contactId,
-    body.targetId,
-  ].filter(Boolean);
-
-  for (const rawId of candidateIds) {
-    const id = String(rawId).trim();
-    if (mongoose.Types.ObjectId.isValid(id)) {
-      const byId = await AdminUser.findById(id).select("_id name email role");
-      if (byId) return byId;
-    }
-  }
-
-  const candidateEmail = String(body.adminEmail || body.email || "").trim().toLowerCase();
-  if (candidateEmail) {
-    const byEmail = await AdminUser.findOne({ email: candidateEmail }).select("_id name email role");
-    if (byEmail) return byEmail;
-  }
-
-  const candidateName = String(body.adminName || body.contactName || body.name || "").trim();
-  if (candidateName) {
-    if (/super admin/i.test(candidateName)) {
-      const mainAdmin = await AdminUser.findOne({ role: "MainAdmin" }).sort({ createdAt: 1 });
-      if (mainAdmin) return mainAdmin;
-    }
-
-    const byName = await AdminUser.findOne({
-      name: { $regex: `^${candidateName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
-    }).select("_id name email role");
-    if (byName) return byName;
-  }
-
-  const latest = await Message.findOne({
-    $or: [
-      { senderId: userId, senderType: "user", recipientType: "admin" },
-      { recipientId: userId, recipientType: "user", senderType: "admin" },
-    ],
-  })
-    .sort({ createdAt: -1 })
-    .select("senderId senderType recipientId");
-
-  if (latest) {
-    const lastAdminId = latest.senderType === "admin" ? latest.senderId : latest.recipientId;
-    const byLatest = await AdminUser.findById(lastAdminId).select("_id name email role");
-    if (byLatest) return byLatest;
-  }
-
-  const primaryMainAdmin = await AdminUser.findOne({ role: "MainAdmin" }).sort({ createdAt: 1 });
-  if (primaryMainAdmin) return primaryMainAdmin;
-
-  return AdminUser.findOne({}).sort({ createdAt: 1 }).select("_id name email role");
-};
-
-// --- USER: Fetch messages with assigned admin ---
 exports.getUserMessages = async (req, res) => {
   try {
-    const adminId = req.params.adminId;
-    const allowedAdmin = await canAccessUserChatAdmin(req.user, adminId, req.query?.managedCandidateId);
-    if (!allowedAdmin) {
+    const scope = await resolvePortalThreadScopeByUserId(req.user._id, req.query?.managedCandidateId);
+    if (!scope?.primaryAdmin?._id) {
+      return res.status(404).json({ message: "No assigned sales staff found for this chat" });
+    }
+
+    const requestedAdminId = normalizeObjectId(req.params.adminId);
+    if (requestedAdminId && !scope.adminIds.includes(requestedAdminId)) {
       return res.status(403).json({ message: "Unauthorized to access this chat" });
     }
 
-    const messages = await Message.find({
-      $or: [
-        { senderId: req.user._id, recipientId: adminId },
-        { senderId: adminId, recipientId: req.user._id },
-      ],
-    }).sort({ createdAt: 1 });
+    const messages = await fetchPortalThreadMessages({
+      userId: req.user._id,
+      adminIds: scope.adminIds,
+      managedCandidateId: req.query?.managedCandidateId,
+    });
 
     res.json(messages);
   } catch (err) {
@@ -177,20 +67,18 @@ exports.getUserMessages = async (req, res) => {
   }
 };
 
-// --- ADMIN: Fetch messages with a specific user ---
 exports.getAdminMessages = async (req, res) => {
   try {
-    const userId = req.params.userId;
+    const access = await canAdminAccessPortalThread(req.admin, req.params.userId, req.query?.managedCandidateId);
+    if (!access.allowed) {
+      return res.status(403).json({ message: access.reason || "Unauthorized to access this chat" });
+    }
 
-    const user = await User.findById(userId).select("name email");
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const messages = await Message.find({
-      $or: [
-        { senderId: req.admin._id, recipientId: userId },
-        { senderId: userId, recipientId: req.admin._id },
-      ],
-    }).sort({ createdAt: 1 });
+    const messages = await fetchPortalThreadMessages({
+      userId: access.scope.user._id,
+      adminIds: access.scope.adminIds,
+      managedCandidateId: req.query?.managedCandidateId,
+    });
 
     res.json(messages);
   } catch (err) {
@@ -199,81 +87,9 @@ exports.getAdminMessages = async (req, res) => {
   }
 };
 
-// --- ADMIN: Get users who chatted with this admin (incoming OR outgoing) ---
 exports.getUsersForAdmin = async (req, res) => {
   try {
-    const adminId = req.admin._id;
-
-    // Get latest message timestamp per user conversation with this admin
-    const conversationRows = await Message.aggregate([
-      {
-        $match: {
-          $or: [
-            // user -> admin
-            { recipientId: adminId, recipientType: "admin", senderType: "user" },
-            // admin -> user
-            { senderId: adminId, senderType: "admin", recipientType: "user" },
-          ],
-        },
-      },
-      {
-        $project: {
-          otherUserId: {
-            $cond: [{ $eq: ["$senderType", "user"] }, "$senderId", "$recipientId"],
-          },
-          createdAt: 1,
-        },
-      },
-      {
-        $group: {
-          _id: "$otherUserId",
-          lastMessageAt: { $max: "$createdAt" },
-        },
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "_id",
-          foreignField: "_id",
-          as: "user",
-        },
-      },
-      { $unwind: "$user" },
-      {
-        $project: {
-          _id: 1,
-          name: "$user.name",
-          email: "$user.email",
-          lastMessageAt: 1,
-        },
-      },
-      { $sort: { lastMessageAt: -1 } },
-    ]);
-
-    const lastMessageMap = new Map(
-      conversationRows.map((row) => [String(row._id), row.lastMessageAt || null])
-    );
-
-    const allUsers = await User.find({})
-      .select("_id name email createdAt")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const users = allUsers.map((user) => ({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      lastMessageAt: lastMessageMap.get(String(user._id)) || null,
-      hasConversation: lastMessageMap.has(String(user._id)),
-    }));
-
-    users.sort((a, b) => {
-      const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
-      const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
-      if (bTime !== aTime) return bTime - aTime;
-      return String(a.name || "").localeCompare(String(b.name || ""));
-    });
-
+    const users = await getVisiblePortalUsersForAdmin(req.admin);
     res.json(users);
   } catch (err) {
     console.error("getUsersForAdmin error:", err);
@@ -281,27 +97,27 @@ exports.getUsersForAdmin = async (req, res) => {
   }
 };
 
-// --- USER: Get admins this user has chatted with (separate conversation threads) ---
 exports.getAdminsForUser = async (req, res) => {
   try {
-    const assignedAdmin = await resolveAssignedChatAdmin(req.user, req.query?.managedCandidateId);
-    if (!assignedAdmin) {
+    const scope = await resolvePortalThreadScopeByUserId(req.user._id, req.query?.managedCandidateId);
+    if (!scope?.primaryAdmin?._id) {
       return res.json([]);
     }
 
-    const userId = req.user._id;
-    const lastMessage = await Message.findOne({
-      $or: [
-        { senderId: userId, senderType: "user", recipientId: assignedAdmin._id, recipientType: "admin" },
-        { senderId: assignedAdmin._id, senderType: "admin", recipientId: userId, recipientType: "user" },
-      ],
-    })
-      .sort({ createdAt: -1 })
-      .select("createdAt content");
+    const messages = await fetchPortalThreadMessages({
+      userId: req.user._id,
+      adminIds: scope.adminIds,
+      managedCandidateId: req.query?.managedCandidateId,
+    });
+    const lastMessage = messages.length ? messages[messages.length - 1] : null;
 
     return res.json([
       {
-        ...buildAllowedChatAdminPayload(assignedAdmin),
+        _id: scope.primaryAdmin._id,
+        name: CHAT_BRAND_NAME,
+        email: scope.primaryAdmin.email || "",
+        role: scope.primaryAdmin.role || "SalesStaff",
+        companyName: CHAT_BRAND_NAME,
         lastMessageAt: lastMessage?.createdAt || null,
         lastMessage: String(lastMessage?.content || "").trim(),
       },
@@ -312,20 +128,28 @@ exports.getAdminsForUser = async (req, res) => {
   }
 };
 
-// --- USER: Get assigned admin ---
 exports.getAssignedAdmin = async (req, res) => {
   try {
-    const admin = await resolveAssignedChatAdmin(req.user, req.query?.managedCandidateId);
+    const scope = await resolvePortalThreadScopeByUserId(req.user._id, req.query?.managedCandidateId);
+    if (!scope?.primaryAdmin?._id) {
+      return res.status(404).json({ message: "No admin assigned" });
+    }
 
-    if (!admin) return res.status(404).json({ message: "No admin assigned" });
-    res.json({ assignedAdmin: admin });
+    res.json({
+      assignedAdmin: {
+        _id: scope.primaryAdmin._id,
+        name: CHAT_BRAND_NAME,
+        email: scope.primaryAdmin.email || "",
+        role: scope.primaryAdmin.role || "SalesStaff",
+        companyName: CHAT_BRAND_NAME,
+      },
+    });
   } catch (err) {
     console.error("getAssignedAdmin error:", err);
     res.status(500).json({ message: "Failed to fetch assigned admin" });
   }
 };
 
-// --- USER: Send message to admin (supports id, name, email, or fallback mapping) ---
 exports.sendMessageToAdmin = async (req, res) => {
   try {
     const content = String(req.body?.content || req.body?.message || "").trim();
@@ -333,87 +157,47 @@ exports.sendMessageToAdmin = async (req, res) => {
       return res.status(400).json({ message: "Message content required" });
     }
 
-    const targetAdminId =
-      req.params.adminId ||
-      req.body?.adminId ||
-      req.body?.recipientId ||
-      req.body?.contactId ||
-      req.body?.targetId ||
-      "";
-    const admin = await canAccessUserChatAdmin(req.user, targetAdminId, req.query?.managedCandidateId);
-
-    if (!admin) {
-      return res.status(403).json({ message: "Unauthorized to message this admin" });
-    }
-
-    const senderUser = await User.findById(req.user._id).select("name");
-
-    const newMessage = await Message.create({
+    const { message, rooms } = await createUserToAdminMessage({
+      userId: req.user._id,
+      managedCandidateId: req.query?.managedCandidateId || req.body?.managedCandidateId || "",
       content,
-      senderId: req.user._id,
-      senderType: "user",
-      senderName: senderUser?.name || "User",
-      senderModel: "User",
-
-      recipientId: admin._id,
-      recipientType: "admin",
-      recipientName: admin.name || "Admin",
-      recipientModel: "AdminUser",
     });
 
     const io = req.app.get("io");
     if (io) {
-      io.to(admin._id.toString()).emit("receiveMessage", newMessage);
-      io.to(req.user._id.toString()).emit("receiveMessage", newMessage);
+      rooms.forEach((room) => io.to(room).emit("receiveMessage", message));
     }
 
-    return res.status(201).json(newMessage);
+    return res.status(201).json(message);
   } catch (err) {
     console.error("sendMessageToAdmin error:", err);
-    return res.status(500).json({ message: "Failed to send message" });
+    return res.status(500).json({ message: err.message || "Failed to send message" });
   }
 };
 
-// --- ADMIN: Send message to user (FIXED senderType/recipientType) ---
 exports.sendMessageToUser = async (req, res) => {
   try {
-    const { userId } = req.params;
-    const content = (req.body?.content || "").trim();
-
+    const content = String(req.body?.content || "").trim();
     if (!content) {
       return res.status(400).json({ message: "Message content required" });
     }
 
-    const user = await User.findById(userId).select("name email");
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const admin = req.admin;
-
-    // ✅ IMPORTANT: senderType/recipientType MUST match Message schema enum
-    const newMessage = await Message.create({
+    const { message, rooms } = await createAdminToUserMessage({
+      admin: req.admin,
+      userId: req.params.userId,
+      managedCandidateId: req.query?.managedCandidateId || req.body?.managedCandidateId || "",
       content,
-      senderId: admin._id,
-      senderType: "admin", // ✅ FIX
-      senderName: admin.name,
-      senderModel: "AdminUser",
-
-      recipientId: user._id,
-      recipientType: "user", // ✅ FIX
-      recipientName: user.name,
-      recipientModel: "User",
     });
 
-    // Emit via Socket.IO if user connected
     const io = req.app.get("io");
     if (io) {
-      io.to(user._id.toString()).emit("receiveMessage", newMessage);
-      io.to(admin._id.toString()).emit("receiveMessage", newMessage);
+      rooms.forEach((room) => io.to(room).emit("receiveMessage", message));
     }
 
-    res.status(201).json(newMessage);
+    res.status(201).json(message);
   } catch (err) {
-    console.error("sendMessageToUser error:", err); // ✅ this will show the REAL reason if any
-    res.status(500).json({ message: "Failed to send message" });
+    console.error("sendMessageToUser error:", err);
+    res.status(500).json({ message: err.message || "Failed to send message" });
   }
 };
 
@@ -523,10 +307,12 @@ exports.sendMessageToInternalAdmin = async (req, res) => {
       senderType: "admin",
       senderName: req.admin.name,
       senderModel: "AdminUser",
+      senderRole: req.admin.role || "Admin",
       recipientId: targetAdmin._id,
       recipientType: "admin",
       recipientName: targetAdmin.name,
       recipientModel: "AdminUser",
+      recipientRole: targetAdmin.role || "Admin",
     });
 
     const io = req.app.get("io");

@@ -31,6 +31,7 @@ const { startMetaLeadAdsPollingWorker } = require("./services/metaLeadAdsPolling
 const Message = require("./models/Message");
 const User = require("./models/User");
 const AdminUser = require("./models/AdminUser");
+const { createUserToAdminMessage, createAdminToUserMessage } = require("./services/chatService");
 // const ChatUser = require("./models/ChatUser");
 // const ChatAssignment = require("./models/ChatAssignment");
 
@@ -192,96 +193,48 @@ io.on("connection", (socket) => {
    *   recipientId
    * }
    */
-  socket.on("sendMessage", async ({ content, senderId, senderType, recipientId }) => {
+  socket.on("sendMessage", async ({ content, senderId, senderType, recipientId, managedCandidateId }) => {
     if (!content || !senderId || !senderType) {
       return socket.emit("messageError", { error: "Missing required fields" });
     }
 
     try {
-      let finalRecipientId;
-      let senderName;
-      let senderModel;
-      let recipientName;
-      let recipientModel;
-      let recipientType;
-
-      // -------------------------
-      // USER -> ADMIN
-      // -------------------------
       if (senderType === "user") {
-        // ✅ prefer recipientId (assigned admin) if provided
-        let admin = null;
-
-        if (recipientId) {
-          admin = await AdminUser.findById(recipientId);
-          if (!admin) {
-            return socket.emit("messageError", { error: "Invalid admin recipientId" });
-          }
-        } else {
-          // fallback: first admin
-          admin = await AdminUser.findOne();
-          if (!admin) {
-            return socket.emit("messageError", { error: "No admin available" });
-          }
-        }
-
-        finalRecipientId = admin._id;
-
-        const userDoc = await User.findById(senderId);
-        senderName = userDoc?.name || "User";
-
-        senderModel = "User";
-        recipientModel = "AdminUser";
-        recipientName = admin.name;
-        recipientType = "admin";
+        const { message, rooms } = await createUserToAdminMessage({
+          userId: senderId,
+          managedCandidateId,
+          content: String(content).trim(),
+        });
+        rooms.forEach((room) => io.to(room.toString()).emit("receiveMessage", message));
+        socket.emit("messageSent", message);
+        return;
       }
 
-      // -------------------------
-      // ADMIN -> USER
-      // -------------------------
-      else if (senderType === "admin") {
+      if (senderType === "admin") {
         if (!recipientId) {
           return socket.emit("messageError", { error: "Admin recipientId required" });
         }
 
-        const userDoc = await User.findById(recipientId);
-        if (!userDoc) {
-          return socket.emit("messageError", { error: "Invalid user recipientId" });
+        const adminDoc = await AdminUser.findById(senderId);
+        if (!adminDoc) {
+          return socket.emit("messageError", { error: "Invalid admin senderId" });
         }
 
-        finalRecipientId = userDoc._id;
-
-        const adminDoc = await AdminUser.findById(senderId);
-        senderName = adminDoc?.name || "Admin";
-
-        senderModel = "AdminUser";
-        recipientModel = "User";
-        recipientName = userDoc.name || "User";
-        recipientType = "user";
+        const { message, rooms } = await createAdminToUserMessage({
+          admin: adminDoc,
+          userId: recipientId,
+          managedCandidateId,
+          content: String(content).trim(),
+        });
+        rooms.forEach((room) => io.to(room.toString()).emit("receiveMessage", message));
+        socket.emit("messageSent", message);
+        return;
       }
 
-      const newMessage = await Message.create({
-        content,
-        senderId,
-        senderType,
-        recipientId: finalRecipientId,
-        recipientType,
-        senderModel,
-        recipientModel,
-        senderName,
-        recipientName,
-      });
-
-      // ✅ IMPORTANT: emit to BOTH rooms
-      // recipient gets it
-      io.to(finalRecipientId.toString()).emit("receiveMessage", newMessage);
-      // sender also gets it (so UI updates even without optimistic state)
-      io.to(senderId.toString()).emit("receiveMessage", newMessage);
-
-      socket.emit("messageSent", newMessage);
+      socket.emit("messageError", { error: "Unsupported senderType" });
     } catch (err) {
-      console.error("❌ sendMessage error:", err);
-      socket.emit("messageError", { error: "Failed to send message" });
+      console.error("sendMessage error:", err);
+      socket.emit("messageError", { error: err.message || "Failed to send message" });
     }
   });
 
@@ -425,3 +378,4 @@ if (false) server.listen(PORT, HOST, () => {
   console.log(`🚀 Server running on port ${PORT}`.blue.bold);
   console.log(`📡 Socket.IO enabled for real-time chat`.cyan);
 });
+
