@@ -4,6 +4,7 @@ const AdminUser = require('../models/AdminUser');
 const mongoose = require('mongoose');
 const { formatMeetingResponse, formatMeetingsResponse } = require('../services/meetingFormatter');
 const { notifyMeetingEvent } = require("../services/notificationService");
+const { parseSystemDateInput } = require("../services/systemPreferenceService");
 
 const populateMeetingAdmins = (query) =>
   query
@@ -58,8 +59,8 @@ const resolveMeetingCreatePayload = async (body, admin) => {
     return { error: { code: 400, message: "title and dateTime are required" } };
   }
 
-  const parsedDate = new Date(rawDate);
-  if (Number.isNaN(parsedDate.getTime())) {
+  const parsedDate = await parseSystemDateInput(rawDate);
+  if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
     return { error: { code: 400, message: "Invalid dateTime value" } };
   }
 
@@ -322,8 +323,8 @@ const updateAdminMeeting = async (req, res) => {
     }
 
     if (updates.date) {
-      const parsedDate = new Date(updates.date);
-      if (Number.isNaN(parsedDate.getTime())) {
+      const parsedDate = await parseSystemDateInput(updates.date);
+      if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
         return res.status(400).json({ message: "Invalid dateTime value" });
       }
       updates.date = parsedDate;

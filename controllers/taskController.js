@@ -4,6 +4,7 @@ const User = require('../models/User');
 const mongoose = require("mongoose");
 const { createMeetingForTask, updateMeetingForTask } = require("../services/taskMeetingService");
 const { notifyMeetingEvent, notifyTaskEvent } = require("../services/notificationService");
+const { buildUtcDateFromZonedDateTime, getSystemPreferencePayload } = require("../services/systemPreferenceService");
 
 const taskDocToB2CDocType = {
   cv: "cv",
@@ -17,6 +18,15 @@ const taskDocToB2BDocType = {
   passport: "Passport",
   picture: "Picture",
   drivingLicense: "DrivingLicense",
+};
+
+const buildSystemMeetingDate = async (meetingDate, meetingTime) => {
+  const { timezone } = await getSystemPreferencePayload();
+  return buildUtcDateFromZonedDateTime({
+    date: meetingDate,
+    time: meetingTime,
+    timeZone: timezone,
+  });
 };
 
 // Get tasks for candidate (both B2C and B2B managed)
@@ -251,7 +261,7 @@ const createTask = async (req, res) => {
       description: type === "Meeting" ? (notes || description || "") : description,
       type,
       priority: priority || 'Medium',
-      dueDate: type === "Meeting" ? new Date(`${meetingDate}T${meetingTime}`) : dueDate,
+      dueDate: type === "Meeting" ? await buildSystemMeetingDate(meetingDate, meetingTime) : dueDate,
       candidateType,
       assignedBy: req.admin._id
     };
@@ -384,7 +394,7 @@ const updateTask = async (req, res) => {
       });
 
       if (meetingDate && meetingTime) {
-        cleanData.dueDate = new Date(`${meetingDate}T${meetingTime}`);
+        cleanData.dueDate = await buildSystemMeetingDate(meetingDate, meetingTime);
       }
 
       if (typeof notes === "string") {

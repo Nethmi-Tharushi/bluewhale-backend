@@ -41,6 +41,13 @@ function pushAudit(admin, { what, ip, who = 'You' }) {
   } catch (_) {}
 }
 
+function getSanitizedAdminProfile(adminId) {
+  return AdminUser.findById(adminId)
+    .select("-password")
+    .populate("reportsTo", "_id name email role")
+    .populate("createdBy", "_id name email role");
+}
+
 function generateApiKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let out = '';
@@ -765,7 +772,7 @@ exports.getMyAdminProfile = async (req, res) => {
     if (!admin.auditLogs) { admin.auditLogs = []; touched = true; }
     if (touched) await admin.save();
 
-    const sanitized = await AdminUser.findById(adminId).select('-password');
+    const sanitized = await getSanitizedAdminProfile(adminId);
     const wallet = await getWalletSummary();
     res.json({ success: true, admin: sanitized, wallet });
   } catch (err) {
@@ -870,7 +877,7 @@ exports.updateMyAdminProfile = async (req, res) => {
       await restartMetaLeadAdsPollingWorker().catch(() => null);
     }
 
-    const sanitized = await AdminUser.findById(adminId).select('-password');
+    const sanitized = await getSanitizedAdminProfile(adminId);
     res.json({ success: true, admin: sanitized });
   } catch (err) {
     if (err.code === 11000) {

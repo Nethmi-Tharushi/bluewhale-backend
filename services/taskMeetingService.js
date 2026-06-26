@@ -1,6 +1,7 @@
 const AdminUser = require("../models/AdminUser");
 const Meeting = require("../models/Meeting");
 const User = require("../models/User");
+const { buildUtcDateFromZonedDateTime, getSystemPreferencePayload } = require("./systemPreferenceService");
 
 const getMainAdminId = async () => {
   const mainAdmin = await AdminUser.findOne({ role: "MainAdmin" }).select("_id");
@@ -10,17 +11,17 @@ const getMainAdminId = async () => {
   return mainAdmin._id;
 };
 
-const combineMeetingDateTime = (meetingDate, meetingTime) => {
+const combineMeetingDateTime = async (meetingDate, meetingTime) => {
   if (!meetingDate || !meetingTime) {
     return null;
   }
 
-  const combined = new Date(`${meetingDate}T${meetingTime}`);
-  if (Number.isNaN(combined.getTime())) {
-    return null;
-  }
-
-  return combined;
+  const { timezone } = await getSystemPreferencePayload();
+  return buildUtcDateFromZonedDateTime({
+    date: meetingDate,
+    time: meetingTime,
+    timeZone: timezone,
+  });
 };
 
 const resolveTaskMeetingCandidate = async ({ candidateType, candidate, managedCandidateId, agent }) => {
@@ -74,7 +75,7 @@ const createMeetingForTask = async ({
   location,
   notes,
 }) => {
-  const combinedDate = combineMeetingDateTime(meetingDate, meetingTime);
+  const combinedDate = await combineMeetingDateTime(meetingDate, meetingTime);
   if (!combinedDate) {
     throw new Error("Valid meeting date and time are required");
   }
@@ -141,7 +142,7 @@ const updateMeetingForTask = async ({
     meetingTime ||
     `${String(existingDate.getHours()).padStart(2, "0")}:${String(existingDate.getMinutes()).padStart(2, "0")}`;
 
-  const combinedDate = combineMeetingDateTime(nextDate, nextTime);
+  const combinedDate = await combineMeetingDateTime(nextDate, nextTime);
   if (!combinedDate) {
     throw new Error("Valid meeting date and time are required");
   }

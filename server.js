@@ -277,6 +277,7 @@ app.use("/api/whatsapp/ai-intent-matching", require("./routes/whatsappAiIntentMa
 app.use("/api/whatsapp", require("./routes/whatsapp"));
 app.use("/api/meta-lead-ads", require("./routes/metaLeadAds"));
 app.use("/api/whatsapp-automations", require("./routes/whatsappAutomation"));
+app.use("/api/system", require("./routes/system"));
 app.use("/", require("./routes/whatsapp"));
 
 // --- Serve frontend in production ---

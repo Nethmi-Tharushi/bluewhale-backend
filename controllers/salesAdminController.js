@@ -16,6 +16,11 @@ const { createMeetingForTask, updateMeetingForTask } = require("../services/task
 const { formatMeetingResponse, formatMeetingsResponse } = require("../services/meetingFormatter");
 const { notifyMeetingEvent, notifyTaskEvent } = require("../services/notificationService");
 const {
+  buildUtcDateFromZonedDateTime,
+  getSystemPreferencePayload,
+  parseSystemDateInput,
+} = require("../services/systemPreferenceService");
+const {
   listAccessibleSalesCandidates,
   resolveAccessibleSalesCandidate,
 } = require("../services/salesCandidateAccessService");
@@ -71,6 +76,15 @@ const withTaskCrmContext = (task) => {
     linkedLeadId: crmContext?.linkedLeadId || null,
     crmContext,
   };
+};
+
+const buildSystemMeetingDate = async (meetingDate, meetingTime) => {
+  const { timezone } = await getSystemPreferencePayload();
+  return buildUtcDateFromZonedDateTime({
+    date: meetingDate,
+    time: meetingTime,
+    timeZone: timezone,
+  });
 };
 
 const resolveTaskCandidateFromLinkedLead = async ({ linkedLeadId, candidateType, candidate, managedCandidateId, agent, req }) => {
@@ -635,8 +649,8 @@ const createMeeting = async (req, res) => {
       return res.status(400).json({ message: 'Invalid location type' });
     }
 
-    const parsedDate = new Date(date);
-    if (Number.isNaN(parsedDate.getTime())) {
+    const parsedDate = await parseSystemDateInput(date);
+    if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
       return res.status(400).json({ message: 'Invalid meeting date' });
     }
 
@@ -796,8 +810,8 @@ const updateMeeting = async (req, res) => {
     }
 
     if (updates.date) {
-      const parsedDate = new Date(updates.date);
-      if (Number.isNaN(parsedDate.getTime())) {
+      const parsedDate = await parseSystemDateInput(updates.date);
+      if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
         return res.status(400).json({ message: 'Invalid dateTime value' });
       }
       updates.date = parsedDate;
@@ -1410,7 +1424,7 @@ const createSalesAdminTask = async (req, res) => {
       description: type === "Meeting" ? (notes || description || "") : description,
       type,
       priority: priority || 'Medium',
-      dueDate: type === "Meeting" ? new Date(`${meetingDate}T${meetingTime}`) : dueDate,
+      dueDate: type === "Meeting" ? await buildSystemMeetingDate(meetingDate, meetingTime) : dueDate,
       candidateType: resolvedCandidate.candidateType,
       assignedBy: salesAdminId
     };
@@ -1558,7 +1572,7 @@ const updateSalesAdminTask = async (req, res) => {
       });
 
       if (req.body.meetingDate && req.body.meetingTime) {
-        req.body.dueDate = new Date(`${req.body.meetingDate}T${req.body.meetingTime}`);
+        req.body.dueDate = await buildSystemMeetingDate(req.body.meetingDate, req.body.meetingTime);
       }
 
       if (typeof req.body.notes === "string") {
