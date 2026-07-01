@@ -26,6 +26,7 @@ const {
 const { syncWhatsAppAiIntentSettingsCache } = require("../services/whatsappAiIntentService");
 const { mergeInAppNotificationSettings } = require("../utils/notificationSettings");
 const { restartMetaLeadAdsPollingWorker } = require("../services/metaLeadAdsPollingService");
+const { startTrackedWorkSession } = require("../services/adminWorkSessionService");
 
 function getClientIp(req) {
   const xfwd = req.headers['x-forwarded-for'];
@@ -481,6 +482,7 @@ exports.loginAdmin = async (req, res) => {
     admin.lastLogin = new Date();
     pushAudit(admin, { what: 'Signed in', ip: getClientIp(req) });
     await admin.save();
+    await startTrackedWorkSession(admin, req, { now: admin.lastLogin });
 
     res.json(buildAuthPayload(admin, token));
   } catch (err) {
@@ -630,6 +632,7 @@ exports.verifyAdminLoginOtp = async (req, res) => {
     admin.lastLogin = new Date();
     pushAudit(admin, { what: "Signed in with 2FA verification", ip: clientIp });
     await admin.save();
+    await startTrackedWorkSession(admin, req, { now: admin.lastLogin });
 
     const token = jwt.sign(
       { id: admin._id, role: admin.role },

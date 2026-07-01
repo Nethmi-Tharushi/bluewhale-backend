@@ -22,6 +22,14 @@ const {
   getMetaConnectionHealth,
 } = require('../controllers/AdminAuthController');
 const {
+  autoPauseMyWorkSession,
+  endMyWorkSession,
+  getHrWorkSessionSummary,
+  getMyCurrentWorkSession,
+  postMyWorkSessionHeartbeat,
+  toggleMyWorkSessionBreak,
+} = require("../controllers/adminWorkSessionController");
+const {
   getMetaLeadAdsStatusHandler,
   exchangeMetaLeadAdsCodeHandler,
   syncMetaLeadAdsHandler,
@@ -82,6 +90,11 @@ router.post(
 
 // Settings Hub "me" APIs
 router.get('/me', protectAdmin, getMyAdminProfile);
+router.get("/me/work-session", protectAdmin, getMyCurrentWorkSession);
+router.post("/me/work-session/heartbeat", protectAdmin, postMyWorkSessionHeartbeat);
+router.post("/me/work-session/toggle-break", protectAdmin, toggleMyWorkSessionBreak);
+router.post("/me/work-session/auto-pause", protectAdmin, autoPauseMyWorkSession);
+router.post("/me/work-session/logout", protectAdmin, endMyWorkSession);
 router.get('/me/role-permissions', protectAdmin, getRolePermissions);
 router.put('/me', protectAdmin, updateMyAdminProfile);
 router.post('/me/whatsapp-profile/logo', protectAdmin, upload.single("photo"), uploadMyWhatsAppProfileLogo);
@@ -136,6 +149,12 @@ router.get(
   authorizeAdmin('MainAdmin', 'SalesAdmin', 'SalesStaff'),
   validateAgentSettingsQuery,
   getAgentSettings
+);
+router.get(
+  "/hr/work-sessions",
+  protectAdmin,
+  authorizeAdmin("MainAdmin"),
+  getHrWorkSessionSummary
 );
 router.get(
   '/role-permissions',
