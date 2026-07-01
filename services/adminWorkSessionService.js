@@ -7,7 +7,7 @@ const emitWorkSessionUpdate = (session, eventType = "updated") => {
   try {
     const io = global.__crm_io;
     if (!io || !session) return;
-    io.to("role:MainAdmin").emit("crm:work-session.updated", {
+    const payload = {
       eventType,
       adminId: String(session.adminId || ""),
       teamAdminId: String(session.teamAdminId || ""),
@@ -16,7 +16,9 @@ const emitWorkSessionUpdate = (session, eventType = "updated") => {
       loginAt: session.loginAt || null,
       lastSeenAt: session.lastSeenAt || null,
       endedAt: session.endedAt || null,
-    });
+    };
+    io.to("role:MainAdmin").emit("crm:work-session.updated", payload);
+    io.to("role:HRManager").emit("crm:work-session.updated", payload);
   } catch (error) {
     console.error("Failed to emit work-session socket event:", error);
   }
@@ -107,6 +109,7 @@ const serializeWorkSession = (session, referenceTime = new Date()) => {
     endReason: session.endReason || "",
     currentState: session.currentState,
     currentBreakStartedAt: session.currentBreakStartedAt,
+    currentBreakSource: session.currentBreakSource || "",
     isOnline,
     breakEntries: (session.breakEntries || []).map((entry) => ({
       startedAt: entry.startedAt,

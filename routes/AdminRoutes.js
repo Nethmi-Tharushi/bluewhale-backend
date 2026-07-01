@@ -24,6 +24,7 @@ const {
 const {
   autoPauseMyWorkSession,
   endMyWorkSession,
+  getHrWorkSessionHistory,
   getHrWorkSessionSummary,
   getMyCurrentWorkSession,
   postMyWorkSessionHeartbeat,
@@ -153,8 +154,14 @@ router.get(
 router.get(
   "/hr/work-sessions",
   protectAdmin,
-  authorizeAdmin("MainAdmin"),
+  authorizeAdmin("HRManager"),
   getHrWorkSessionSummary
+);
+router.get(
+  "/hr/work-sessions/history",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  getHrWorkSessionHistory
 );
 router.get(
   '/role-permissions',

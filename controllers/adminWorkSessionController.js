@@ -47,6 +47,82 @@ const getRangeBounds = (query = {}) => {
   return { start, end };
 };
 
+const diffSeconds = (start, end) => {
+  const startMs = new Date(start).getTime();
+  const endMs = new Date(end).getTime();
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return 0;
+  return Math.max(0, Math.floor((endMs - startMs) / 1000));
+};
+
+const getOverlapSeconds = (startA, endA, startB, endB) => {
+  const from = Math.max(new Date(startA).getTime(), new Date(startB).getTime());
+  const to = Math.min(new Date(endA).getTime(), new Date(endB).getTime());
+  if (Number.isNaN(from) || Number.isNaN(to) || to <= from) return 0;
+  return Math.max(0, Math.floor((to - from) / 1000));
+};
+
+const getSessionRangeMetrics = (session, { start, end, referenceTime = new Date() }) => {
+  const sessionStart = session?.loginAt ? new Date(session.loginAt) : null;
+  const sessionEnd = session?.endedAt ? new Date(session.endedAt) : new Date(referenceTime);
+  if (!sessionStart || Number.isNaN(sessionStart.getTime()) || Number.isNaN(sessionEnd.getTime())) {
+    return {
+      overlapSeconds: 0,
+      activeSeconds: 0,
+      breakSeconds: 0,
+      overlapStart: null,
+      overlapEnd: null,
+    };
+  }
+
+  const overlapSeconds = getOverlapSeconds(sessionStart, sessionEnd, start, end);
+  if (!overlapSeconds) {
+    return {
+      overlapSeconds: 0,
+      activeSeconds: 0,
+      breakSeconds: 0,
+      overlapStart: null,
+      overlapEnd: null,
+    };
+  }
+
+  const overlapStart = new Date(Math.max(sessionStart.getTime(), start.getTime()));
+  const overlapEnd = new Date(Math.min(sessionEnd.getTime(), end.getTime()));
+
+  let breakSeconds = 0;
+  const breakEntries = Array.isArray(session?.breakEntries) ? session.breakEntries : [];
+  breakEntries.forEach((entry) => {
+    if (!entry?.startedAt) return;
+    const entryStart = new Date(entry.startedAt);
+    const entryEnd = new Date(entry.endedAt || entry.startedAt);
+    breakSeconds += getOverlapSeconds(entryStart, entryEnd, start, end);
+  });
+
+  if (session?.currentState === "on_break" && session?.currentBreakStartedAt && !session?.endedAt) {
+    breakSeconds += getOverlapSeconds(session.currentBreakStartedAt, referenceTime, start, end);
+  }
+
+  breakSeconds = Math.min(breakSeconds, overlapSeconds);
+
+  return {
+    overlapSeconds,
+    activeSeconds: Math.max(0, overlapSeconds - breakSeconds),
+    breakSeconds,
+    overlapStart,
+    overlapEnd,
+  };
+};
+
+const normalizeTrackingRoleFilter = (value = "") => {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized === "all") return "";
+  return TRACKING_ROLES.includes(normalized) ? normalized : "";
+};
+
+const normalizeIdList = (value) => {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  return raw.map((item) => String(item || "").trim()).filter(Boolean);
+};
+
 const requireTrackedAdmin = (req, res) => {
   if (isTrackedAdmin(req.admin)) return true;
   res.status(403).json({ message: "Work session tracking is only available for SalesAdmin and SalesStaff accounts" });
@@ -199,6 +275,173 @@ exports.getHrWorkSessionSummary = asyncHandler(async (req, res) => {
         start,
         end,
       },
+      rows,
+    },
+  });
+});
+
+exports.getHrWorkSessionHistory = asyncHandler(async (req, res) => {
+  const { start, end } = getRangeBounds(req.query || {});
+  const now = new Date();
+  const roleFilter = normalizeTrackingRoleFilter(req.query?.role);
+  const memberIds = normalizeIdList(req.query?.memberIds);
+
+  const adminQuery = {
+    role: roleFilter ? roleFilter : { $in: TRACKING_ROLES },
+  };
+
+  if (memberIds.length) {
+    adminQuery._id = { $in: memberIds };
+  }
+
+  const admins = await AdminUser.find(adminQuery)
+    .select("_id name email role reportsTo lastLogin")
+    .populate("reportsTo", "_id name email role")
+    .sort({ role: 1, name: 1 })
+    .lean();
+
+  const adminIds = admins.map((admin) => admin._id);
+
+  const sessions = adminIds.length
+    ? await AdminWorkSession.find({
+        adminId: { $in: adminIds },
+        loginAt: { $lt: end },
+        $or: [{ endedAt: null }, { endedAt: { $gte: start } }],
+      })
+        .sort({ loginAt: -1 })
+        .lean()
+    : [];
+
+  const sessionsByAdmin = new Map();
+  sessions.forEach((session) => {
+    const key = String(session.adminId || "");
+    if (!sessionsByAdmin.has(key)) sessionsByAdmin.set(key, []);
+    sessionsByAdmin.get(key).push(session);
+  });
+
+  const rows = admins.map((admin) => {
+    const key = String(admin._id || "");
+    const memberSessions = sessionsByAdmin.get(key) || [];
+
+    let totalLoggedSeconds = 0;
+    let totalActiveSeconds = 0;
+    let totalBreakSeconds = 0;
+    let firstLoginAt = null;
+    let lastLogoutAt = null;
+    let lastSeenAt = null;
+
+    const sessionDetails = memberSessions.map((session) => {
+      const rangeMetrics = getSessionRangeMetrics(session, { start, end, referenceTime: now });
+      totalLoggedSeconds += rangeMetrics.overlapSeconds;
+      totalActiveSeconds += rangeMetrics.activeSeconds;
+      totalBreakSeconds += rangeMetrics.breakSeconds;
+
+      if (!firstLoginAt || new Date(session.loginAt).getTime() < new Date(firstLoginAt).getTime()) {
+        firstLoginAt = session.loginAt;
+      }
+
+      const sessionLastSeen = session.endedAt || session.lastSeenAt || session.loginAt || null;
+      if (sessionLastSeen && (!lastSeenAt || new Date(sessionLastSeen).getTime() > new Date(lastSeenAt).getTime())) {
+        lastSeenAt = sessionLastSeen;
+      }
+
+      if (session.endedAt && (!lastLogoutAt || new Date(session.endedAt).getTime() > new Date(lastLogoutAt).getTime())) {
+        lastLogoutAt = session.endedAt;
+      }
+
+      return {
+        _id: session._id,
+        loginAt: session.loginAt,
+        endedAt: session.endedAt || null,
+        currentState: session.currentState || "ended",
+        currentBreakSource: session.currentBreakSource || "",
+        endReason: session.endReason || "",
+        overlapStart: rangeMetrics.overlapStart,
+        overlapEnd: rangeMetrics.overlapEnd,
+        metrics: {
+          loggedSeconds: rangeMetrics.overlapSeconds,
+          activeSeconds: rangeMetrics.activeSeconds,
+          breakSeconds: rangeMetrics.breakSeconds,
+        },
+      };
+    });
+
+    return {
+      _id: admin._id,
+      name: admin.name || "",
+      email: admin.email || "",
+      role: admin.role || "",
+      reportsTo: admin.reportsTo
+        ? {
+            _id: admin.reportsTo._id,
+            name: admin.reportsTo.name || "",
+            email: admin.reportsTo.email || "",
+            role: admin.reportsTo.role || "",
+          }
+        : null,
+      firstLoginAt,
+      lastLogoutAt,
+      lastSeenAt: lastSeenAt || admin.lastLogin || null,
+      sessionDetails,
+      metrics: {
+        sessionCount: sessionDetails.length,
+        totalLoggedSeconds,
+        totalActiveSeconds,
+        totalBreakSeconds,
+        utilizationPercent: totalLoggedSeconds ? Math.round((totalActiveSeconds / totalLoggedSeconds) * 100) : 0,
+      },
+    };
+  });
+
+  const summary = rows.reduce(
+    (acc, row) => {
+      acc.totalMembers += 1;
+      acc.totalSessions += Number(row.metrics?.sessionCount || 0);
+      acc.totalLoggedSeconds += Number(row.metrics?.totalLoggedSeconds || 0);
+      acc.totalActiveSeconds += Number(row.metrics?.totalActiveSeconds || 0);
+      acc.totalBreakSeconds += Number(row.metrics?.totalBreakSeconds || 0);
+      return acc;
+    },
+    {
+      totalMembers: 0,
+      totalSessions: 0,
+      totalLoggedSeconds: 0,
+      totalActiveSeconds: 0,
+      totalBreakSeconds: 0,
+    }
+  );
+
+  const members = admins.map((admin) => ({
+    _id: admin._id,
+    name: admin.name || "",
+    email: admin.email || "",
+    role: admin.role || "",
+    reportsTo: admin.reportsTo
+      ? {
+          _id: admin.reportsTo._id,
+          name: admin.reportsTo.name || "",
+        }
+      : null,
+  }));
+
+  return res.json({
+    success: true,
+    data: {
+      summary: {
+        ...summary,
+        utilizationPercent: summary.totalLoggedSeconds
+          ? Math.round((summary.totalActiveSeconds / summary.totalLoggedSeconds) * 100)
+          : 0,
+      },
+      range: {
+        start,
+        end,
+      },
+      filters: {
+        role: roleFilter || "all",
+        memberIds,
+      },
+      members,
       rows,
     },
   });
