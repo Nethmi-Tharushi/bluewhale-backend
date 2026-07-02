@@ -293,11 +293,7 @@ if (isProductionRuntime) {
 const PORT = Number(process.env.PORT) || 5000;
 const isProduction = isProductionRuntime;
 const configuredDevHost = process.env.DEV_HOST || process.env.HOST;
-const HOST = isProduction
-  ? (process.env.HOST || "0.0.0.0")
-  : (!configuredDevHost || configuredDevHost === "0.0.0.0" || configuredDevHost === "::"
-      ? "127.0.0.1"
-      : configuredDevHost);
+const HOST = "0.0.0.0";
 const defaultDevFallbackPort = PORT === 3001 ? 3101 : PORT + 100;
 const DEV_FALLBACK_PORT = Number(process.env.DEV_FALLBACK_PORT) || defaultDevFallbackPort;
 const portsToTry = isProduction ? [PORT] : [...new Set([PORT, DEV_FALLBACK_PORT, 0])];
