@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const activityLogSchema = new mongoose.Schema(
   {
+    
     admin: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AdminUser",
