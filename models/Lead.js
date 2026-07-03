@@ -85,6 +85,13 @@ const leadSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    branch: {
+      type: String,
+      enum: ["", "UAE", "India", "UK"],
+      default: "",
+      trim: true,
+      index: true,
+    },
     integrationKey: {
       type: String,
       default: undefined,

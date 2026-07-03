@@ -30,7 +30,7 @@ const adminWorkSessionSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["MainAdmin", "SalesAdmin", "SalesStaff", "AgentAdmin"],
+      enum: ["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "AgentAdmin"],
       required: true,
       index: true,
     },

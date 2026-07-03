@@ -59,6 +59,21 @@ module.exports = async () => {
   assert.equal(listRoute.handlers[0], protectAdmin);
   assert.deepEqual(listRoute.handlers[1].roles, ["MainAdmin", "SalesAdmin", "SalesStaff"]);
 
+  const walkInSummaryRoute = findRoute("get", "/walk-ins/my-summary");
+  assert.ok(walkInSummaryRoute);
+  assert.equal(walkInSummaryRoute.handlers[0], protectAdmin);
+  assert.deepEqual(walkInSummaryRoute.handlers[1].roles, ["Receptionist"]);
+
+  const walkInLeadsRoute = findRoute("get", "/walk-ins/my-leads");
+  assert.ok(walkInLeadsRoute);
+  assert.equal(walkInLeadsRoute.handlers[0], protectAdmin);
+  assert.deepEqual(walkInLeadsRoute.handlers[1].roles, ["Receptionist"]);
+
+  const walkInLeadDetailRoute = findRoute("get", "/walk-ins/my-leads/:id");
+  assert.ok(walkInLeadDetailRoute);
+  assert.equal(walkInLeadDetailRoute.handlers[0], protectAdmin);
+  assert.deepEqual(walkInLeadDetailRoute.handlers[1].roles, ["Receptionist"]);
+
   const detailRoute = findRoute("get", "/:id");
   assert.ok(detailRoute);
   assert.deepEqual(detailRoute.handlers[1].roles, ["MainAdmin", "SalesAdmin", "SalesStaff"]);
