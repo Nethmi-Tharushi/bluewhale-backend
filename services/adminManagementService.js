@@ -3,11 +3,13 @@ const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
 const SalesTeam = require("../models/SalesTeam");
 
-const ADMIN_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "HRManager", "AgentAdmin"];
+const ADMIN_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "HRManager", "AgentAdmin"];
+const AGENT_SETTINGS_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "AgentAdmin"];
 const ADMIN_ROLE_LABELS = Object.freeze({
   MainAdmin: "Super Admin",
   SalesAdmin: "Sales Admin",
   SalesStaff: "Sales Agent",
+  Receptionist: "Receptionist",
   HRManager: "HR Manager",
   AgentAdmin: "Agent",
 });
@@ -334,7 +336,7 @@ const listAgentSettings = async (query = {}, actor) => {
 };
 
 const getAgentSettingsMeta = async () => ({
-  roles: ADMIN_ROLE_OPTIONS.map((role) => ({
+  roles: AGENT_SETTINGS_ROLE_OPTIONS.map((role) => ({
     value: role,
     label: getRoleLabel(role),
   })),

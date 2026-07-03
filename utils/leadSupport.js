@@ -304,6 +304,7 @@ const formatLeadForApi = (lead) => {
     status: normalizeLeadStatus(base.status),
     source: normalizeLeadSource(base.source),
     sourceDetails: trimString(base.sourceDetails),
+    branch: trimString(base.branch || normalizedSourceMetadata.branch),
     name: trimString(base.name),
     email: trimString(base.email).toLowerCase(),
     phone: trimString(base.phone),

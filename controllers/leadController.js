@@ -33,7 +33,10 @@ const {
   normalizeLeadTags,
 } = require("../utils/leadSupport");
 
-const LEAD_SOURCES = ["Nothing selected", "Campaign", "Website", "Referral", "Social Media", "Walk In", "Job Portal", "Old Data"];
+const LEAD_SOURCES = ["Nothing selected", "Campaign", "Website", "Referral", "Social Media", "Walk-In", "Walk In", "Job Portal", "Old Data"];
+const WALK_IN_TAG = "Walk-In";
+const WALK_IN_SOURCE = "Walk-In";
+const WALK_IN_BRANCHES = ["UAE", "India", "UK"];
 const DEFAULT_COUNTRIES = ["United Arab Emirates", "Sri Lanka", "India", "Qatar", "Kuwait", "Saudi Arabia", "Germany", "Poland", "Norway"];
 const DEFAULT_LANGUAGES = ["System Default", "English", "Arabic", "Hindi", "Tamil", "Sinhala"];
 const LEAD_ASSIGNMENT_ACTIONS = Object.freeze({
@@ -70,6 +73,68 @@ const parseLeadValue = (value, fallback = 0) => {
     valid: true,
     value: normalized,
   };
+};
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const normalizeWalkInBranch = (value) => {
+  const normalized = String(value || "").trim();
+  const match = WALK_IN_BRANCHES.find((branch) => branch.toLowerCase() === normalized.toLowerCase());
+  return match || "";
+};
+
+const startOfLocalDay = (date = new Date()) => {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  return start;
+};
+
+const startOfLocalWeek = (date = new Date()) => {
+  const start = startOfLocalDay(date);
+  const day = start.getDay();
+  const offset = day === 0 ? 6 : day - 1;
+  start.setDate(start.getDate() - offset);
+  return start;
+};
+
+const resolveAdminBranch = (admin) =>
+  normalizeWalkInBranch(
+    admin?.branch ||
+      admin?.assignedBranch ||
+      admin?.settings?.branch ||
+      admin?.settings?.assignedBranch ||
+      admin?.settings?.prefs?.branch
+  );
+
+const buildReceptionistWalkInFilter = (receptionistId, options = {}) => {
+  const filter = {
+    createdBy: receptionistId,
+    $or: [
+      { tags: WALK_IN_TAG },
+      { source: WALK_IN_SOURCE },
+      { source: "Walk In" },
+      { "sourceMetadata.origin": "walk_in" },
+    ],
+  };
+
+  if (options.branch) {
+    filter.branch = options.branch;
+  }
+
+  if (options._id) {
+    filter._id = options._id;
+  }
+
+  if (options.range === "today") {
+    const todayStart = startOfLocalDay();
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+    filter.createdAt = { $gte: todayStart, $lt: tomorrowStart };
+  } else if (options.range === "week") {
+    filter.createdAt = { $gte: startOfLocalWeek() };
+  }
+
+  return filter;
 };
 
 const buildAssignableAdminFilter = (scope) => {
@@ -354,13 +419,14 @@ const findPotentialDuplicateLead = async ({ leadId = null, email = "", phone = "
 const getLeadMeta = asyncHandler(async (req, res) => {
   const scope = getSalesScope(req);
 
+  const accessFilter = buildLeadAccessFilter(req);
   const [assignableAdmins, campaigns, tagOptions] = await Promise.all([
     AdminUser.find(buildAssignableAdminFilter(scope))
       .select("name email role whatsappInbox.allowAutoAssignment")
       .sort({ name: 1 })
       .lean(),
-    Campaign.find(buildLeadAccessFilter(req)).select("campaignName campaignCode").sort({ campaignName: 1 }).lean(),
-    Lead.distinct("tags", buildLeadAccessFilter(req)),
+    Campaign.find(accessFilter).select("campaignName campaignCode").sort({ campaignName: 1 }).lean(),
+    typeof Lead.distinct === "function" ? Lead.distinct("tags", accessFilter) : [],
   ]);
 
   res.json({
@@ -425,6 +491,10 @@ const createLead = asyncHandler(async (req, res) => {
   if (!parsedLeadValue.valid) {
     return res.status(400).json({ message: parsedLeadValue.message });
   }
+  const normalizedBranch = body.branch !== undefined ? normalizeWalkInBranch(body.branch) : "";
+  if (body.branch !== undefined && String(body.branch || "").trim() && !normalizedBranch) {
+    return res.status(400).json({ message: "branch must be one of: UAE, India, UK" });
+  }
 
   const requestedAssignee = String(body.assignedTo || "").trim();
   const assignedAdmin = await resolveAssignedSalesStaff({
@@ -472,10 +542,12 @@ const createLead = asyncHandler(async (req, res) => {
     assignedTo: ownership.assignedTo || null,
     assignedBy: ownership.assignedBy || null,
     assignedAt,
+    createdBy: scope.actorId,
     leadNumber: nextLeadNumber,
     status: normalizeLeadStatus(body.status, DEFAULT_LEAD_STATUS),
     source: normalizeLeadSource(body.source, DEFAULT_LEAD_SOURCE),
     sourceDetails: String(body.sourceDetails || "").trim(),
+    branch: normalizedBranch,
     integrationKey: linkedUser?._id ? `portal_user:${linkedUser._id}` : body.integrationKey,
     name: String(body.name || "").trim(),
     email: normalizedEmail,
@@ -493,6 +565,15 @@ const createLead = asyncHandler(async (req, res) => {
     description: body.description || "",
     linkedUser: linkedUser?._id || null,
     portalAccountType: String(body.portalAccountType || linkedUser?.userType || "").trim(),
+    sourceMetadata:
+      body.sourceMetadata && typeof body.sourceMetadata === "object" && !Array.isArray(body.sourceMetadata)
+        ? {
+            ...body.sourceMetadata,
+            ...(normalizedBranch ? { branch: normalizedBranch } : {}),
+          }
+        : normalizedBranch
+          ? { branch: normalizedBranch }
+          : null,
     tags: normalizeLeadTags(body.tags),
     assignmentHistory: [
       {
@@ -554,6 +635,244 @@ const createLead = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: formatLeadForApi(populated) });
 });
 
+const getMyWalkInLeadSummary = asyncHandler(async (req, res) => {
+  const actor = req.admin;
+  const receptionistId = actor?._id || null;
+  if (!receptionistId) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+
+  const filter = buildReceptionistWalkInFilter(receptionistId);
+
+  const branchBreakdown = await Lead.aggregate([
+    { $match: filter },
+    {
+      $group: {
+        _id: { $ifNull: ["$branch", ""] },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { count: -1, _id: 1 } },
+  ]);
+  const assignedBranch = resolveAdminBranch(actor);
+  const selectedBranch =
+    assignedBranch ||
+    normalizeWalkInBranch(branchBreakdown.find((entry) => normalizeWalkInBranch(entry?._id))?._id) ||
+    "";
+  const branchFilter = selectedBranch ? { ...filter, branch: selectedBranch } : filter;
+
+  const [totalWalkIns, todayWalkIns, weekWalkIns, branchWalkIns, recentWalkIns] = await Promise.all([
+    Lead.countDocuments(filter),
+    Lead.countDocuments(buildReceptionistWalkInFilter(receptionistId, { range: "today" })),
+    Lead.countDocuments(buildReceptionistWalkInFilter(receptionistId, { range: "week" })),
+    Lead.countDocuments(branchFilter),
+    Lead.find(filter)
+      .select("_id leadNumber name phone email branch createdAt source tags")
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean(),
+  ]);
+
+  res.json({
+    success: true,
+    data: {
+      totalWalkIns,
+      todayWalkIns,
+      weekWalkIns,
+      branchWalkIns,
+      selectedBranch,
+      branchBreakdown: branchBreakdown.map((entry) => ({
+        branch: normalizeWalkInBranch(entry?._id) || "Unassigned",
+        count: Number(entry?.count || 0),
+      })),
+      recentWalkIns: recentWalkIns.map((lead) => formatLeadForApi(lead)),
+    },
+  });
+});
+
+const listMyWalkInLeads = asyncHandler(async (req, res) => {
+  const receptionistId = req.admin?._id || null;
+  if (!receptionistId) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+
+  const range = ["today", "week"].includes(String(req.query?.range || "").toLowerCase())
+    ? String(req.query.range).toLowerCase()
+    : "";
+  const requestedBranch = String(req.query?.branch || "").trim();
+  const branch = requestedBranch ? normalizeWalkInBranch(requestedBranch) : "";
+  if (requestedBranch && !branch) {
+    return res.status(400).json({ message: "branch must be one of: UAE, India, UK" });
+  }
+
+  const rawLimit = Number(req.query?.limit || 100);
+  const limit = Math.min(200, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 100));
+  const filter = buildReceptionistWalkInFilter(receptionistId, { range, branch });
+  const leads = await Lead.find(filter)
+    .select("_id leadNumber name phone email branch address city state country company description status source sourceDetails tags createdAt updatedAt lastContactAt")
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  res.json({
+    success: true,
+    data: {
+      leads: leads.map((lead) => formatLeadForApi(lead)),
+      filters: {
+        range,
+        branch,
+        limit,
+      },
+      total: leads.length,
+    },
+  });
+});
+
+const getMyWalkInLeadById = asyncHandler(async (req, res) => {
+  const receptionistId = req.admin?._id || null;
+  if (!receptionistId) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+
+  const leadId = parseLeadId(req.params.id);
+  if (!leadId) {
+    return res.status(400).json({ message: "Invalid lead id" });
+  }
+
+  const lead = await Lead.findOne(buildReceptionistWalkInFilter(receptionistId, { _id: leadId }))
+    .select("_id leadNumber name phone email branch address city state country company description status source sourceDetails tags createdAt updatedAt lastContactAt")
+    .lean();
+
+  if (!lead) {
+    return res.status(404).json({ message: "Walk-in lead not found" });
+  }
+
+  res.json({
+    success: true,
+    data: formatLeadForApi(lead),
+  });
+});
+
+const createWalkInLead = asyncHandler(async (req, res) => {
+  const actor = req.admin;
+  const actorId = actor?._id || null;
+  const body = req.body || {};
+  const name = String(body.name || "").trim();
+  const phone = String(body.phone || "").trim();
+  const email = normalizeEmail(body.email);
+  const branch = normalizeWalkInBranch(body.branch);
+
+  if (!actorId) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+
+  if (!name) {
+    return res.status(400).json({ message: "Visitor name is required" });
+  }
+
+  if (!phone) {
+    return res.status(400).json({ message: "Visitor phone is required" });
+  }
+
+  if (email && !EMAIL_PATTERN.test(email)) {
+    return res.status(400).json({ message: "Valid visitor email is required when email is provided" });
+  }
+
+  if (!branch) {
+    return res.status(400).json({ message: "Branch is required and must be one of: UAE, India, UK" });
+  }
+
+  const parsedLeadValue = parseLeadValue(body.leadValue, 0);
+  if (!parsedLeadValue.valid) {
+    return res.status(400).json({ message: parsedLeadValue.message });
+  }
+
+  if (!body.overrideDuplicate) {
+    const duplicateLead = await findPotentialDuplicateLead({
+      email,
+      phone,
+    });
+
+    if (duplicateLead) {
+      return res.status(409).json({
+        message: "Potential duplicate lead detected",
+        duplicateLead: buildDuplicateLeadPayload(duplicateLead),
+      });
+    }
+  }
+
+  const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: actorId })) + 1;
+  const tags = mergeLeadTags([WALK_IN_TAG], body.tags);
+  const sourceMetadata = {
+    ...(body.sourceMetadata && typeof body.sourceMetadata === "object" && !Array.isArray(body.sourceMetadata)
+      ? body.sourceMetadata
+      : {}),
+    origin: "walk_in",
+    branch,
+    receptionistId: String(actorId),
+    receptionistName: String(actor?.name || actor?.email || "").trim(),
+  };
+
+  const lead = await Lead.create({
+    teamAdmin: actorId,
+    ownerAdmin: actorId,
+    assignedTo: null,
+    assignedBy: null,
+    assignedAt: null,
+    createdBy: actorId,
+    leadNumber: nextLeadNumber,
+    status: DEFAULT_LEAD_STATUS,
+    source: WALK_IN_SOURCE,
+    sourceDetails: String(body.sourceDetails || `Walk-in visitor - ${branch} branch`).trim(),
+    branch,
+    name,
+    email,
+    phone,
+    website: body.website || "",
+    address: body.address || "",
+    city: body.city || "",
+    state: body.state || "",
+    country: body.country || "",
+    zipCode: body.zipCode || "",
+    leadValue: parsedLeadValue.value,
+    currency: body.currency || "AED",
+    defaultLanguage: body.defaultLanguage || "System Default",
+    company: body.company || "",
+    description: body.description || "",
+    linkedUser: null,
+    portalAccountType: "",
+    sourceMetadata,
+    tags,
+    assignmentHistory: [
+      {
+        action: LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
+        assignedTo: null,
+        previousAssignedTo: null,
+        assignedBy: actorId,
+        assignedAt: new Date(),
+      },
+    ],
+    lastContactAt: new Date(),
+  });
+
+  const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
+  await notifyLeadEvent({
+    req,
+    eventType: "lead_created",
+    lead: populated,
+    title: "Walk-in lead created",
+    message: `${actor?.name || "Receptionist"} created walk-in lead "${populated.name}"`,
+    metadata: {
+      status: populated.status,
+      source: populated.source,
+      branch,
+      createdBy: actorId,
+    },
+  });
+
+  res.status(201).json({ success: true, data: formatLeadForApi(populated) });
+});
+
 const updateLead = asyncHandler(async (req, res) => {
   const leadId = parseLeadId(req.params.id);
   if (!leadId) {
@@ -581,6 +900,10 @@ const updateLead = asyncHandler(async (req, res) => {
   const parsedLeadValue = parseLeadValue(body.leadValue, lead.leadValue);
   if (!parsedLeadValue.valid) {
     return res.status(400).json({ message: parsedLeadValue.message });
+  }
+  const normalizedBranch = body.branch !== undefined ? normalizeWalkInBranch(body.branch) : lead.branch || "";
+  if (body.branch !== undefined && String(body.branch || "").trim() && !normalizedBranch) {
+    return res.status(400).json({ message: "branch must be one of: UAE, India, UK" });
   }
 
   const normalizedEmail = body.email !== undefined ? normalizeEmail(body.email) : normalizeEmail(lead.email);
@@ -620,6 +943,17 @@ const updateLead = asyncHandler(async (req, res) => {
   if (body.status !== undefined) lead.status = normalizeLeadStatus(body.status, lead.status || DEFAULT_LEAD_STATUS);
   if (body.source !== undefined) lead.source = normalizeLeadSource(body.source, DEFAULT_LEAD_SOURCE);
   if (body.sourceDetails !== undefined) lead.sourceDetails = String(body.sourceDetails || "").trim();
+  if (body.branch !== undefined) {
+    lead.branch = normalizedBranch;
+    const currentMetadata = lead.sourceMetadata && typeof lead.sourceMetadata === "object" && !Array.isArray(lead.sourceMetadata)
+      ? lead.sourceMetadata
+      : {};
+    lead.sourceMetadata = {
+      ...currentMetadata,
+      branch: normalizedBranch,
+    };
+    lead.markModified("sourceMetadata");
+  }
   if (body.name !== undefined) lead.name = String(body.name || "").trim();
   if (body.email !== undefined) lead.email = normalizedEmail;
   if (body.phone !== undefined) lead.phone = body.phone;
@@ -1152,6 +1486,10 @@ module.exports = {
   listLeads,
   getLeadById,
   createLead,
+  createWalkInLead,
+  getMyWalkInLeadSummary,
+  listMyWalkInLeads,
+  getMyWalkInLeadById,
   assignLead,
   bulkAssignLeads,
   updateLead,

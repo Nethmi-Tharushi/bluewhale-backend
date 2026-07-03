@@ -366,6 +366,32 @@ const buildDefaultRolePermissions = () => ({
     userManagement: false,
     rolePermissions: false,
   },
+  Receptionist: {
+    receptionistDashboard: true,
+    walkIns: true,
+    contactHub: false,
+    inbox: false,
+    whatsappProfile: false,
+    whatsappTemplates: false,
+    whatsappCommerce: false,
+    whatsappAutomations: false,
+    whatsappAssignment: false,
+    whatsappCampaigns: false,
+    quickReplies: false,
+    basicAutomations: false,
+    forms: false,
+    teamManagement: false,
+    internalChat: false,
+    invoices: false,
+    targets: false,
+    leads: false,
+    projects: false,
+    reports: false,
+    settings: false,
+    wallet: false,
+    userManagement: false,
+    rolePermissions: false,
+  },
 });
 
 const mergeRolePermissionDefaults = (existingPermissions = {}) => {
@@ -482,7 +508,11 @@ exports.loginAdmin = async (req, res) => {
     admin.lastLogin = new Date();
     pushAudit(admin, { what: 'Signed in', ip: getClientIp(req) });
     await admin.save();
-    await startTrackedWorkSession(admin, req, { now: admin.lastLogin });
+    try {
+      await startTrackedWorkSession(admin, req, { now: admin.lastLogin });
+    } catch (workSessionError) {
+      console.error("Failed to start admin work session:", workSessionError.message || workSessionError);
+    }
 
     res.json(buildAuthPayload(admin, token));
   } catch (err) {
