@@ -18,6 +18,13 @@ const adminUserSchema = new mongoose.Schema({
     enum: ['MainAdmin', 'SalesAdmin', 'SalesStaff', 'Receptionist', 'HRManager', 'AgentAdmin'],
     required: true
   },
+  branch: {
+    type: String,
+    enum: ["", "UAE", "India", "UK"],
+    default: "",
+    trim: true,
+    index: true,
+  },
   reportsTo: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'AdminUser',

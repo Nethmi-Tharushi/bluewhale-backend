@@ -5,6 +5,7 @@ const SalesTeam = require("../models/SalesTeam");
 
 const ADMIN_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "HRManager", "AgentAdmin"];
 const AGENT_SETTINGS_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "AgentAdmin"];
+const ADMIN_BRANCH_OPTIONS = ["UAE", "India", "UK"];
 const ADMIN_ROLE_LABELS = Object.freeze({
   MainAdmin: "Super Admin",
   SalesAdmin: "Sales Admin",
@@ -75,6 +76,23 @@ const normalizeRole = (value, { required = true } = {}) => {
   }
 
   return normalized;
+};
+
+const normalizeBranch = (value, { required = false } = {}) => {
+  const normalized = trimString(value);
+  if (!normalized) {
+    if (required) {
+      throw createHttpError("branch is required for Receptionist users");
+    }
+    return "";
+  }
+
+  const match = ADMIN_BRANCH_OPTIONS.find((branch) => branch.toLowerCase() === normalized.toLowerCase());
+  if (!match) {
+    throw createHttpError(`branch must be one of: ${ADMIN_BRANCH_OPTIONS.join(", ")}`);
+  }
+
+  return match;
 };
 
 const normalizePassword = async (value, { required = false } = {}) => {
@@ -236,6 +254,7 @@ const buildAgentSettingsRow = (admin, teamMaps) => {
     email: trimString(plain.email),
     phone: trimString(plain.phone),
     role: trimString(plain.role),
+    branch: trimString(plain.branch),
     roleLabel: getRoleLabel(plain.role),
     createdBy: createdBy ? trimString(createdBy.name || createdBy.email) || null : null,
     createdById: createdBy ? trimString(createdBy._id || createdBy.id) || null : null,
@@ -290,7 +309,7 @@ const buildAgentSettingsSummary = (items = [], teams = []) => ({
 
 const fetchAccessibleAdmins = async (actor, { includeManagerForSalesStaff = true, populateCreatedBy = false } = {}) => {
   let query = AdminUser.find(getAccessibleAdminFilter(actor, { includeManagerForSalesStaff }))
-    .select("_id name email phone role reportsTo createdBy lastLogin createdAt")
+    .select("_id name email phone role branch reportsTo createdBy lastLogin createdAt")
     .sort({ createdAt: -1, _id: -1 });
 
   if (populateCreatedBy) {
@@ -381,6 +400,7 @@ const normalizeCreatePayload = async (payload = {}, actor) => {
   const name = trimString(payload.name);
   const email = normalizeEmail(payload.email, { required: true });
   const role = normalizeRole(payload.role);
+  const branch = normalizeBranch(payload.branch, { required: role === "Receptionist" });
 
   if (!name) {
     throw createHttpError("name is required");
@@ -408,6 +428,7 @@ const normalizeCreatePayload = async (payload = {}, actor) => {
     phone: trimString(payload.phone),
     password,
     role,
+    branch: role === "Receptionist" ? branch : "",
     reportsTo,
     createdBy: actor?._id || null,
   };
@@ -417,7 +438,7 @@ const createAdminRecord = async (payload = {}, actor) => {
   const normalized = await normalizeCreatePayload(payload, actor);
   const admin = await AdminUser.create(normalized);
   return AdminUser.findById(admin._id)
-    .select("_id name email phone role reportsTo createdBy lastLogin createdAt")
+    .select("_id name email phone role branch reportsTo createdBy lastLogin createdAt")
     .lean();
 };
 
@@ -500,6 +521,12 @@ const updateAdminRecord = async (id, payload = {}, actor) => {
     admin.role = nextRole;
   }
 
+  if (payload.branch !== undefined || nextRole === "Receptionist") {
+    admin.branch = nextRole === "Receptionist"
+      ? normalizeBranch(payload.branch !== undefined ? payload.branch : current.branch, { required: true })
+      : "";
+  }
+
   if (payload.password !== undefined) {
     admin.password = await normalizePassword(payload.password, { required: true });
   }
@@ -514,7 +541,7 @@ const updateAdminRecord = async (id, payload = {}, actor) => {
   await admin.save();
 
   return AdminUser.findById(admin._id)
-    .select("_id name email phone role reportsTo createdBy lastLogin createdAt")
+    .select("_id name email phone role branch reportsTo createdBy lastLogin createdAt")
     .lean();
 };
 
