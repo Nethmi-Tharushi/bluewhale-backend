@@ -41,6 +41,7 @@ const {
 const {
   createHrRecruitmentCampaign,
   createHrRecruitmentCandidate,
+  createHrRecruitmentRole,
   getHrRecruitmentDashboard,
   getHrStaffDirectory,
   scheduleHrRecruitmentInterview,
@@ -207,6 +208,12 @@ router.get(
   protectAdmin,
   authorizeAdmin("HRManager"),
   getHrRecruitmentDashboard
+);
+router.post(
+  "/hr/recruitment/roles",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  createHrRecruitmentRole
 );
 router.post(
   "/hr/recruitment/campaigns",

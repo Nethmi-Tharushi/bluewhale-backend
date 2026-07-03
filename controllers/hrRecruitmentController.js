@@ -5,16 +5,20 @@ const AdminWorkSession = require("../models/AdminWorkSession");
 const AdminLeaveRequest = require("../models/AdminLeaveRequest");
 const HrRecruitmentCampaign = require("../models/HrRecruitmentCampaign");
 const HrRecruitmentCandidate = require("../models/HrRecruitmentCandidate");
+const HrRecruitmentRole = require("../models/HrRecruitmentRole");
 
 const TRACKED_ROLES = ["SalesAdmin", "SalesStaff"];
 const INTERVIEWER_ROLES = ["MainAdmin", "HRManager", "SalesAdmin"];
-const CAMPAIGN_ROLE_OPTIONS = ["SalesAdmin", "SalesStaff"];
 const CAMPAIGN_STATUS_OPTIONS = ["draft", "open", "on_hold", "closed", "filled"];
 const CANDIDATE_STATUS_OPTIONS = ["active", "hired", "rejected", "withdrawn"];
 const INTERVIEW_STATUS_OPTIONS = ["scheduled", "completed", "cancelled", "no_show"];
 const LOCATION_TYPE_OPTIONS = ["Zoom", "Google Meet", "Microsoft Teams", "Phone", "Physical"];
 const DEFAULT_PIPELINE_STAGES = ["Applied", "CV Review", "First Interview", "Second Interview", "Offered", "Hired"];
 const DEFAULT_STAFF_LOOKBACK_DAYS = 30;
+const DEFAULT_JOB_ROLES = [
+  { name: "Sales Admin", description: "Internal sales admin role" },
+  { name: "Sales Staff", description: "Internal sales staff role" },
+];
 
 const emitHrRecruitmentUpdate = (eventType, payload = {}) => {
   try {
@@ -88,11 +92,6 @@ const roleLabel = (role = "") => {
 
 const normalizeString = (value = "") => String(value || "").trim();
 
-const normalizeRoleOption = (value = "") => {
-  const normalized = normalizeString(value);
-  return CAMPAIGN_ROLE_OPTIONS.includes(normalized) ? normalized : "";
-};
-
 const normalizeCampaignStatus = (value = "") => {
   const normalized = normalizeString(value);
   return CAMPAIGN_STATUS_OPTIONS.includes(normalized) ? normalized : "open";
@@ -133,6 +132,41 @@ const parseStageList = (value) => {
   }
 
   return DEFAULT_PIPELINE_STAGES;
+};
+
+const ensureDefaultHrRecruitmentRoles = async (actorId = null) => {
+  const existing = await HrRecruitmentRole.find({})
+    .select("_id name description isActive")
+    .sort({ name: 1 })
+    .lean();
+
+  if (existing.length) return existing;
+  if (!actorId) return [];
+
+  await HrRecruitmentRole.insertMany(
+    DEFAULT_JOB_ROLES.map((role) => ({
+      ...role,
+      createdBy: actorId,
+    }))
+  );
+
+  return HrRecruitmentRole.find({})
+    .select("_id name description isActive")
+    .sort({ name: 1 })
+    .lean();
+};
+
+const getRoleOptions = async (actorId = null) => {
+  const roles = await ensureDefaultHrRecruitmentRoles(actorId);
+  return roles
+    .filter((role) => role.isActive !== false)
+    .map((role) => ({
+      _id: role._id,
+      value: role.name || "",
+      label: role.name || "",
+      description: role.description || "",
+      isActive: role.isActive !== false,
+    }));
 };
 
 const serializeCampaign = (campaign, candidates = []) => {
@@ -396,7 +430,7 @@ const getCampaignById = async (campaignId) => {
 
 exports.getHrRecruitmentDashboard = asyncHandler(async (req, res) => {
   const campaignFilterId = normalizeString(req.query?.campaignId);
-  const [campaignsRaw, candidatesRaw, interviewers, staffDirectory] = await Promise.all([
+  const [campaignsRaw, candidatesRaw, interviewers, staffDirectory, roleOptions] = await Promise.all([
     HrRecruitmentCampaign.find({})
       .populate("createdBy", "_id name email role")
       .sort({ createdAt: -1 })
@@ -414,6 +448,7 @@ exports.getHrRecruitmentDashboard = asyncHandler(async (req, res) => {
       .sort({ role: 1, name: 1 })
       .lean(),
     buildStaffDirectory(),
+    getRoleOptions(req.admin?._id || null),
   ]);
 
   const campaigns = campaignsRaw.map((campaign) => serializeCampaign(campaign, candidatesRaw));
@@ -438,7 +473,7 @@ exports.getHrRecruitmentDashboard = asyncHandler(async (req, res) => {
       candidates,
       staffDirectory,
       meta: {
-        roleOptions: CAMPAIGN_ROLE_OPTIONS.map((value) => ({ value, label: roleLabel(value) })),
+        roleOptions,
         campaignStatusOptions: CAMPAIGN_STATUS_OPTIONS.map((value) => ({
           value,
           label: value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()),
@@ -474,11 +509,59 @@ exports.getHrRecruitmentDashboard = asyncHandler(async (req, res) => {
   });
 });
 
+exports.createHrRecruitmentRole = asyncHandler(async (req, res) => {
+  const name = normalizeString(req.body?.name);
+  const description = normalizeString(req.body?.description);
+
+  if (!name) {
+    return res.status(400).json({ message: "name is required" });
+  }
+
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const existing = await HrRecruitmentRole.findOne({
+    name: { $regex: `^${escapedName}$`, $options: "i" },
+  })
+    .select("_id")
+    .lean();
+
+  if (existing) {
+    return res.status(409).json({ message: "This job role already exists" });
+  }
+
+  const role = await HrRecruitmentRole.create({
+    name,
+    description,
+    isActive: true,
+    createdBy: req.admin._id,
+  });
+
+  emitHrRecruitmentUpdate("role_created", {
+    roleId: String(role._id || ""),
+    roleName: role.name || "",
+  });
+
+  return res.status(201).json({
+    success: true,
+    data: {
+      _id: role._id,
+      value: role.name || "",
+      label: role.name || "",
+      description: role.description || "",
+      isActive: role.isActive !== false,
+    },
+  });
+});
+
 exports.createHrRecruitmentCampaign = asyncHandler(async (req, res) => {
   const title = normalizeString(req.body?.title);
-  const positionRole = normalizeRoleOption(req.body?.positionRole);
+  const positionRole = normalizeString(req.body?.positionRole);
   if (!title || !positionRole) {
     return res.status(400).json({ message: "title and positionRole are required" });
+  }
+
+  const roleOptions = await getRoleOptions(req.admin?._id || null);
+  if (!roleOptions.some((role) => role.value === positionRole)) {
+    return res.status(400).json({ message: "Selected job role is not available" });
   }
 
   const campaign = await HrRecruitmentCampaign.create({
@@ -515,8 +598,12 @@ exports.updateHrRecruitmentCampaign = asyncHandler(async (req, res) => {
 
   if (req.body?.title !== undefined) campaign.title = normalizeString(req.body.title) || campaign.title;
   if (req.body?.positionRole !== undefined) {
-    const role = normalizeRoleOption(req.body.positionRole);
+    const role = normalizeString(req.body.positionRole);
     if (!role) return res.status(400).json({ message: "Invalid positionRole" });
+    const roleOptions = await getRoleOptions(req.admin?._id || null);
+    if (!roleOptions.some((option) => option.value === role)) {
+      return res.status(400).json({ message: "Selected job role is not available" });
+    }
     campaign.positionRole = role;
   }
   if (req.body?.branch !== undefined) campaign.branch = normalizeString(req.body.branch);

@@ -10,9 +10,10 @@ const hrRecruitmentCampaignSchema = new mongoose.Schema(
     },
     positionRole: {
       type: String,
-      enum: ["SalesAdmin", "SalesStaff"],
       required: true,
       index: true,
+      trim: true,
+      maxlength: 120,
     },
     branch: {
       type: String,
