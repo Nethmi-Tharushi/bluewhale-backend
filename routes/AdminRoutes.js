@@ -31,6 +31,14 @@ const {
   toggleMyWorkSessionBreak,
 } = require("../controllers/adminWorkSessionController");
 const {
+  cancelMyLeaveRequest,
+  createMyLeaveRequest,
+  getHrAttendanceSummary,
+  getHrLeaveRequests,
+  getMyLeaveRequests,
+  reviewHrLeaveRequest,
+} = require("../controllers/adminAttendanceLeaveController");
+const {
   getMetaLeadAdsStatusHandler,
   exchangeMetaLeadAdsCodeHandler,
   syncMetaLeadAdsHandler,
@@ -96,6 +104,9 @@ router.post("/me/work-session/heartbeat", protectAdmin, postMyWorkSessionHeartbe
 router.post("/me/work-session/toggle-break", protectAdmin, toggleMyWorkSessionBreak);
 router.post("/me/work-session/auto-pause", protectAdmin, autoPauseMyWorkSession);
 router.post("/me/work-session/logout", protectAdmin, endMyWorkSession);
+router.get("/me/leave-requests", protectAdmin, getMyLeaveRequests);
+router.post("/me/leave-requests", protectAdmin, upload.single("document"), createMyLeaveRequest);
+router.patch("/me/leave-requests/:id/cancel", protectAdmin, cancelMyLeaveRequest);
 router.get('/me/role-permissions', protectAdmin, getRolePermissions);
 router.put('/me', protectAdmin, updateMyAdminProfile);
 router.post('/me/whatsapp-profile/logo', protectAdmin, upload.single("photo"), uploadMyWhatsAppProfileLogo);
@@ -162,6 +173,24 @@ router.get(
   protectAdmin,
   authorizeAdmin("HRManager"),
   getHrWorkSessionHistory
+);
+router.get(
+  "/hr/attendance",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  getHrAttendanceSummary
+);
+router.get(
+  "/hr/leave-requests",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  getHrLeaveRequests
+);
+router.patch(
+  "/hr/leave-requests/:id/status",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  reviewHrLeaveRequest
 );
 router.get(
   '/role-permissions',
