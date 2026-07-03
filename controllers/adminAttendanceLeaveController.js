@@ -8,6 +8,28 @@ const TRACKING_ROLES = ["SalesAdmin", "SalesStaff"];
 const LEAVE_TYPES = new Set(["annual", "sick", "casual", "unpaid", "other"]);
 const REVIEWABLE_STATUSES = new Set(["approved", "rejected"]);
 
+const emitHrLeaveUpdate = (eventType, request) => {
+  try {
+    const io = global.__crm_io;
+    if (!io || !request) return;
+    const payload = {
+      eventType,
+      leaveRequestId: String(request._id || ""),
+      adminId: String(request.adminId?._id || request.adminId || ""),
+      role: request.role || "",
+      status: request.status || "",
+      startDate: request.startDate || null,
+      endDate: request.endDate || null,
+      reviewedAt: request.reviewedAt || null,
+      updatedAt: new Date().toISOString(),
+    };
+    io.to("role:HRManager").emit("crm:hr-leave.updated", payload);
+    io.to("role:MainAdmin").emit("crm:hr-leave.updated", payload);
+  } catch (error) {
+    console.error("Failed to emit HR leave socket event:", error);
+  }
+};
+
 const parseDateInput = (value, fallback) => {
   if (!value) return fallback;
   const normalized = String(value).trim();
@@ -239,6 +261,7 @@ exports.createMyLeaveRequest = asyncHandler(async (req, res) => {
     totalDays: getLeaveTotalDays(normalizedStart, normalizedEnd),
   });
 
+  emitHrLeaveUpdate("created", request);
   return res.status(201).json({ success: true, data: serializeLeaveRequest(request.toObject()) });
 });
 
@@ -295,6 +318,7 @@ exports.cancelMyLeaveRequest = asyncHandler(async (req, res) => {
   leaveRequest.reviewedBy = null;
   await leaveRequest.save();
 
+  emitHrLeaveUpdate("cancelled", leaveRequest);
   return res.json({ success: true, data: serializeLeaveRequest(leaveRequest.toObject()) });
 });
 
@@ -439,6 +463,7 @@ exports.reviewHrLeaveRequest = asyncHandler(async (req, res) => {
     .populate("reviewedBy", "_id name email role")
     .lean();
 
+  emitHrLeaveUpdate("reviewed", populated);
   return res.json({ success: true, data: serializeLeaveRequest(populated) });
 });
 

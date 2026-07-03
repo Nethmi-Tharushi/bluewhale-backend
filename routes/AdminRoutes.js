@@ -39,6 +39,16 @@ const {
   reviewHrLeaveRequest,
 } = require("../controllers/adminAttendanceLeaveController");
 const {
+  createHrRecruitmentCampaign,
+  createHrRecruitmentCandidate,
+  getHrRecruitmentDashboard,
+  getHrStaffDirectory,
+  scheduleHrRecruitmentInterview,
+  updateHrRecruitmentCampaign,
+  updateHrRecruitmentCandidate,
+  updateHrRecruitmentInterview,
+} = require("../controllers/hrRecruitmentController");
+const {
   getMetaLeadAdsStatusHandler,
   exchangeMetaLeadAdsCodeHandler,
   syncMetaLeadAdsHandler,
@@ -191,6 +201,56 @@ router.patch(
   protectAdmin,
   authorizeAdmin("HRManager"),
   reviewHrLeaveRequest
+);
+router.get(
+  "/hr/recruitment/dashboard",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  getHrRecruitmentDashboard
+);
+router.post(
+  "/hr/recruitment/campaigns",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  createHrRecruitmentCampaign
+);
+router.patch(
+  "/hr/recruitment/campaigns/:id",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  updateHrRecruitmentCampaign
+);
+router.post(
+  "/hr/recruitment/candidates",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  upload.single("cv"),
+  createHrRecruitmentCandidate
+);
+router.patch(
+  "/hr/recruitment/candidates/:id",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  upload.single("cv"),
+  updateHrRecruitmentCandidate
+);
+router.post(
+  "/hr/recruitment/candidates/:id/interviews",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  scheduleHrRecruitmentInterview
+);
+router.patch(
+  "/hr/recruitment/candidates/:id/interviews/:interviewId",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  updateHrRecruitmentInterview
+);
+router.get(
+  "/hr/staff-directory",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  getHrStaffDirectory
 );
 router.get(
   '/role-permissions',
