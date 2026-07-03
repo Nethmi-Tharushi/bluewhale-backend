@@ -632,6 +632,33 @@ exports.updateHrRecruitmentCampaign = asyncHandler(async (req, res) => {
   return res.json({ success: true, data: serializeCampaign(populated, []) });
 });
 
+exports.deleteHrRecruitmentCampaign = asyncHandler(async (req, res) => {
+  const campaign = await getCampaignById(req.params.id);
+  if (!campaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  const campaignId = String(campaign._id || "");
+  const campaignTitle = campaign.title || "";
+
+  await HrRecruitmentCandidate.deleteMany({ campaignId: campaign._id });
+  await HrRecruitmentCampaign.deleteOne({ _id: campaign._id });
+
+  emitHrRecruitmentUpdate("campaign_deleted", {
+    campaignId,
+    campaignTitle,
+  });
+
+  return res.json({
+    success: true,
+    message: "Campaign deleted successfully",
+    data: {
+      _id: campaignId,
+      title: campaignTitle,
+    },
+  });
+});
+
 exports.createHrRecruitmentCandidate = asyncHandler(async (req, res) => {
   const campaignId = normalizeString(req.body?.campaignId);
   const fullName = normalizeString(req.body?.fullName);

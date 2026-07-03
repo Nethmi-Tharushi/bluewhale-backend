@@ -42,6 +42,7 @@ const {
   createHrRecruitmentCampaign,
   createHrRecruitmentCandidate,
   createHrRecruitmentRole,
+  deleteHrRecruitmentCampaign,
   getHrRecruitmentDashboard,
   getHrStaffDirectory,
   scheduleHrRecruitmentInterview,
@@ -226,6 +227,12 @@ router.patch(
   protectAdmin,
   authorizeAdmin("HRManager"),
   updateHrRecruitmentCampaign
+);
+router.delete(
+  "/hr/recruitment/campaigns/:id",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  deleteHrRecruitmentCampaign
 );
 router.post(
   "/hr/recruitment/candidates",
