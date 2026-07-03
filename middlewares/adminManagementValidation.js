@@ -2,7 +2,7 @@ const { Types } = require("mongoose");
 
 const ADMIN_ROLE_OPTIONS = new Set(["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "HRManager", "AgentAdmin"]);
 const AGENT_SETTINGS_TABS = new Set(["all", "sales"]);
-const ADMIN_MUTABLE_FIELDS = new Set(["name", "email", "phone", "role", "reportsTo", "password"]);
+const ADMIN_MUTABLE_FIELDS = new Set(["name", "email", "phone", "role", "branch", "reportsTo", "password"]);
 
 const isPlainObject = (value) => value && typeof value === "object" && !Array.isArray(value);
 const isPositiveIntegerLike = (value) => value === undefined || (/^\d+$/.test(String(value)) && Number(value) > 0);

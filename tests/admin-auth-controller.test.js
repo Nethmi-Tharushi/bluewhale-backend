@@ -120,15 +120,15 @@ module.exports = async () => {
   const loginController = loadController(
     {},
     {
-      findOne: async ({ email, role }) =>
-        email === "sarah@bluewhale.test" && role === "SalesAdmin" ? loginAdmin : null,
+      findOne: async ({ email }) =>
+        email === "sarah@bluewhale.test" ? loginAdmin : null,
     }
   );
 
   const loginRes = createResponse();
   await loginController.loginAdmin(
     {
-      body: { email: "sarah@bluewhale.test", password: "secret123", role: "SalesAdmin" },
+      body: { email: "sarah@bluewhale.test", password: "secret123" },
       headers: {},
       ip: "::1",
     },

@@ -642,7 +642,11 @@ const getMyWalkInLeadSummary = asyncHandler(async (req, res) => {
     return res.status(401).json({ message: "Not authenticated" });
   }
 
-  const filter = buildReceptionistWalkInFilter(receptionistId);
+  const receptionistBranch = resolveAdminBranch(actor);
+  if (!receptionistBranch) {
+    return res.status(400).json({ message: "Receptionist branch is not configured. Ask an admin to assign UAE, India, or UK to this Receptionist account." });
+  }
+  const filter = buildReceptionistWalkInFilter(receptionistId, receptionistBranch ? { branch: receptionistBranch } : {});
 
   const branchBreakdown = await Lead.aggregate([
     { $match: filter },
@@ -654,17 +658,13 @@ const getMyWalkInLeadSummary = asyncHandler(async (req, res) => {
     },
     { $sort: { count: -1, _id: 1 } },
   ]);
-  const assignedBranch = resolveAdminBranch(actor);
-  const selectedBranch =
-    assignedBranch ||
-    normalizeWalkInBranch(branchBreakdown.find((entry) => normalizeWalkInBranch(entry?._id))?._id) ||
-    "";
+  const selectedBranch = receptionistBranch;
   const branchFilter = selectedBranch ? { ...filter, branch: selectedBranch } : filter;
 
   const [totalWalkIns, todayWalkIns, weekWalkIns, branchWalkIns, recentWalkIns] = await Promise.all([
     Lead.countDocuments(filter),
-    Lead.countDocuments(buildReceptionistWalkInFilter(receptionistId, { range: "today" })),
-    Lead.countDocuments(buildReceptionistWalkInFilter(receptionistId, { range: "week" })),
+    Lead.countDocuments(buildReceptionistWalkInFilter(receptionistId, { range: "today", ...(receptionistBranch ? { branch: receptionistBranch } : {}) })),
+    Lead.countDocuments(buildReceptionistWalkInFilter(receptionistId, { range: "week", ...(receptionistBranch ? { branch: receptionistBranch } : {}) })),
     Lead.countDocuments(branchFilter),
     Lead.find(filter)
       .select("_id leadNumber name phone email branch createdAt source tags")
@@ -691,7 +691,8 @@ const getMyWalkInLeadSummary = asyncHandler(async (req, res) => {
 });
 
 const listMyWalkInLeads = asyncHandler(async (req, res) => {
-  const receptionistId = req.admin?._id || null;
+  const actor = req.admin;
+  const receptionistId = actor?._id || null;
   if (!receptionistId) {
     return res.status(401).json({ message: "Not authenticated" });
   }
@@ -699,10 +700,9 @@ const listMyWalkInLeads = asyncHandler(async (req, res) => {
   const range = ["today", "week"].includes(String(req.query?.range || "").toLowerCase())
     ? String(req.query.range).toLowerCase()
     : "";
-  const requestedBranch = String(req.query?.branch || "").trim();
-  const branch = requestedBranch ? normalizeWalkInBranch(requestedBranch) : "";
-  if (requestedBranch && !branch) {
-    return res.status(400).json({ message: "branch must be one of: UAE, India, UK" });
+  const branch = resolveAdminBranch(actor);
+  if (!branch) {
+    return res.status(400).json({ message: "Receptionist branch is not configured. Ask an admin to assign UAE, India, or UK to this Receptionist account." });
   }
 
   const rawLimit = Number(req.query?.limit || 100);
@@ -729,9 +729,14 @@ const listMyWalkInLeads = asyncHandler(async (req, res) => {
 });
 
 const getMyWalkInLeadById = asyncHandler(async (req, res) => {
-  const receptionistId = req.admin?._id || null;
+  const actor = req.admin;
+  const receptionistId = actor?._id || null;
   if (!receptionistId) {
     return res.status(401).json({ message: "Not authenticated" });
+  }
+  const branch = resolveAdminBranch(actor);
+  if (!branch) {
+    return res.status(400).json({ message: "Receptionist branch is not configured. Ask an admin to assign UAE, India, or UK to this Receptionist account." });
   }
 
   const leadId = parseLeadId(req.params.id);
@@ -739,7 +744,7 @@ const getMyWalkInLeadById = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "Invalid lead id" });
   }
 
-  const lead = await Lead.findOne(buildReceptionistWalkInFilter(receptionistId, { _id: leadId }))
+  const lead = await Lead.findOne(buildReceptionistWalkInFilter(receptionistId, { _id: leadId, branch }))
     .select("_id leadNumber name phone email branch address city state country company description status source sourceDetails tags createdAt updatedAt lastContactAt")
     .lean();
 
@@ -760,7 +765,7 @@ const createWalkInLead = asyncHandler(async (req, res) => {
   const name = String(body.name || "").trim();
   const phone = String(body.phone || "").trim();
   const email = normalizeEmail(body.email);
-  const branch = normalizeWalkInBranch(body.branch);
+  const branch = resolveAdminBranch(actor);
 
   if (!actorId) {
     return res.status(401).json({ message: "Not authenticated" });
@@ -779,7 +784,7 @@ const createWalkInLead = asyncHandler(async (req, res) => {
   }
 
   if (!branch) {
-    return res.status(400).json({ message: "Branch is required and must be one of: UAE, India, UK" });
+    return res.status(400).json({ message: "Receptionist branch is not configured. Ask an admin to assign UAE, India, or UK to this Receptionist account." });
   }
 
   const parsedLeadValue = parseLeadValue(body.leadValue, 0);

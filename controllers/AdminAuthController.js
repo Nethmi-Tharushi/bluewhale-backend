@@ -312,6 +312,7 @@ const buildAuthPayload = (admin, token) => ({
     name: admin.name,
     email: admin.email,
     role: admin.role,
+    branch: admin.branch || "",
   },
 });
 const buildDefaultRolePermissions = () => ({
@@ -486,15 +487,15 @@ exports.registerAdmin = async (req, res) => {
 
 // LOGIN ADMIN USER
 exports.loginAdmin = async (req, res) => {
-  const { email, password, role } = req.body;
+  const { email, password } = req.body;
 
-  if (!email || !password || !role) {
-    return res.status(400).json({ message: 'Email, password, and role are required' });
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
   }
 
   try {
-    const admin = await AdminUser.findOne({ email, role });
-    if (!admin) return res.status(400).json({ message: 'User not found with this email and role' });
+    const admin = await AdminUser.findOne({ email: String(email || "").trim().toLowerCase() });
+    if (!admin) return res.status(400).json({ message: 'User not found with this email' });
 
     const isMatch = await bcrypt.compare(password, admin.password);
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
