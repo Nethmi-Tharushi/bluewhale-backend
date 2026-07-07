@@ -3,9 +3,17 @@ const mongoose = require("mongoose");
 const AdminUser = require("../models/AdminUser");
 const AdminWorkSession = require("../models/AdminWorkSession");
 const AdminLeaveRequest = require("../models/AdminLeaveRequest");
+const {
+  buildLeaveBalanceForAdmin,
+  buildLeaveBalanceMapForAdmins,
+  ensureLeavePolicySettings,
+  getLeaveTypeBalanceEntry,
+  normalizeLeaveTypeKey,
+  serializeLeavePolicy,
+  updateLeavePolicySettings,
+} = require("../services/adminLeavePolicyService");
 
 const TRACKING_ROLES = ["SalesAdmin", "SalesStaff"];
-const LEAVE_TYPES = new Set(["annual", "sick", "casual", "unpaid", "other"]);
 const REVIEWABLE_STATUSES = new Set(["approved", "rejected"]);
 
 const emitHrLeaveUpdate = (eventType, request) => {
@@ -207,6 +215,27 @@ const getLeaveTotalDays = (startDate, endDate) => {
   return Math.max(1, Math.floor(diffMs / 86400000) + 1);
 };
 
+const getCalendarYear = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date().getFullYear();
+  return date.getFullYear();
+};
+
+const serializeBalanceContext = (balances = [], leaveType = "", requestedDays = 0, year = new Date().getFullYear()) => {
+  const current = getLeaveTypeBalanceEntry(balances, leaveType);
+  return {
+    year,
+    entries: balances,
+    current: current
+      ? {
+          ...current,
+          requestedDays: Number(requestedDays || 0),
+          remainingAfterApproval: current.unlimited ? null : Math.max(0, Number(current.remainingDays || 0) - Number(requestedDays || 0)),
+        }
+      : null,
+  };
+};
+
 const ensureTrackedAdmin = (req, res) => {
   if (TRACKING_ROLES.includes(String(req.admin?.role || ""))) return true;
   res.status(403).json({ message: "Leave requests are available only for SalesAdmin and SalesStaff accounts" });
@@ -216,15 +245,13 @@ const ensureTrackedAdmin = (req, res) => {
 exports.createMyLeaveRequest = asyncHandler(async (req, res) => {
   if (!ensureTrackedAdmin(req, res)) return;
 
-  const leaveType = String(req.body?.leaveType || "annual").trim().toLowerCase();
+  const leaveType = normalizeLeaveTypeKey(req.body?.leaveType);
   const startDate = parseDateInput(req.body?.startDate, null);
   const endDate = parseDateInput(req.body?.endDate, null);
   const reason = String(req.body?.reason || "").trim();
   const uploadedFile = req.file || null;
 
-  if (!LEAVE_TYPES.has(leaveType)) {
-    return res.status(400).json({ message: "Invalid leave type" });
-  }
+  if (!leaveType) return res.status(400).json({ message: "Leave type is required" });
   if (!startDate || Number.isNaN(startDate.getTime()) || !endDate || Number.isNaN(endDate.getTime())) {
     return res.status(400).json({ message: "Valid startDate and endDate are required" });
   }
@@ -233,6 +260,9 @@ exports.createMyLeaveRequest = asyncHandler(async (req, res) => {
   const normalizedEnd = startOfDay(endDate);
   if (normalizedEnd < normalizedStart) {
     return res.status(400).json({ message: "endDate cannot be earlier than startDate" });
+  }
+  if (getCalendarYear(normalizedStart) !== getCalendarYear(normalizedEnd)) {
+    return res.status(400).json({ message: "Leave request must stay within a single calendar year" });
   }
 
   const overlap = await AdminLeaveRequest.findOne({
@@ -244,6 +274,30 @@ exports.createMyLeaveRequest = asyncHandler(async (req, res) => {
 
   if (overlap) {
     return res.status(409).json({ message: "An overlapping pending or approved leave request already exists" });
+  }
+
+  const totalDays = getLeaveTotalDays(normalizedStart, normalizedEnd);
+  const leavePolicySettings = await ensureLeavePolicySettings();
+  const leavePolicy = serializeLeavePolicy(leavePolicySettings);
+  const { balances } = await buildLeaveBalanceForAdmin({
+    adminId: req.admin._id,
+    role: req.admin.role,
+    year: getCalendarYear(normalizedStart),
+    settings: leavePolicySettings,
+    statuses: ["approved", "pending"],
+  });
+  const balanceEntry = getLeaveTypeBalanceEntry(balances, leaveType);
+  if (!balanceEntry || !balanceEntry.active) {
+    return res.status(400).json({ message: "This leave type is not available for your role" });
+  }
+  if (!balanceEntry.unlimited && Number(balanceEntry.remainingAfterPendingDays || 0) < totalDays) {
+    return res.status(409).json({
+      message: `Only ${Number(balanceEntry.remainingAfterPendingDays || 0)} day(s) remain for ${balanceEntry.label}`,
+      data: {
+        leavePolicy,
+        balance: serializeBalanceContext(balances, leaveType, totalDays, getCalendarYear(normalizedStart)),
+      },
+    });
   }
 
   const request = await AdminLeaveRequest.create({
@@ -258,16 +312,23 @@ exports.createMyLeaveRequest = asyncHandler(async (req, res) => {
     attachmentFileName: uploadedFile?.originalname || "",
     attachmentCloudinaryId: uploadedFile?.filename || uploadedFile?.public_id || "",
     attachmentMimeType: uploadedFile?.mimetype || "",
-    totalDays: getLeaveTotalDays(normalizedStart, normalizedEnd),
+    totalDays,
   });
 
   emitHrLeaveUpdate("created", request);
-  return res.status(201).json({ success: true, data: serializeLeaveRequest(request.toObject()) });
+  return res.status(201).json({
+    success: true,
+    data: {
+      ...serializeLeaveRequest(request.toObject()),
+      balance: serializeBalanceContext(balances, leaveType, totalDays, getCalendarYear(normalizedStart)),
+    },
+  });
 });
 
 exports.getMyLeaveRequests = asyncHandler(async (req, res) => {
   if (!ensureTrackedAdmin(req, res)) return;
   const statusFilter = String(req.query?.status || "all").trim();
+  const balanceYear = Number(req.query?.year) || new Date().getFullYear();
   const query = { adminId: req.admin._id };
   if (statusFilter && statusFilter !== "all") {
     query.status = statusFilter;
@@ -286,11 +347,25 @@ exports.getMyLeaveRequests = asyncHandler(async (req, res) => {
     },
     { total: 0, pending: 0, approved: 0, rejected: 0, cancelled: 0 }
   );
+  const leavePolicySettings = await ensureLeavePolicySettings();
+  const leavePolicy = serializeLeavePolicy(leavePolicySettings);
+  const { balances } = await buildLeaveBalanceForAdmin({
+    adminId: req.admin._id,
+    role: req.admin.role,
+    year: balanceYear,
+    settings: leavePolicySettings,
+    statuses: ["approved", "pending"],
+  });
 
   return res.json({
     success: true,
     data: {
       summary,
+      leavePolicy,
+      leaveBalance: {
+        year: balanceYear,
+        entries: balances,
+      },
       rows: requests.map((item) => serializeLeaveRequest(item)),
     },
   });
@@ -400,10 +475,28 @@ exports.getHrLeaveRequests = asyncHandler(async (req, res) => {
     { total: 0, totalDays: 0, pending: 0, approved: 0, rejected: 0, cancelled: 0 }
   );
 
+  const leavePolicySettings = await ensureLeavePolicySettings();
+  const leavePolicy = serializeLeavePolicy(leavePolicySettings);
+  const requestYears = [...new Set(filteredRequests.map((item) => getCalendarYear(item.startDate)))];
+  const balanceMapByAdminYear = new Map();
+
+  for (const year of requestYears) {
+    const { balanceMap } = await buildLeaveBalanceMapForAdmins({
+      admins: members.map((member) => ({ _id: member._id, role: member.role || "" })),
+      year,
+      settings: leavePolicySettings,
+      statuses: ["approved", "pending"],
+    });
+    balanceMap.forEach((balances, adminId) => {
+      balanceMapByAdminYear.set(`${adminId}:${year}`, balances);
+    });
+  }
+
   return res.json({
     success: true,
     data: {
       summary,
+      leavePolicy,
       range: { start, end },
       filters: {
         role: roleFilter || "all",
@@ -424,7 +517,15 @@ exports.getHrLeaveRequests = asyncHandler(async (req, res) => {
             }
           : null,
       })),
-      rows: filteredRequests.map((item) => serializeLeaveRequest(item)),
+      rows: filteredRequests.map((item) => {
+        const serialized = serializeLeaveRequest(item);
+        const year = getCalendarYear(item.startDate);
+        const balances = balanceMapByAdminYear.get(`${String(item.adminId?._id || item.adminId || "")}:${year}`) || [];
+        return {
+          ...serialized,
+          balance: serializeBalanceContext(balances, item.leaveType, item.totalDays, year),
+        };
+      }),
     },
   });
 });
@@ -448,6 +549,30 @@ exports.reviewHrLeaveRequest = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "Cancelled leave requests cannot be reviewed" });
   }
 
+  if (nextStatus === "approved") {
+    const leavePolicySettings = await ensureLeavePolicySettings();
+    const { balances } = await buildLeaveBalanceForAdmin({
+      adminId: leaveRequest.adminId,
+      role: leaveRequest.role,
+      year: getCalendarYear(leaveRequest.startDate),
+      settings: leavePolicySettings,
+      excludeRequestId: leaveRequest._id,
+      statuses: ["approved"],
+    });
+    const balanceEntry = getLeaveTypeBalanceEntry(balances, leaveRequest.leaveType);
+    if (!balanceEntry || !balanceEntry.active) {
+      return res.status(400).json({ message: "This leave type is no longer available for the requester's role" });
+    }
+    if (!balanceEntry.unlimited && Number(balanceEntry.remainingDays || 0) < Number(leaveRequest.totalDays || 0)) {
+      return res.status(409).json({
+        message: `Only ${Number(balanceEntry.remainingDays || 0)} day(s) remain for ${balanceEntry.label}`,
+        data: {
+          balance: serializeBalanceContext(balances, leaveRequest.leaveType, leaveRequest.totalDays, getCalendarYear(leaveRequest.startDate)),
+        },
+      });
+    }
+  }
+
   leaveRequest.status = nextStatus;
   leaveRequest.reviewNotes = reviewNotes;
   leaveRequest.reviewedAt = new Date();
@@ -464,7 +589,28 @@ exports.reviewHrLeaveRequest = asyncHandler(async (req, res) => {
     .lean();
 
   emitHrLeaveUpdate("reviewed", populated);
-  return res.json({ success: true, data: serializeLeaveRequest(populated) });
+  return res.json({
+    success: true,
+    data: {
+      ...serializeLeaveRequest(populated),
+    },
+  });
+});
+
+exports.getHrLeaveSettings = asyncHandler(async (req, res) => {
+  const settings = await ensureLeavePolicySettings();
+  return res.json({
+    success: true,
+    data: serializeLeavePolicy(settings),
+  });
+});
+
+exports.updateHrLeaveSettings = asyncHandler(async (req, res) => {
+  const settings = await updateLeavePolicySettings(req.body || {}, req.admin?._id || null);
+  return res.json({
+    success: true,
+    data: serializeLeavePolicy(settings),
+  });
 });
 
 exports.getHrAttendanceSummary = asyncHandler(async (req, res) => {

@@ -2,7 +2,6 @@ const asyncHandler = require("express-async-handler");
 const AdminUser = require("../models/AdminUser");
 const AdminWorkSession = require("../models/AdminWorkSession");
 const {
-  autoPauseTrackedWorkSession,
   ensureOpenTrackedWorkSession,
   endTrackedWorkSession,
   getActiveDurationSeconds,
@@ -156,7 +155,7 @@ exports.endMyWorkSession = asyncHandler(async (req, res) => {
 
 exports.autoPauseMyWorkSession = asyncHandler(async (req, res) => {
   if (!requireTrackedAdmin(req, res)) return;
-  const session = await autoPauseTrackedWorkSession(req.admin, req, { now: new Date() });
+  const session = await endTrackedWorkSession(req.admin, { now: new Date(), reason: "window_close" });
   return res.json({ success: true, data: serializeWorkSession(session, new Date()) });
 });
 
@@ -222,7 +221,6 @@ exports.getHrWorkSessionSummary = asyncHandler(async (req, res) => {
     );
     const serializedCurrent = serializeWorkSession(currentSession, now);
     const serializedLatest = serializeWorkSession(latestSession, now);
-
     return {
       _id: admin._id,
       name: admin.name || "",

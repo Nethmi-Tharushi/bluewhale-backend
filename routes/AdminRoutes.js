@@ -35,8 +35,10 @@ const {
   createMyLeaveRequest,
   getHrAttendanceSummary,
   getHrLeaveRequests,
+  getHrLeaveSettings,
   getMyLeaveRequests,
   reviewHrLeaveRequest,
+  updateHrLeaveSettings,
 } = require("../controllers/adminAttendanceLeaveController");
 const {
   createHrRecruitmentCampaign,
@@ -197,6 +199,18 @@ router.get(
   protectAdmin,
   authorizeAdmin("HRManager"),
   getHrLeaveRequests
+);
+router.get(
+  "/hr/leave-settings",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  getHrLeaveSettings
+);
+router.put(
+  "/hr/leave-settings",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  updateHrLeaveSettings
 );
 router.patch(
   "/hr/leave-requests/:id/status",

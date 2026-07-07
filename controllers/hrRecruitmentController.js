@@ -6,6 +6,10 @@ const AdminLeaveRequest = require("../models/AdminLeaveRequest");
 const HrRecruitmentCampaign = require("../models/HrRecruitmentCampaign");
 const HrRecruitmentCandidate = require("../models/HrRecruitmentCandidate");
 const HrRecruitmentRole = require("../models/HrRecruitmentRole");
+const {
+  buildLeaveBalanceMapForAdmins,
+  ensureLeavePolicySettings,
+} = require("../services/adminLeavePolicyService");
 
 const TRACKED_ROLES = ["SalesAdmin", "SalesStaff"];
 const INTERVIEWER_ROLES = ["MainAdmin", "HRManager", "SalesAdmin"];
@@ -318,6 +322,14 @@ const buildStaffDirectory = async () => {
 
   const staffIds = staff.map((member) => member._id);
   const lookbackStart = addDays(startOfDay(new Date()), -(DEFAULT_STAFF_LOOKBACK_DAYS - 1));
+  const balanceYear = new Date().getFullYear();
+  const leavePolicySettings = await ensureLeavePolicySettings();
+  const { balanceMap } = await buildLeaveBalanceMapForAdmins({
+    admins: staff.map((member) => ({ _id: member._id, role: member.role || "" })),
+    year: balanceYear,
+    settings: leavePolicySettings,
+    statuses: ["approved", "pending"],
+  });
 
   const [sessions, leaves] = await Promise.all([
     AdminWorkSession.find({
@@ -355,6 +367,7 @@ const buildStaffDirectory = async () => {
     const key = String(member._id);
     const memberSessions = sessionMap.get(key) || [];
     const memberLeaves = leaveMap.get(key) || [];
+    const leaveBalances = balanceMap.get(key) || [];
 
     const metrics = memberSessions.reduce(
       (acc, session) => {
@@ -408,6 +421,8 @@ const buildStaffDirectory = async () => {
         pendingCount: pendingLeaves.length,
         pendingDays: pendingLeaves.reduce((sum, leave) => sum + Number(leave.totalDays || 0), 0),
         rejectedCount: rejectedLeaves.length,
+        balanceYear,
+        balances: leaveBalances,
       },
       recentLeaves: memberLeaves.slice(0, 5).map((leave) => ({
         _id: leave._id,
