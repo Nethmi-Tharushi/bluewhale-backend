@@ -21,6 +21,12 @@ async function seedUsers() {
         password: 'sales123',
         role: 'SalesAdmin',
       },
+      {
+        name: 'Accountant',
+        email: 'accountant@gmail.com',
+        password: 'accountant123',
+        role: 'Accountant',
+      },
       // {
       //   name: 'Agent User',
       //   email: 'agent@gmail.com',

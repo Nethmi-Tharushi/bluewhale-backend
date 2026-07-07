@@ -1,6 +1,6 @@
 const { Types } = require("mongoose");
 
-const ADMIN_ROLE_OPTIONS = new Set(["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "HRManager", "AgentAdmin"]);
+const ADMIN_ROLE_OPTIONS = new Set(["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "HRManager", "AgentAdmin", "Accountant"]);
 const AGENT_SETTINGS_TABS = new Set(["all", "sales"]);
 const ADMIN_MUTABLE_FIELDS = new Set(["name", "email", "phone", "role", "branch", "reportsTo", "password"]);
 
@@ -23,7 +23,7 @@ const validateAgentSettingsQuery = (req, res, next) => {
   }
 
   if (role !== undefined && !ADMIN_ROLE_OPTIONS.has(String(role).trim())) {
-    return res.status(400).json({ message: "role must be one of: MainAdmin, SalesAdmin, SalesStaff, Receptionist, HRManager, AgentAdmin" });
+    return res.status(400).json({ message: "role must be one of: MainAdmin, SalesAdmin, SalesStaff, Receptionist, HRManager, AgentAdmin, Accountant" });
   }
 
   if (!isPositiveIntegerLike(page)) {

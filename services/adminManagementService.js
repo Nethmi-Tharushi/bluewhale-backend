@@ -3,7 +3,7 @@ const { Types } = require("mongoose");
 const AdminUser = require("../models/AdminUser");
 const SalesTeam = require("../models/SalesTeam");
 
-const ADMIN_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "HRManager", "AgentAdmin"];
+const ADMIN_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "Receptionist", "HRManager", "AgentAdmin", "Accountant"];
 const AGENT_SETTINGS_ROLE_OPTIONS = ["MainAdmin", "SalesAdmin", "SalesStaff", "AgentAdmin"];
 const ADMIN_BRANCH_OPTIONS = ["UAE", "India", "UK"];
 const ADMIN_ROLE_LABELS = Object.freeze({
@@ -13,6 +13,7 @@ const ADMIN_ROLE_LABELS = Object.freeze({
   Receptionist: "Receptionist",
   HRManager: "HR Manager",
   AgentAdmin: "Agent",
+  Accountant: "Accountant",
 });
 const AGENT_SETTINGS_TABS = new Set(["all", "sales"]);
 

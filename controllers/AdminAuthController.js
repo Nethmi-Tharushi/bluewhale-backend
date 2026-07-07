@@ -393,6 +393,15 @@ const buildDefaultRolePermissions = () => ({
     userManagement: false,
     rolePermissions: false,
   },
+  Accountant: {
+    invoices: true,
+    payments: true,
+    reports: true,
+    settings: false,
+    wallet: true,
+    userManagement: false,
+    rolePermissions: false,
+  },
 });
 
 const mergeRolePermissionDefaults = (existingPermissions = {}) => {

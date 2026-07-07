@@ -1,4 +1,6 @@
 const asyncHandler = require("express-async-handler");
+const mongoose = require("mongoose");
+const { Types } = mongoose;
 const Invoice = require("../models/Invoice");
 const AdminUser = require("../models/AdminUser");
 const User = require("../models/User");
@@ -243,8 +245,8 @@ const computeFinancials = (payload) => {
 
 const assertSalesAdmin = (req) => {
   ensureSalesActor(req);
-  if (!["MainAdmin", "SalesAdmin", "SalesStaff"].includes(String(req?.admin?.role || ""))) {
-    const err = new Error("Only MainAdmin, SalesAdmin, or SalesStaff can manage invoices");
+  if (!["MainAdmin", "SalesAdmin", "SalesStaff", "Accountant"].includes(String(req?.admin?.role || ""))) {
+    const err = new Error("Only MainAdmin, SalesAdmin, SalesStaff, or Accountant can manage invoices");
     err.statusCode = 403;
     throw err;
   }
@@ -722,14 +724,60 @@ const addInvoicePayment = asyncHandler(async (req, res) => {
 });
 
 const downloadInvoicePdf = asyncHandler(async (req, res) => {
-  assertSalesAdmin(req);
-  const invoice = await Invoice.findOne({ _id: req.params.id, ...buildOwnedFilter(req, "salesAdmin", "teamAdmin") }).lean();
-  if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+  console.log("\n=== PDF DOWNLOAD ROUTE CALLED ===");
+  console.log("Request params:", req.params);
+  console.log("Admin info:", req.admin?.role, req.admin?._id);
+  
+  try {
+    console.log("Step 1: Checking admin access...");
+    assertSalesAdmin(req);
+    console.log("Step 2: Admin authorized");
+    
+    // Validate and convert ID to ObjectId
+    console.log("Step 3: Validating invoice ID...");
+    const idString = req.params.id;
+    console.log("Step 4: ID string:", idString);
+    
+    if (!Types.ObjectId.isValid(String(idString || ""))) {
+      console.error("Invalid invoice ID format:", idString);
+      return res.status(400).json({ message: "Invalid invoice ID format" });
+    }
+    console.log("Step 5: ID validation passed");
+    
+    const invoiceId = new Types.ObjectId(idString);
+    console.log("Step 6: ID converted to ObjectId:", invoiceId);
+    
+    const ownedFilter = buildOwnedFilter(req, "salesAdmin", "teamAdmin");
+    const filter = { _id: invoiceId, ...ownedFilter };
+    console.log("Step 7: Built filter:", JSON.stringify(filter, null, 2));
+    
+    const invoice = await Invoice.findOne(filter).lean();
+    console.log("Step 8: Invoice query completed. Found:", !!invoice);
+    
+    if (!invoice) {
+      console.log("Step 9: Invoice not found, returning 404");
+      return res.status(404).json({ message: "Invoice not found" });
+    }
 
-  const pdfBuffer = buildInvoicePdfBuffer(invoice);
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}.pdf"`);
-  return res.status(200).send(pdfBuffer);
+    console.log("Step 10: Generating PDF buffer...");
+    const pdfBuffer = buildInvoicePdfBuffer(invoice);
+    console.log("Step 11: PDF buffer generated, size:", pdfBuffer?.length || "UNKNOWN");
+    
+    console.log("Step 12: Setting response headers...");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}.pdf"`);
+    
+    console.log("Step 13: Sending PDF response...");
+    res.status(200).send(pdfBuffer);
+    console.log("=== PDF DOWNLOAD COMPLETE ===\n");
+  } catch (error) {
+    console.error("\n=== PDF Download Error ===");
+    console.error("Error message:", error.message);
+    console.error("Error status code:", error.statusCode);
+    console.error("Error stack:", error.stack);
+    console.error("=== End Error ===\n");
+    throw error;
+  }
 });
 
 const sendInvoiceByEmail = asyncHandler(async (req, res) => {

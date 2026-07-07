@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const SALES_ROLES = ["MainAdmin", "SalesAdmin", "SalesStaff"];
+const SALES_ROLES = ["MainAdmin", "SalesAdmin", "SalesStaff", "Accountant"];
 
 const normalizeObjectId = (value) => {
   if (!value) return null;
@@ -34,6 +34,7 @@ const getSalesScope = (req) => {
     isMainAdmin: req.admin.role === "MainAdmin",
     isSalesAdmin: req.admin.role === "SalesAdmin",
     isSalesStaff: req.admin.role === "SalesStaff",
+    isAccountant: req.admin.role === "Accountant",
   };
 };
 
@@ -43,6 +44,10 @@ const buildOwnedFilter = (req, ownerField = "salesAdmin", managerField = "teamAd
     return {
       [ownerField]: scope.actorId,
     };
+  }
+
+  if (scope.isAccountant) {
+    return {};
   }
 
   return {
