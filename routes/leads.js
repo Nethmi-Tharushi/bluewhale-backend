@@ -38,7 +38,7 @@ router.delete("/:id/reminders/:reminderId", protectAdmin, authorizeAdmin("MainAd
 router.post("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), createLead);
 router.patch("/:id/assign", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin"), assignLead);
 router.put("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateLead);
-router.patch("/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), updateLeadStatus);
+router.patch("/:id/status", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff", "Accountant"), updateLeadStatus);
 router.delete("/:id", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff"), deleteLead);
 
 module.exports = router;
