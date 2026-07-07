@@ -219,6 +219,20 @@ const getLatestInterviewForRound = (candidate, roundNumber) => {
     .sort((left, right) => new Date(right.scheduledAt || 0) - new Date(left.scheduledAt || 0))[0] || null;
 };
 
+const completeScheduledInterviewRound = (candidate, roundNumber) => {
+  const targetInterview = [...(candidate?.interviews || [])]
+    .filter((interview) => Number(interview.roundNumber) === Number(roundNumber))
+    .sort((left, right) => new Date(right.scheduledAt || 0) - new Date(left.scheduledAt || 0))
+    .find((interview) => interview.status === "scheduled");
+
+  if (!targetInterview) {
+    return false;
+  }
+
+  targetInterview.status = "completed";
+  return true;
+};
+
 const serializeCandidate = (candidate) => {
   const firstInterview = getLatestInterviewForRound(candidate, 1);
   const secondInterview = getLatestInterviewForRound(candidate, 2);
@@ -777,6 +791,18 @@ exports.updateHrRecruitmentCandidate = asyncHandler(async (req, res) => {
         changedAt: new Date(),
       });
     }
+
+    if (nextStage === "Offered") {
+      const autoCompletedSecondInterview = completeScheduledInterviewRound(candidate, 2);
+      if (autoCompletedSecondInterview) {
+        candidate.stageHistory.push({
+          stage: "Second Interview",
+          note: "Second interview auto-completed when candidate moved to Offered",
+          changedBy: req.admin._id,
+          changedAt: new Date(),
+        });
+      }
+    }
   }
 
   if (uploadedFile) {
@@ -813,6 +839,30 @@ exports.updateHrRecruitmentCandidate = asyncHandler(async (req, res) => {
     pipelineStage: candidate.pipelineStage || "",
   });
   return res.json({ success: true, data: serializeCandidate(populated) });
+});
+
+exports.deleteHrRecruitmentCandidate = asyncHandler(async (req, res) => {
+  const candidate = await HrRecruitmentCandidate.findById(req.params.id).lean();
+  if (!candidate) {
+    return res.status(404).json({ message: "Candidate not found" });
+  }
+
+  await HrRecruitmentCandidate.deleteOne({ _id: candidate._id });
+
+  emitHrRecruitmentUpdate("candidate_deleted", {
+    campaignId: String(candidate.campaignId || ""),
+    candidateId: String(candidate._id || ""),
+    fullName: candidate.fullName || "",
+  });
+
+  return res.json({
+    success: true,
+    message: "Candidate deleted successfully",
+    data: {
+      _id: String(candidate._id || ""),
+      fullName: candidate.fullName || "",
+    },
+  });
 });
 
 exports.scheduleHrRecruitmentInterview = asyncHandler(async (req, res) => {
@@ -858,6 +908,18 @@ exports.scheduleHrRecruitmentInterview = asyncHandler(async (req, res) => {
   };
 
   candidate.interviews.push(interview);
+
+  if (roundNumber === 2) {
+    const autoCompletedFirstInterview = completeScheduledInterviewRound(candidate, 1);
+    if (autoCompletedFirstInterview) {
+      candidate.stageHistory.push({
+        stage: "First Interview",
+        note: "First interview auto-completed when second interview was scheduled",
+        changedBy: req.admin._id,
+        changedAt: new Date(),
+      });
+    }
+  }
 
   const stageLabel = roundNumber === 1 ? "First Interview" : "Second Interview";
   if ((candidate.pipelineStage || "") !== stageLabel) {
@@ -957,6 +1019,45 @@ exports.updateHrRecruitmentInterview = asyncHandler(async (req, res) => {
     status: interview.status || "",
   });
   return res.json({ success: true, data: serializeCandidate(populated) });
+});
+
+exports.deleteHrRecruitmentInterview = asyncHandler(async (req, res) => {
+  const candidate = await HrRecruitmentCandidate.findById(req.params.id);
+  if (!candidate) {
+    return res.status(404).json({ message: "Candidate not found" });
+  }
+
+  const interview = candidate.interviews.id(req.params.interviewId);
+  if (!interview) {
+    return res.status(404).json({ message: "Interview not found" });
+  }
+
+  const interviewId = String(interview._id || "");
+  const roundNumber = Number(interview.roundNumber || 1);
+  interview.deleteOne();
+
+  await candidate.save();
+
+  const populated = await HrRecruitmentCandidate.findById(candidate._id)
+    .populate("campaignId", "_id title positionRole status pipelineStages")
+    .populate("createdBy", "_id name email role")
+    .populate("linkedStaffId", "_id name email role")
+    .populate("interviews.interviewer", "_id name email role")
+    .populate("stageHistory.changedBy", "_id name email role")
+    .lean();
+
+  emitHrRecruitmentUpdate("interview_deleted", {
+    campaignId: String(candidate.campaignId || ""),
+    candidateId: String(candidate._id || ""),
+    interviewId,
+    roundNumber,
+  });
+
+  return res.json({
+    success: true,
+    message: "Interview deleted successfully",
+    data: serializeCandidate(populated),
+  });
 });
 
 exports.getHrStaffDirectory = asyncHandler(async (_req, res) => {

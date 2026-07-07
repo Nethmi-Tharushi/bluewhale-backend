@@ -45,6 +45,8 @@ const {
   createHrRecruitmentCandidate,
   createHrRecruitmentRole,
   deleteHrRecruitmentCampaign,
+  deleteHrRecruitmentCandidate,
+  deleteHrRecruitmentInterview,
   getHrRecruitmentDashboard,
   getHrStaffDirectory,
   scheduleHrRecruitmentInterview,
@@ -262,6 +264,12 @@ router.patch(
   upload.single("cv"),
   updateHrRecruitmentCandidate
 );
+router.delete(
+  "/hr/recruitment/candidates/:id",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  deleteHrRecruitmentCandidate
+);
 router.post(
   "/hr/recruitment/candidates/:id/interviews",
   protectAdmin,
@@ -273,6 +281,12 @@ router.patch(
   protectAdmin,
   authorizeAdmin("HRManager"),
   updateHrRecruitmentInterview
+);
+router.delete(
+  "/hr/recruitment/candidates/:id/interviews/:interviewId",
+  protectAdmin,
+  authorizeAdmin("HRManager"),
+  deleteHrRecruitmentInterview
 );
 router.get(
   "/hr/staff-directory",
