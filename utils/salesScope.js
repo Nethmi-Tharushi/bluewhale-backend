@@ -40,6 +40,10 @@ const getSalesScope = (req) => {
 
 const buildOwnedFilter = (req, ownerField = "salesAdmin", managerField = "teamAdmin") => {
   const scope = getSalesScope(req);
+  if (scope.isMainAdmin) {
+    return {};
+  }
+
   if (scope.isSalesStaff) {
     return {
       [ownerField]: scope.actorId,
