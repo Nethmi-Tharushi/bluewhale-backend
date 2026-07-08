@@ -417,11 +417,14 @@ const findPotentialDuplicateLead = async ({ leadId = null, email = "", phone = "
 };
 
 const getLeadMeta = asyncHandler(async (req, res) => {
-  const scope = getSalesScope(req);
-
-  const accessFilter = buildLeadAccessFilter(req);
+  const isReceptionist = String(req.admin?.role || "").trim() === "Receptionist";
+  const scope = isReceptionist ? null : getSalesScope(req);
+  const accessFilter = isReceptionist ? {} : buildLeadAccessFilter(req);
+  const assignableAdminFilter = isReceptionist
+    ? { role: "SalesStaff" }
+    : buildAssignableAdminFilter(scope);
   const [assignableAdmins, campaigns, tagOptions] = await Promise.all([
-    AdminUser.find(buildAssignableAdminFilter(scope))
+    AdminUser.find(assignableAdminFilter)
       .select("name email role whatsappInbox.allowAutoAssignment")
       .sort({ name: 1 })
       .lean(),
@@ -787,15 +790,44 @@ const createWalkInLead = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "Receptionist branch is not configured. Ask an admin to assign UAE, India, or UK to this Receptionist account." });
   }
 
+  if (body.status !== undefined && !isSupportedLeadStatus(body.status)) {
+    return res.status(400).json({ message: "Invalid lead status" });
+  }
+
   const parsedLeadValue = parseLeadValue(body.leadValue, 0);
   if (!parsedLeadValue.valid) {
     return res.status(400).json({ message: parsedLeadValue.message });
+  }
+
+  const requestedAssignee = String(body.assignedTo || "").trim();
+  const assignedAdmin = await resolveAssignedSalesStaff({
+    actor,
+    preferredAssigneeId: requestedAssignee,
+  });
+  const ownership = buildLeadOwnership({
+    actor,
+    assignedStaff: assignedAdmin,
+  });
+  const assignedAt = assignedAdmin ? new Date() : null;
+  const normalizedStatus = normalizeLeadStatus(body.status, DEFAULT_LEAD_STATUS);
+  const normalizedSource = normalizeLeadSource(body.source, WALK_IN_SOURCE);
+  const portalAccountResult = await ensurePortalUserForLead({
+    leadInput: body,
+    assignedStaff: assignedAdmin,
+  });
+  const linkedUser = portalAccountResult?.user || null;
+  if (linkedUser?._id) {
+    const existingLinkedLead = await Lead.findOne({ integrationKey: `portal_user:${linkedUser._id}` }).select("_id");
+    if (existingLinkedLead) {
+      return res.status(400).json({ message: "A CRM lead already exists for this portal account" });
+    }
   }
 
   if (!body.overrideDuplicate) {
     const duplicateLead = await findPotentialDuplicateLead({
       email,
       phone,
+      linkedUserId: linkedUser?._id || null,
     });
 
     if (duplicateLead) {
@@ -806,7 +838,11 @@ const createWalkInLead = asyncHandler(async (req, res) => {
     }
   }
 
-  const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: actorId })) + 1;
+  const teamAdminId = ownership.teamAdmin || assignedAdmin?.reportsTo || assignedAdmin?._id || actorId;
+  const ownerAdminId = ownership.ownerAdmin || teamAdminId || actorId;
+  const assignedToId = ownership.assignedTo || assignedAdmin?._id || null;
+  const assignedById = assignedToId ? actorId : null;
+  const nextLeadNumber = 2000 + (await Lead.countDocuments({ teamAdmin: teamAdminId })) + 1;
   const tags = mergeLeadTags([WALK_IN_TAG], body.tags);
   const sourceMetadata = {
     ...(body.sourceMetadata && typeof body.sourceMetadata === "object" && !Array.isArray(body.sourceMetadata)
@@ -819,17 +855,18 @@ const createWalkInLead = asyncHandler(async (req, res) => {
   };
 
   const lead = await Lead.create({
-    teamAdmin: actorId,
-    ownerAdmin: actorId,
-    assignedTo: null,
-    assignedBy: null,
-    assignedAt: null,
+    teamAdmin: teamAdminId,
+    ownerAdmin: ownerAdminId,
+    assignedTo: assignedToId,
+    assignedBy: assignedById,
+    assignedAt,
     createdBy: actorId,
     leadNumber: nextLeadNumber,
-    status: DEFAULT_LEAD_STATUS,
-    source: WALK_IN_SOURCE,
+    status: normalizedStatus,
+    source: normalizedSource,
     sourceDetails: String(body.sourceDetails || `Walk-in visitor - ${branch} branch`).trim(),
     branch,
+    integrationKey: linkedUser?._id ? `portal_user:${linkedUser._id}` : body.integrationKey,
     name,
     email,
     phone,
@@ -844,20 +881,20 @@ const createWalkInLead = asyncHandler(async (req, res) => {
     defaultLanguage: body.defaultLanguage || "System Default",
     company: body.company || "",
     description: body.description || "",
-    linkedUser: null,
-    portalAccountType: "",
+    linkedUser: linkedUser?._id || null,
+    portalAccountType: String(body.portalAccountType || linkedUser?.userType || "").trim(),
     sourceMetadata,
     tags,
     assignmentHistory: [
       {
-        action: LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
-        assignedTo: null,
+        action: assignedToId ? LEAD_ASSIGNMENT_ACTIONS.ASSIGNED : LEAD_ASSIGNMENT_ACTIONS.UNASSIGNED,
+        assignedTo: assignedToId,
         previousAssignedTo: null,
-        assignedBy: actorId,
-        assignedAt: new Date(),
+        assignedBy: assignedById || actorId,
+        assignedAt: assignedAt || new Date(),
       },
     ],
-    lastContactAt: new Date(),
+    lastContactAt: body.lastContactAt ? new Date(body.lastContactAt) : new Date(),
   });
 
   const populated = await populateLeadQuery(Lead.findById(lead._id)).lean();
@@ -874,6 +911,37 @@ const createWalkInLead = asyncHandler(async (req, res) => {
       createdBy: actorId,
     },
   });
+
+  if (populated.assignedTo) {
+    await notifyLeadEvent({
+      req,
+      eventType: "lead_assigned",
+      lead: populated,
+      title: "Lead assigned",
+      message: `"${populated.name}" assigned to ${populated.assignedTo?.name || "selected user"}`,
+      metadata: {
+        assignedTo: toIdString(populated.assignedTo),
+        assignedToName: populated.assignedTo?.name || "",
+      },
+    });
+  }
+
+  if (
+    portalAccountResult?.created &&
+    body?.sendWelcomeEmail &&
+    email
+  ) {
+    try {
+      await sendPortalWelcomeEmail({
+        to: email,
+        name: populated.name,
+        userType: linkedUser?.userType || body?.portalAccountType || "candidate",
+        password: portalAccountResult.password || DEFAULT_PORTAL_PASSWORD,
+      });
+    } catch (emailError) {
+      console.error("Failed to send portal welcome email:", emailError);
+    }
+  }
 
   res.status(201).json({ success: true, data: formatLeadForApi(populated) });
 });

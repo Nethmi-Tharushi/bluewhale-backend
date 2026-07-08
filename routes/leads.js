@@ -22,7 +22,7 @@ const {
   syncPortalUsersToLeads,
 } = require("../controllers/leadController");
 
-router.get("/meta", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff", "Accountant"), getLeadMeta);
+router.get("/meta", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff", "Accountant", "Receptionist"), getLeadMeta);
 router.get("/", protectAdmin, authorizeAdmin("MainAdmin", "SalesAdmin", "SalesStaff", "Accountant"), listLeads);
 router.get("/walk-ins/my-summary", protectAdmin, authorizeAdmin("Receptionist"), getMyWalkInLeadSummary);
 router.get("/walk-ins/my-leads", protectAdmin, authorizeAdmin("Receptionist"), listMyWalkInLeads);

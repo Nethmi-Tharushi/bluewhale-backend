@@ -17,6 +17,7 @@ const PROPOSAL_STATUSES = ["Draft", "Sent", "Accepted", "Rejected", "Expired", "
 const ESTIMATE_STATUSES = ["Draft", "Sent", "Approved", "Rejected", "Expired", "Invoiced"];
 const TARGET_STATUSES = ["Active", "Completed", "Archived"];
 const CUSTOMER_LEAD_STATUSES = new Set(["Paid Customer"]);
+const INSTALLMENT_TYPES = ["", "First Installment", "Second Installment", "Third Installment", "Full Payment", "No Installment / General Item"];
 
 const toNum = (value) => {
   const num = Number(value || 0);
@@ -32,14 +33,22 @@ const parseItems = (items = []) => {
     const unitPrice = toNum(item.unitPrice);
     const discount = toNum(item.discount);
     const taxRate = toNum(item.taxRate);
+    const installmentType = String(item.installmentType || "").trim();
+    if (!INSTALLMENT_TYPES.includes(installmentType)) throw new Error("Invalid installment type");
     const base = quantity * unitPrice;
     const taxable = Math.max(base - discount, 0);
     const tax = taxable * (taxRate / 100);
 
     return {
+      predefinedItemId: item.predefinedItemId || null,
+      itemName: String(item.itemName || item.name || item.description || "").trim(),
+      packageCountry: String(item.packageCountry || item.country || "").trim(),
+      packageName: String(item.packageName || "").trim(),
+      installmentType,
       description: String(item.description || "").trim(),
       quantity,
       unitPrice,
+      currency: String(item.currency || "").trim().toUpperCase(),
       discount,
       taxRate,
       lineTotal: Number((taxable + tax).toFixed(2)),

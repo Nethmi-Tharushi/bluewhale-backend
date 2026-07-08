@@ -2,9 +2,20 @@ const mongoose = require("mongoose");
 
 const invoiceItemSchema = new mongoose.Schema(
   {
+    predefinedItemId: { type: mongoose.Schema.Types.ObjectId, ref: "InvoiceItem", default: null },
+    itemName: { type: String, default: "", trim: true },
+    packageCountry: { type: String, default: "", trim: true },
+    packageName: { type: String, default: "", trim: true },
+    installmentType: {
+      type: String,
+      enum: ["", "First Installment", "Second Installment", "Third Installment", "Full Payment", "No Installment / General Item"],
+      default: "",
+      trim: true,
+    },
     description: { type: String, required: true, trim: true },
     quantity: { type: Number, required: true, min: 0 },
     unitPrice: { type: Number, required: true, min: 0 },
+    currency: { type: String, default: "", trim: true, uppercase: true },
     discount: { type: Number, default: 0, min: 0 },
     taxRate: { type: Number, default: 0, min: 0 },
     lineTotal: { type: Number, required: true, min: 0 },

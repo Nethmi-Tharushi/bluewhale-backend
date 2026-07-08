@@ -37,7 +37,7 @@ const resolveAssignedSalesStaff = async ({
   }
 
   const preferredId = trimString(preferredAssigneeId);
-  if (preferredId && ["MainAdmin", "SalesAdmin"].includes(actorRole)) {
+  if (preferredId && ["MainAdmin", "SalesAdmin", "Receptionist"].includes(actorRole)) {
     const preferred = await AdminUser.findOne({
       _id: preferredId,
       role: "SalesStaff",
@@ -94,12 +94,13 @@ const ensurePortalUserForLead = async ({
     return { user: existingUser || null, created: false, password: "" };
   }
 
-  if (existingUser) {
-    if (assignedStaff?._id && String(existingUser.assignedTo || "") !== String(assignedStaff._id)) {
-      existingUser.assignedTo = assignedStaff._id;
-      await existingUser.save();
+  const matchedExistingUser = existingUser || (await User.findOne({ email }));
+  if (matchedExistingUser) {
+    if (assignedStaff?._id && String(matchedExistingUser.assignedTo || "") !== String(assignedStaff._id)) {
+      matchedExistingUser.assignedTo = assignedStaff._id;
+      await matchedExistingUser.save();
     }
-    return { user: existingUser, created: false, password: "" };
+    return { user: matchedExistingUser, created: false, password: "" };
   }
 
   const resolvedPassword = trimString(leadInput?.password) || generateTempPassword();
