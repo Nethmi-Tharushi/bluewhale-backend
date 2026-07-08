@@ -10,7 +10,7 @@ const adminLeaveRequestSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["SalesAdmin", "SalesStaff"],
+      enum: ["SalesAdmin", "SalesStaff", "Receptionist", "Accountant"],
       required: true,
       index: true,
     },

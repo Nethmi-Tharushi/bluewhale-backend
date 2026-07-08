@@ -14,7 +14,7 @@ const {
   toggleTrackedWorkBreak,
 } = require("../services/adminWorkSessionService");
 
-const TRACKING_ROLES = ["SalesAdmin", "SalesStaff"];
+const TRACKING_ROLES = ["SalesAdmin", "SalesStaff", "Receptionist", "Accountant"];
 
 const parseDateInput = (value, fallback) => {
   if (!value) return fallback;
@@ -124,7 +124,7 @@ const normalizeIdList = (value) => {
 
 const requireTrackedAdmin = (req, res) => {
   if (isTrackedAdmin(req.admin)) return true;
-  res.status(403).json({ message: "Work session tracking is only available for SalesAdmin and SalesStaff accounts" });
+  res.status(403).json({ message: "Work session tracking is only available for SalesAdmin, SalesStaff, Receptionist, and Accountant accounts" });
   return false;
 };
 

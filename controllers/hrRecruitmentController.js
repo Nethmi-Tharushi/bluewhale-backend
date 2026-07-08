@@ -5,13 +5,14 @@ const AdminWorkSession = require("../models/AdminWorkSession");
 const AdminLeaveRequest = require("../models/AdminLeaveRequest");
 const HrRecruitmentCampaign = require("../models/HrRecruitmentCampaign");
 const HrRecruitmentCandidate = require("../models/HrRecruitmentCandidate");
-const HrRecruitmentRole = require("../models/HrRecruitmentRole");
+const { createAdminRecord } = require("../services/adminManagementService");
+const { sendAdminAccountWelcomeEmail } = require("../services/emailService");
 const {
   buildLeaveBalanceMapForAdmins,
   ensureLeavePolicySettings,
 } = require("../services/adminLeavePolicyService");
 
-const TRACKED_ROLES = ["SalesAdmin", "SalesStaff"];
+const TRACKED_ROLES = ["SalesAdmin", "SalesStaff", "Receptionist", "Accountant"];
 const INTERVIEWER_ROLES = ["MainAdmin", "HRManager", "SalesAdmin"];
 const CAMPAIGN_STATUS_OPTIONS = ["draft", "open", "on_hold", "closed", "filled"];
 const CANDIDATE_STATUS_OPTIONS = ["active", "hired", "rejected", "withdrawn"];
@@ -22,7 +23,18 @@ const DEFAULT_STAFF_LOOKBACK_DAYS = 30;
 const DEFAULT_JOB_ROLES = [
   { name: "Sales Admin", description: "Internal sales admin role" },
   { name: "Sales Staff", description: "Internal sales staff role" },
+  { name: "Receptionist", description: "Internal receptionist role" },
+  { name: "Accountant", description: "Internal accountant role" },
 ];
+const PROVISIONABLE_RECRUITMENT_ROLE_MAP = Object.freeze({
+  salesadmin: "SalesAdmin",
+  "sales admin": "SalesAdmin",
+  salesstaff: "SalesStaff",
+  "sales staff": "SalesStaff",
+  receptionist: "Receptionist",
+  accountant: "Accountant",
+});
+const RECEPTIONIST_BRANCH_OPTIONS = ["UAE", "India", "UK"];
 
 const emitHrRecruitmentUpdate = (eventType, payload = {}) => {
   try {
@@ -89,12 +101,15 @@ const getSessionMetrics = (session, { start, end, referenceTime = new Date() }) 
 const roleLabel = (role = "") => {
   if (role === "SalesAdmin") return "Sales Admin";
   if (role === "SalesStaff") return "Sales Staff";
+  if (role === "Receptionist") return "Receptionist";
+  if (role === "Accountant") return "Accountant";
   if (role === "HRManager") return "HR Manager";
   if (role === "MainAdmin") return "Main Admin";
   return role || "-";
 };
 
 const normalizeString = (value = "") => String(value || "").trim();
+const normalizeLookupKey = (value = "") => normalizeString(value).replace(/\s+/g, " ").toLowerCase();
 
 const normalizeCampaignStatus = (value = "") => {
   const normalized = normalizeString(value);
@@ -138,40 +153,15 @@ const parseStageList = (value) => {
   return DEFAULT_PIPELINE_STAGES;
 };
 
-const ensureDefaultHrRecruitmentRoles = async (actorId = null) => {
-  const existing = await HrRecruitmentRole.find({})
-    .select("_id name description isActive")
-    .sort({ name: 1 })
-    .lean();
-
-  if (existing.length) return existing;
-  if (!actorId) return [];
-
-  await HrRecruitmentRole.insertMany(
-    DEFAULT_JOB_ROLES.map((role) => ({
-      ...role,
-      createdBy: actorId,
-    }))
-  );
-
-  return HrRecruitmentRole.find({})
-    .select("_id name description isActive")
-    .sort({ name: 1 })
-    .lean();
-};
-
-const getRoleOptions = async (actorId = null) => {
-  const roles = await ensureDefaultHrRecruitmentRoles(actorId);
-  return roles
-    .filter((role) => role.isActive !== false)
-    .map((role) => ({
-      _id: role._id,
-      value: role.name || "",
-      label: role.name || "",
-      description: role.description || "",
-      isActive: role.isActive !== false,
-    }));
-};
+const getRoleOptions = async () => (
+  DEFAULT_JOB_ROLES.map((role) => ({
+    _id: role.name,
+    value: role.name,
+    label: role.name,
+    description: role.description || "",
+    isActive: true,
+  }))
+);
 
 const serializeCampaign = (campaign, candidates = []) => {
   const campaignId = String(campaign?._id || "");
@@ -233,6 +223,192 @@ const completeScheduledInterviewRound = (candidate, roundNumber) => {
   return true;
 };
 
+const resolveProvisionableAdminRole = (positionRole = "") => {
+  const lookupKey = normalizeLookupKey(positionRole);
+  return PROVISIONABLE_RECRUITMENT_ROLE_MAP[lookupKey] || "";
+};
+
+const normalizeReceptionistBranch = (value = "") => {
+  const normalized = normalizeString(value);
+  if (!normalized) return "";
+  return RECEPTIONIST_BRANCH_OPTIONS.find((branch) => branch.toLowerCase() === normalized.toLowerCase()) || "";
+};
+
+const resolveSalesStaffManagerIdForProvisioning = async (actor) => {
+  if (String(actor?.role || "") === "SalesAdmin" && actor?._id) {
+    return actor._id;
+  }
+
+  const fallbackManager = await AdminUser.findOne({ role: "SalesAdmin" })
+    .sort({ createdAt: 1 })
+    .select("_id")
+    .lean();
+
+  return fallbackManager?._id || null;
+};
+
+const normalizeBooleanFlag = (value, fallback = false) => {
+  if (typeof value === "boolean") return value;
+  const normalized = normalizeString(value).toLowerCase();
+  if (!normalized) return fallback;
+  if (["true", "1", "yes", "y"].includes(normalized)) return true;
+  if (["false", "0", "no", "n"].includes(normalized)) return false;
+  return fallback;
+};
+
+const provisionCandidateAdminAccountIfNeeded = async ({ candidate, campaign, actor, payload = {}, stageLabel = "Hired" }) => {
+  const targetRole = resolveProvisionableAdminRole(campaign?.positionRole);
+  if (!targetRole) {
+    return;
+  }
+
+  const candidateName = normalizeString(candidate?.fullName);
+  const candidateEmail = normalizeString(candidate?.email).toLowerCase();
+  const candidatePhone = normalizeString(candidate?.phone);
+  const provisionName = normalizeString(payload?.provisionName) || candidateName;
+  const email = (normalizeString(payload?.provisionEmail) || candidateEmail).toLowerCase();
+  const provisionPhone = normalizeString(payload?.provisionPhone) || candidatePhone;
+  const sendWelcomeEmail = normalizeBooleanFlag(payload?.sendWelcomeEmail, true);
+
+  if (!provisionName) {
+    const error = new Error("Candidate name is required before creating a system user");
+    error.status = 400;
+    throw error;
+  }
+
+  if (!email) {
+    const error = new Error("Candidate email is required before moving this role to Hired");
+    error.status = 400;
+    throw error;
+  }
+
+  let linkedAdmin = null;
+  if (candidate.linkedStaffId && mongoose.Types.ObjectId.isValid(String(candidate.linkedStaffId))) {
+    linkedAdmin = await AdminUser.findById(candidate.linkedStaffId)
+      .select("_id name email role")
+      .lean();
+  }
+
+  if (linkedAdmin) {
+    if (linkedAdmin.role !== targetRole) {
+      const error = new Error(`Linked staff member must be a ${roleLabel(targetRole)} account`);
+      error.status = 409;
+      throw error;
+    }
+    candidate.provisionedAdminRole = targetRole;
+    candidate.accountProvisionedAt = candidate.accountProvisionedAt || new Date();
+    return;
+  }
+
+  const existingAdmin = await AdminUser.findOne({ email })
+    .select("_id name email role")
+    .lean();
+
+  if (existingAdmin) {
+    if (existingAdmin.role !== targetRole) {
+      const error = new Error(
+        `An existing ${roleLabel(existingAdmin.role)} account already uses ${email}. Expected ${roleLabel(targetRole)}.`
+      );
+      error.status = 409;
+      throw error;
+    }
+
+    candidate.linkedStaffId = existingAdmin._id;
+    candidate.provisionedAdminRole = targetRole;
+    candidate.accountProvisionedAt = candidate.accountProvisionedAt || new Date();
+    candidate.stageHistory.push({
+      stage: stageLabel,
+      note: `Existing ${roleLabel(targetRole)} account linked automatically for hired candidate`,
+      changedBy: actor._id,
+      changedAt: new Date(),
+    });
+    return;
+  }
+
+  const password = normalizeString(payload?.provisionPassword);
+  if (!password) {
+    const error = new Error("Password is required to create the hired candidate's system user");
+    error.status = 400;
+    throw error;
+  }
+
+  const createPayload = {
+    name: provisionName,
+    email,
+    phone: provisionPhone,
+    role: targetRole,
+    password,
+  };
+
+  if (targetRole === "Receptionist") {
+    const receptionistBranch = normalizeReceptionistBranch(payload?.provisionBranch || campaign?.branch);
+    if (!receptionistBranch) {
+      const error = new Error("Receptionist accounts need a valid branch (UAE, India, or UK) before hiring candidates");
+      error.status = 400;
+      throw error;
+    }
+    createPayload.branch = receptionistBranch;
+  }
+
+  if (targetRole === "SalesStaff") {
+    const requestedManagerId = normalizeString(payload?.provisionReportsTo);
+    const reportsTo = mongoose.Types.ObjectId.isValid(requestedManagerId)
+      ? requestedManagerId
+      : await resolveSalesStaffManagerIdForProvisioning(actor);
+    if (!reportsTo) {
+      const error = new Error("A SalesAdmin account is required before hiring Sales Staff candidates");
+      error.status = 400;
+      throw error;
+    }
+    createPayload.reportsTo = reportsTo;
+  }
+
+  const createdAdmin = await createAdminRecord(createPayload, actor);
+
+  candidate.linkedStaffId = createdAdmin._id;
+  candidate.provisionedAdminRole = targetRole;
+  candidate.accountProvisionedAt = new Date();
+  candidate.stageHistory.push({
+    stage: stageLabel,
+    note: `${roleLabel(targetRole)} account created automatically for hired candidate`,
+    changedBy: actor._id,
+    changedAt: new Date(),
+  });
+
+  const loginUrl = String(
+    process.env.CRM_LOGIN_URL ||
+    process.env.PUBLIC_CRM_URL ||
+    "https://app.bluewhalemigration.com/crm/"
+  ).trim();
+
+  if (sendWelcomeEmail) {
+    try {
+      await sendAdminAccountWelcomeEmail({
+        to: createdAdmin.email,
+        name: createdAdmin.name,
+        role: createdAdmin.role,
+        password: createPayload.password,
+        loginUrl,
+      });
+      candidate.welcomeEmailSentAt = new Date();
+      candidate.stageHistory.push({
+        stage: stageLabel,
+        note: `Welcome email sent to ${createdAdmin.email}`,
+        changedBy: actor._id,
+        changedAt: new Date(),
+      });
+    } catch (emailError) {
+      console.error("Failed to send hired-candidate welcome email:", emailError.message || emailError);
+      candidate.stageHistory.push({
+        stage: stageLabel,
+        note: `Account created, but welcome email could not be sent to ${createdAdmin.email}`,
+        changedBy: actor._id,
+        changedAt: new Date(),
+      });
+    }
+  }
+};
+
 const serializeCandidate = (candidate) => {
   const firstInterview = getLatestInterviewForRound(candidate, 1);
   const secondInterview = getLatestInterviewForRound(candidate, 2);
@@ -274,6 +450,9 @@ const serializeCandidate = (candidate) => {
           role: candidate.linkedStaffId.role || "",
         }
       : null,
+    provisionedAdminRole: candidate.provisionedAdminRole || "",
+    accountProvisionedAt: candidate.accountProvisionedAt || null,
+    welcomeEmailSentAt: candidate.welcomeEmailSentAt || null,
     hiredAt: candidate.hiredAt || null,
     createdAt: candidate.createdAt || null,
     updatedAt: candidate.updatedAt || null,
@@ -477,7 +656,7 @@ exports.getHrRecruitmentDashboard = asyncHandler(async (req, res) => {
       .sort({ role: 1, name: 1 })
       .lean(),
     buildStaffDirectory(),
-    getRoleOptions(req.admin?._id || null),
+    getRoleOptions(),
   ]);
 
   const campaigns = campaignsRaw.map((campaign) => serializeCampaign(campaign, candidatesRaw));
@@ -519,6 +698,7 @@ exports.getHrRecruitmentDashboard = asyncHandler(async (req, res) => {
         ],
         locationTypeOptions: LOCATION_TYPE_OPTIONS,
         defaultPipelineStages: DEFAULT_PIPELINE_STAGES,
+        receptionistBranchOptions: RECEPTIONIST_BRANCH_OPTIONS,
         interviewers: interviewers.map((member) => ({
           _id: member._id,
           name: member.name || "",
@@ -539,45 +719,8 @@ exports.getHrRecruitmentDashboard = asyncHandler(async (req, res) => {
 });
 
 exports.createHrRecruitmentRole = asyncHandler(async (req, res) => {
-  const name = normalizeString(req.body?.name);
-  const description = normalizeString(req.body?.description);
-
-  if (!name) {
-    return res.status(400).json({ message: "name is required" });
-  }
-
-  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const existing = await HrRecruitmentRole.findOne({
-    name: { $regex: `^${escapedName}$`, $options: "i" },
-  })
-    .select("_id")
-    .lean();
-
-  if (existing) {
-    return res.status(409).json({ message: "This job role already exists" });
-  }
-
-  const role = await HrRecruitmentRole.create({
-    name,
-    description,
-    isActive: true,
-    createdBy: req.admin._id,
-  });
-
-  emitHrRecruitmentUpdate("role_created", {
-    roleId: String(role._id || ""),
-    roleName: role.name || "",
-  });
-
-  return res.status(201).json({
-    success: true,
-    data: {
-      _id: role._id,
-      value: role.name || "",
-      label: role.name || "",
-      description: role.description || "",
-      isActive: role.isActive !== false,
-    },
+  return res.status(410).json({
+    message: "Recruitment job roles are now fixed to Sales Admin, Sales Staff, Receptionist, and Accountant",
   });
 });
 
@@ -588,7 +731,7 @@ exports.createHrRecruitmentCampaign = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "title and positionRole are required" });
   }
 
-  const roleOptions = await getRoleOptions(req.admin?._id || null);
+  const roleOptions = await getRoleOptions();
   if (!roleOptions.some((role) => role.value === positionRole)) {
     return res.status(400).json({ message: "Selected job role is not available" });
   }
@@ -629,7 +772,7 @@ exports.updateHrRecruitmentCampaign = asyncHandler(async (req, res) => {
   if (req.body?.positionRole !== undefined) {
     const role = normalizeString(req.body.positionRole);
     if (!role) return res.status(400).json({ message: "Invalid positionRole" });
-    const roleOptions = await getRoleOptions(req.admin?._id || null);
+    const roleOptions = await getRoleOptions();
     if (!roleOptions.some((option) => option.value === role)) {
       return res.status(400).json({ message: "Selected job role is not available" });
     }
@@ -782,6 +925,9 @@ exports.updateHrRecruitmentCandidate = asyncHandler(async (req, res) => {
     if (!allowedStages.includes(nextStage)) {
       return res.status(400).json({ message: "Selected pipeline stage is not part of this campaign" });
     }
+    if (previousStage === "Hired" && nextStage !== "Hired") {
+      return res.status(400).json({ message: "Pipeline stage cannot be changed after a candidate is moved to Hired" });
+    }
     candidate.pipelineStage = nextStage;
     if (nextStage !== previousStage) {
       candidate.stageHistory.push({
@@ -802,6 +948,17 @@ exports.updateHrRecruitmentCandidate = asyncHandler(async (req, res) => {
           changedAt: new Date(),
         });
       }
+    }
+
+    if (nextStage === "Hired" && previousStage !== "Hired") {
+      await provisionCandidateAdminAccountIfNeeded({
+        candidate,
+        campaign,
+        actor: req.admin,
+        payload: req.body || {},
+        stageLabel: "Hired",
+      });
+      candidate.candidateStatus = "hired";
     }
   }
 

@@ -13,7 +13,7 @@ const {
   updateLeavePolicySettings,
 } = require("../services/adminLeavePolicyService");
 
-const TRACKING_ROLES = ["SalesAdmin", "SalesStaff"];
+const TRACKING_ROLES = ["SalesAdmin", "SalesStaff", "Receptionist", "Accountant"];
 const REVIEWABLE_STATUSES = new Set(["approved", "rejected"]);
 
 const emitHrLeaveUpdate = (eventType, request) => {
@@ -238,7 +238,7 @@ const serializeBalanceContext = (balances = [], leaveType = "", requestedDays = 
 
 const ensureTrackedAdmin = (req, res) => {
   if (TRACKING_ROLES.includes(String(req.admin?.role || ""))) return true;
-  res.status(403).json({ message: "Leave requests are available only for SalesAdmin and SalesStaff accounts" });
+  res.status(403).json({ message: "Leave requests are available only for SalesAdmin, SalesStaff, Receptionist, and Accountant accounts" });
   return false;
 };
 

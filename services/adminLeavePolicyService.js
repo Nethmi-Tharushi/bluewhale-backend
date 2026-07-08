@@ -2,7 +2,29 @@ const mongoose = require("mongoose");
 const AdminLeavePolicySettings = require("../models/AdminLeavePolicySettings");
 const AdminLeaveRequest = require("../models/AdminLeaveRequest");
 
-const TRACKED_ROLES = ["SalesAdmin", "SalesStaff"];
+const TRACKED_ROLES = ["SalesAdmin", "SalesStaff", "Receptionist", "Accountant"];
+
+const createTrackedRoleAllowances = (days, options = {}) =>
+  TRACKED_ROLES.reduce((acc, role) => {
+    acc[role] = {
+      enabled: true,
+      days,
+      unlimited: Boolean(options.unlimited),
+    };
+    return acc;
+  }, {});
+
+const createDisabledTrackedRoleAllowances = () =>
+  TRACKED_ROLES.reduce((acc, role) => {
+    acc[role] = { enabled: false, days: 0, unlimited: false };
+    return acc;
+  }, {});
+
+const normalizeTrackedRoleAllowances = (allowances = {}, fallback = {}) =>
+  TRACKED_ROLES.reduce((acc, role) => {
+    acc[role] = normalizeAllowance(allowances?.[role], fallback?.[role]);
+    return acc;
+  }, {});
 
 const DEFAULT_LEAVE_TYPE_SETTINGS = [
   {
@@ -11,10 +33,7 @@ const DEFAULT_LEAVE_TYPE_SETTINGS = [
     description: "Planned personal leave deducted from the yearly allocation.",
     active: true,
     sortOrder: 10,
-    allowances: {
-      SalesAdmin: { enabled: true, days: 14, unlimited: false },
-      SalesStaff: { enabled: true, days: 14, unlimited: false },
-    },
+    allowances: createTrackedRoleAllowances(14),
   },
   {
     key: "sick",
@@ -22,10 +41,7 @@ const DEFAULT_LEAVE_TYPE_SETTINGS = [
     description: "Health-related leave tracked against the yearly allowance.",
     active: true,
     sortOrder: 20,
-    allowances: {
-      SalesAdmin: { enabled: true, days: 7, unlimited: false },
-      SalesStaff: { enabled: true, days: 7, unlimited: false },
-    },
+    allowances: createTrackedRoleAllowances(7),
   },
   {
     key: "casual",
@@ -33,10 +49,7 @@ const DEFAULT_LEAVE_TYPE_SETTINGS = [
     description: "Short personal leave for urgent or day-to-day needs.",
     active: true,
     sortOrder: 30,
-    allowances: {
-      SalesAdmin: { enabled: true, days: 7, unlimited: false },
-      SalesStaff: { enabled: true, days: 7, unlimited: false },
-    },
+    allowances: createTrackedRoleAllowances(7),
   },
   {
     key: "unpaid",
@@ -44,10 +57,7 @@ const DEFAULT_LEAVE_TYPE_SETTINGS = [
     description: "Leave that does not consume paid allowance.",
     active: true,
     sortOrder: 40,
-    allowances: {
-      SalesAdmin: { enabled: true, days: 0, unlimited: true },
-      SalesStaff: { enabled: true, days: 0, unlimited: true },
-    },
+    allowances: createTrackedRoleAllowances(0, { unlimited: true }),
   },
   {
     key: "other",
@@ -55,10 +65,7 @@ const DEFAULT_LEAVE_TYPE_SETTINGS = [
     description: "Custom leave category for approved exceptions.",
     active: true,
     sortOrder: 50,
-    allowances: {
-      SalesAdmin: { enabled: true, days: 2, unlimited: false },
-      SalesStaff: { enabled: true, days: 2, unlimited: false },
-    },
+    allowances: createTrackedRoleAllowances(2),
   },
 ];
 
@@ -96,10 +103,7 @@ const buildDefaultLeaveTypes = () =>
     description: item.description,
     active: Boolean(item.active),
     sortOrder: Number(item.sortOrder || 0),
-    allowances: {
-      SalesAdmin: normalizeAllowance(item.allowances?.SalesAdmin, item.allowances?.SalesAdmin),
-      SalesStaff: normalizeAllowance(item.allowances?.SalesStaff, item.allowances?.SalesStaff),
-    },
+    allowances: normalizeTrackedRoleAllowances(item.allowances, item.allowances),
   }));
 
 const sortLeaveTypes = (items = []) =>
@@ -133,20 +137,14 @@ const normalizePolicyDocument = (document = {}, options = {}) => {
       description: String(existing.description || defaultItem.description).trim(),
       active: Boolean(existing.active ?? defaultItem.active),
       sortOrder: Number(existing.sortOrder ?? defaultItem.sortOrder) || defaultItem.sortOrder,
-      allowances: {
-        SalesAdmin: normalizeAllowance(existing.allowances?.SalesAdmin, defaultItem.allowances.SalesAdmin),
-        SalesStaff: normalizeAllowance(existing.allowances?.SalesStaff, defaultItem.allowances.SalesStaff),
-      },
+      allowances: normalizeTrackedRoleAllowances(existing.allowances, defaultItem.allowances),
     });
   });
 
   existingItems.forEach((rawItem, index) => {
     const key = normalizeLeaveTypeKey(rawItem?.key);
     if (!key || usedKeys.has(key)) return;
-    const fallback = {
-      SalesAdmin: { enabled: false, days: 0, unlimited: false },
-      SalesStaff: { enabled: false, days: 0, unlimited: false },
-    };
+    const fallback = createDisabledTrackedRoleAllowances();
     usedKeys.add(key);
     merged.push({
       key,
@@ -154,10 +152,7 @@ const normalizePolicyDocument = (document = {}, options = {}) => {
       description: String(rawItem?.description || "").trim(),
       active: Boolean(rawItem?.active ?? true),
       sortOrder: Number(rawItem?.sortOrder ?? (defaults.length + index + 1) * 10) || (defaults.length + index + 1) * 10,
-      allowances: {
-        SalesAdmin: normalizeAllowance(rawItem?.allowances?.SalesAdmin, fallback.SalesAdmin),
-        SalesStaff: normalizeAllowance(rawItem?.allowances?.SalesStaff, fallback.SalesStaff),
-      },
+      allowances: normalizeTrackedRoleAllowances(rawItem?.allowances, fallback),
     });
   });
 
@@ -196,10 +191,7 @@ const serializeLeavePolicy = (settings) => {
       description: item.description,
       active: Boolean(item.active),
       sortOrder: Number(item.sortOrder || 0),
-      allowances: {
-        SalesAdmin: normalizeAllowance(item.allowances?.SalesAdmin),
-        SalesStaff: normalizeAllowance(item.allowances?.SalesStaff),
-      },
+      allowances: normalizeTrackedRoleAllowances(item.allowances),
     })),
   };
 };
@@ -217,10 +209,7 @@ const updateLeavePolicySettings = async (payload = {}, actorId = null) => {
         description: "",
         active: true,
         sortOrder: (index + 1) * 10,
-        allowances: {
-          SalesAdmin: { enabled: false, days: 0, unlimited: false },
-          SalesStaff: { enabled: false, days: 0, unlimited: false },
-        },
+        allowances: createDisabledTrackedRoleAllowances(),
       };
       return {
         key,
@@ -228,10 +217,7 @@ const updateLeavePolicySettings = async (payload = {}, actorId = null) => {
         description: String(rawItem?.description || fallback.description).trim(),
         active: Boolean(rawItem?.active ?? fallback.active),
         sortOrder: Number(rawItem?.sortOrder ?? fallback.sortOrder ?? (index + 1) * 10) || fallback.sortOrder,
-        allowances: {
-          SalesAdmin: normalizeAllowance(rawItem?.allowances?.SalesAdmin, fallback.allowances.SalesAdmin),
-          SalesStaff: normalizeAllowance(rawItem?.allowances?.SalesStaff, fallback.allowances.SalesStaff),
-        },
+        allowances: normalizeTrackedRoleAllowances(rawItem?.allowances, fallback.allowances),
       };
     })
     .filter(Boolean);

@@ -1,6 +1,6 @@
 const AdminWorkSession = require("../models/AdminWorkSession");
 
-const TRACKED_ROLES = new Set(["SalesAdmin", "SalesStaff"]);
+const TRACKED_ROLES = new Set(["SalesAdmin", "SalesStaff", "Receptionist", "Accountant"]);
 const ONLINE_WINDOW_MS = 90 * 1000;
 
 const emitWorkSessionUpdate = (session, eventType = "updated") => {

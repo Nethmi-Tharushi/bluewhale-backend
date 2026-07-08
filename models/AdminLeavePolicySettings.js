@@ -53,6 +53,14 @@ const leaveTypePolicySchema = new mongoose.Schema(
         type: roleAllowanceSchema,
         default: () => ({}),
       },
+      Receptionist: {
+        type: roleAllowanceSchema,
+        default: () => ({}),
+      },
+      Accountant: {
+        type: roleAllowanceSchema,
+        default: () => ({}),
+      },
     },
   },
   { _id: false }

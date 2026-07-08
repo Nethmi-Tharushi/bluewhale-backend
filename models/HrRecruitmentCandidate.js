@@ -193,6 +193,20 @@ const hrRecruitmentCandidateSchema = new mongoose.Schema(
       ref: "AdminUser",
       default: null,
     },
+    provisionedAdminRole: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 80,
+    },
+    accountProvisionedAt: {
+      type: Date,
+      default: null,
+    },
+    welcomeEmailSentAt: {
+      type: Date,
+      default: null,
+    },
     hiredAt: {
       type: Date,
       default: null,
