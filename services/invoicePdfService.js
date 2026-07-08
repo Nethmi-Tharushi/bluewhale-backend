@@ -76,6 +76,27 @@ const formatMoney = (amount, currency = "USD") => {
   return n.toLocaleString(undefined, { style: "currency", currency, maximumFractionDigits: 2 });
 };
 
+const installmentNameSuffix = (installmentType = "") => {
+  const map = {
+    "First Installment": "1st Installment",
+    "Second Installment": "2nd Installment",
+    "Third Installment": "3rd Installment",
+    "Full Payment": "Full Payment",
+  };
+  return map[String(installmentType || "").trim()] || "";
+};
+
+const formatItemLabel = (item = {}) => {
+  const primary = String(item.itemName || item.description || "-").trim();
+  const suffix = installmentNameSuffix(item.installmentType);
+  const name = suffix ? `${primary} ${suffix}` : primary;
+  const meta = [item.packageCountry, item.packageName]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const detail = String(item.itemName && item.description ? item.description : "").trim();
+  return [name, ...meta, detail].filter(Boolean).join(" - ");
+};
+
 const buildInvoicePdfBuffer = (invoice) => {
   const cmds = [];
   let y = 790;
@@ -140,7 +161,7 @@ const buildInvoicePdfBuffer = (invoice) => {
     for (const item of items.slice(0, 12)) {
       y -= 22;
       cmds.push(`0.93 0.95 0.98 RG 1 w 42 ${y - 6} 510 22 re S`);
-      text(splitText(item.description || "-", 36)[0], { x: 50, yy: y, color: "0.15 0.18 0.24" });
+      text(splitText(formatItemLabel(item), 36)[0], { x: 50, yy: y, color: "0.15 0.18 0.24" });
       text(String(item.quantity ?? 0), { x: 304, yy: y, color: "0.15 0.18 0.24" });
       text(formatMoney(item.unitPrice, invoice.currency), { x: 338, yy: y, color: "0.15 0.18 0.24" });
       text(Number(item.taxRate || 0).toFixed(2), { x: 418, yy: y, color: "0.15 0.18 0.24" });

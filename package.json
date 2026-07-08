@@ -11,7 +11,8 @@
     "seed:whatsapp-tags:force": "set ALLOW_DEV_SEED=true&& node SeedWhatsAppConversationTags.js",
     "seed:whatsapp-campaigns": "node scripts/seed-whatsapp-campaigns.js",
     "seed:whatsapp-campaigns:force": "set ALLOW_DEV_SEED=true&& node scripts/seed-whatsapp-campaigns.js",
-    "seed:interview-schedule": "node scripts/seed-interview-schedule.js"
+    "seed:interview-schedule": "node scripts/seed-interview-schedule.js",
+    "seed:invoice-items": "node scripts/seed-invoice-items.js"
   },
   "keywords": [],
   "author": "",

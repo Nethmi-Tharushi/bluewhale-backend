@@ -13,6 +13,7 @@ const { ensureSalesActor, getSalesScope, buildOwnedFilter } = require("../utils/
 const { normalizeLeadStatus } = require("../utils/leadSupport");
 
 const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
+const INSTALLMENT_TYPES = ["", "First Installment", "Second Installment", "Third Installment", "Full Payment", "No Installment / General Item"];
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CUSTOMER_LEAD_STATUSES = new Set(["Paid Customer"]);
 
@@ -210,17 +211,51 @@ const computeFinancials = (payload) => {
   if (rawItems.length === 0) throw new Error("At least one invoice item is required");
 
   const items = rawItems.map((item) => {
+    const predefinedItemId = String(item.predefinedItemId || "").trim();
+    const installmentType = String(item.installmentType || "").trim();
     const quantity = toNum(item.quantity);
     const unitPrice = toNum(item.unitPrice);
     const discount = toNum(item.discount);
     const taxRate = toNum(item.taxRate);
+    const description = String(item.description || item.itemName || "").trim();
+    if (predefinedItemId && !Types.ObjectId.isValid(predefinedItemId)) {
+      const err = new Error("Invalid predefined invoice item id");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!description) {
+      const err = new Error("Each invoice item requires a description");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (quantity <= 0) {
+      const err = new Error("Each invoice item quantity must be greater than zero");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (unitPrice < 0 || discount < 0 || taxRate < 0) {
+      const err = new Error("Invoice item amounts must be non-negative numbers");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!INSTALLMENT_TYPES.includes(installmentType)) {
+      const err = new Error("Invalid installment type");
+      err.statusCode = 400;
+      throw err;
+    }
     const base = quantity * unitPrice;
     const taxable = Math.max(base - discount, 0);
     const tax = taxable * (taxRate / 100);
     return {
-      description: String(item.description || "").trim(),
+      predefinedItemId: predefinedItemId || null,
+      itemName: String(item.itemName || item.name || description).trim(),
+      packageCountry: String(item.packageCountry || item.country || "").trim(),
+      packageName: String(item.packageName || "").trim(),
+      installmentType,
+      description,
       quantity,
       unitPrice,
+      currency: String(item.currency || payload.currency || "").trim().toUpperCase(),
       discount,
       taxRate,
       lineTotal: Number((taxable + tax).toFixed(2)),

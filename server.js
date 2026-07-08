@@ -48,6 +48,7 @@ const isAllowedOrigin = (origin = "") => {
   if (allowedOrigins.includes(origin)) return true;
   try {
     const { hostname } = new URL(origin);
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return true;
     return isNgrokOrigin(hostname);
   } catch {
     return false;
@@ -258,6 +259,7 @@ app.use("/api/agent", require("./routes/agent"));
 app.use("/api", require("./routes/documents"));
 app.use("/api/overview", require("./routes/overview"));
 app.use("/api/sales-admin", require("./routes/SalesAdminRoutes"));
+app.use("/api/invoice-items", require("./routes/invoiceItems"));
 app.use("/api/projects", require("./routes/projects"));
 app.use("/api/campaigns", require("./routes/campaigns"));
 app.use("/api/recruitment-channels", require("./routes/recruitmentChannels"));
