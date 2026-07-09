@@ -181,117 +181,117 @@ router.get(
 router.get(
   "/hr/work-sessions",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   getHrWorkSessionSummary
 );
 router.get(
   "/hr/work-sessions/history",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   getHrWorkSessionHistory
 );
 router.get(
   "/hr/attendance",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   getHrAttendanceSummary
 );
 router.get(
   "/hr/leave-requests",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   getHrLeaveRequests
 );
 router.get(
   "/hr/leave-settings",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   getHrLeaveSettings
 );
 router.put(
   "/hr/leave-settings",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   updateHrLeaveSettings
 );
 router.patch(
   "/hr/leave-requests/:id/status",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   reviewHrLeaveRequest
 );
 router.get(
   "/hr/recruitment/dashboard",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   getHrRecruitmentDashboard
 );
 router.post(
   "/hr/recruitment/roles",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   createHrRecruitmentRole
 );
 router.post(
   "/hr/recruitment/campaigns",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   createHrRecruitmentCampaign
 );
 router.patch(
   "/hr/recruitment/campaigns/:id",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   updateHrRecruitmentCampaign
 );
 router.delete(
   "/hr/recruitment/campaigns/:id",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   deleteHrRecruitmentCampaign
 );
 router.post(
   "/hr/recruitment/candidates",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   upload.single("cv"),
   createHrRecruitmentCandidate
 );
 router.patch(
   "/hr/recruitment/candidates/:id",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   upload.single("cv"),
   updateHrRecruitmentCandidate
 );
 router.delete(
   "/hr/recruitment/candidates/:id",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   deleteHrRecruitmentCandidate
 );
 router.post(
   "/hr/recruitment/candidates/:id/interviews",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   scheduleHrRecruitmentInterview
 );
 router.patch(
   "/hr/recruitment/candidates/:id/interviews/:interviewId",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   updateHrRecruitmentInterview
 );
 router.delete(
   "/hr/recruitment/candidates/:id/interviews/:interviewId",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   deleteHrRecruitmentInterview
 );
 router.get(
   "/hr/staff-directory",
   protectAdmin,
-  authorizeAdmin("HRManager"),
+  authorizeAdmin("HRManager", "MainAdmin"),
   getHrStaffDirectory
 );
 router.get(
